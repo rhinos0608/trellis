@@ -44,6 +44,7 @@ export interface StartRunInput {
   depth?: string;
   topic?: string;
   sessionId?: string;
+  threadId?: string;
   provider: ResearchProvider;
   config: TrellisConfig;
   /** If provided, skip family resolution and use this familyId. */
@@ -87,7 +88,7 @@ const ALL_HANDLERS = {
 function resolveFamilyForRun(
   input: StartRunInput,
   projection: ProjectionState,
-): { familyId: string; familyCreated: boolean; familyLabel: string; familyDescription: string } {
+): { familyId: string; familyCreated: boolean; familyLabel: string; familyDescription: string; score: number } {
   if (input.explicitFamilyId !== undefined) {
     const exists = projection.families.has(input.explicitFamilyId);
     if (exists) {
@@ -96,6 +97,7 @@ function resolveFamilyForRun(
         familyCreated: false,
         familyLabel: '',
         familyDescription: '',
+        score: 0,
       };
     }
     // Family doesn't exist yet — create it so FAMILY_CREATED is emitted
@@ -104,6 +106,7 @@ function resolveFamilyForRun(
       familyCreated: true,
       familyLabel: input.explicitFamilyId,
       familyDescription: input.query,
+      score: 0,
     };
   }
 
@@ -114,6 +117,7 @@ function resolveFamilyForRun(
     familyCreated: resolution.isNew,
     familyLabel: resolution.family.label,
     familyDescription: resolution.family.description ?? input.query,
+    score: resolution.score,
   };
 }
 
@@ -426,7 +430,7 @@ export function createRunService(): RunService {
       projection = { families: new Map() } as ProjectionState;
     }
 
-    const { familyId, familyCreated, familyLabel, familyDescription } = resolveFamilyForRun(input, projection);
+    const { familyId, familyCreated, familyLabel, familyDescription, score: familyScore } = resolveFamilyForRun(input, projection);
 
     // 2. Append RUN_STARTED event immediately (durable from the start)
     const familyEvents: EventEnvelope[] = [];
@@ -444,6 +448,8 @@ export function createRunService(): RunService {
         familyId,
         query: input.query,
         isNew: familyCreated,
+        score: familyScore,
+        method: 'lexical_manifest_overlap' as const,
       }, { entityId: familyId, entityType: 'family' }),
     );
 
@@ -454,6 +460,7 @@ export function createRunService(): RunService {
       strategy: input.strategy ?? 'pipeline',
       topic: input.topic,
       sessionId: input.sessionId,
+      threadId: input.threadId,
     };
 
     const allStartEvents: EventEnvelope[] = [
@@ -496,7 +503,7 @@ export function createRunService(): RunService {
       budget,
       provider: input.provider,
       config: input.config,
-      runContext: { familyId, researchRunId: runId, ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}) },
+      runContext: { familyId, researchRunId: runId, ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}), ...(input.threadId !== undefined ? { threadId: input.threadId } : {}) },
       abortSignal,
       depth,
     };

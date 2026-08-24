@@ -35,6 +35,8 @@ interface FamilyResolvedPayload {
   familyId: string;
   query: string;
   isNew: boolean;
+  score?: number;
+  method?: 'lexical_manifest_overlap';
 }
 
 interface FamilyClassifiedPayload {

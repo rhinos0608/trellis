@@ -90,6 +90,10 @@ const MATCH_THRESHOLD = 0.25;
 export interface FamilyResolution {
   family: Family;
   isNew: boolean;
+  /** Score of the winning match (0 when creating new). */
+  score: number;
+  /** Top scored candidates for inspectability, descending. */
+  candidates?: { familyId: string; score: number }[];
 }
 
 /**
@@ -113,21 +117,21 @@ export function resolveFamily(
 
   const queryTokens = tokenize(query);
 
-  // Find best matching family
-  let bestScore = 0;
-  let bestFamily: Family | null = null;
-  for (const family of existingFamilies) {
-    const score = manifestScore(queryTokens, family.manifest);
-    if (score > bestScore) {
-      bestScore = score;
-      bestFamily = family;
-    }
-  }
+  // Score all families and track candidates
+  const scored = existingFamilies.map((family) => ({
+    family,
+    score: manifestScore(queryTokens, family.manifest),
+  }));
+  scored.sort((a, b) => b.score - a.score);
 
-  if (bestFamily !== null && bestScore >= threshold) {
+  // Top 5 for inspectability
+  const candidates = scored.slice(0, 5).map(({ family, score }) => ({ familyId: family.id, score }));
+
+  const best = scored[0];
+  if (best !== undefined && best.score >= threshold) {
     // Update lastActivity on match
-    bestFamily.lastActivity = now;
-    return { family: bestFamily, isNew: false };
+    best.family.lastActivity = now;
+    return { family: best.family, isNew: false, score: best.score, candidates };
   }
 
   // No strong match — create new family
@@ -146,7 +150,9 @@ export function resolveFamily(
     relatedFamilies: [],
   };
 
-  return { family, isNew: true };
+  const result: FamilyResolution = { family, isNew: true, score: 0 };
+  if (candidates.length > 0) result.candidates = candidates;
+  return result;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

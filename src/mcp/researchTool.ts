@@ -35,6 +35,7 @@ export async function handleResearchTool(
           ...(input.strategy !== undefined ? { strategy: input.strategy } : {}),
           ...(input.depth !== undefined ? { depth: input.depth } : {}),
           ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+          ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
           ...(input.familyId !== undefined ? { explicitFamilyId: input.familyId } : {}),
         });
         return { runId: result.runId, familyId: result.familyId };
