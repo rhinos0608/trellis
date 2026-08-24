@@ -1,0 +1,470 @@
+/**
+ * System-level integration tests — proves three properties that no existing
+ * unit test covers:
+ *
+ * 1. Process-restart survival: closeDb() + initDb() on same file path.
+ * 2. Multi-run longitudinal accumulation within one family.
+ * 3. Full pipeline through MCP tool handlers (handleResearchTool + handleKnowledgeTool).
+ *
+ * All tests use a real file-backed SQLite db, a mock ResearchProvider,
+ * and the actual runService / projection / query layers end-to-end.
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { initDb, closeDb } from '../../src/store/index.js';
+import { createRunService } from '../../src/research/runService.js';
+import { rebuildProjection } from '../../src/store/projectionBuilder.js';
+import { graphEventHandlers } from '../../src/graph/index.js';
+import { workspaceEventHandlers } from '../../src/workspace/index.js';
+import {
+  getClaimsByFamily,
+  getEvidenceForClaim,
+  getContradictionsByFamily,
+  getGapsByFamily,
+} from '../../src/graph/queries.js';
+import {
+  getFamilyById,
+} from '../../src/workspace/queries.js';
+import { handleResearchTool } from '../../src/mcp/researchTool.js';
+import { handleKnowledgeTool } from '../../src/mcp/knowledgeTool.js';
+import type { ResearchProvider } from '../../src/providers/types.js';
+import type { TrellisConfig } from '../../src/config/index.js';
+
+// ── Mock provider ────────────────────────────────────────────────────
+
+const mockProvider: ResearchProvider = {
+  name: 'mock',
+  capabilities: {
+    search: true,
+    read: true,
+    academic: false,
+    code: false,
+    community: { reddit: false, hackernews: false, stackoverflow: false },
+    media: false,
+    reference: false,
+    browser: false,
+  },
+  search: async () => [
+    { url: 'https://example.com/result1', title: 'Result One', snippet: 'first snippet' },
+  ],
+  read: async (url) => ({
+    url,
+    title: 'Mock Content Title',
+    content: 'This is mock content that is definitely long enough to pass the threshold check for creating a finding from the extracted source.',
+    contentHash: 'mockhash',
+  }),
+  crawl: async () => [],
+  academic: async () => [],
+};
+
+function makeConfig(dbPath: string): TrellisConfig {
+  return {
+    storage: { dbPath },
+    llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
+    searchProvider: { command: 'echo', args: [] },
+    logLevel: 'silent',
+  };
+}
+
+const ALL_HANDLERS = { ...graphEventHandlers, ...workspaceEventHandlers };
+
+// ── Shared helpers ───────────────────────────────────────────────────
+
+let tmpDir: string;
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-sys-'));
+});
+
+afterEach(() => {
+  closeDb();
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* cleanup ok */ }
+});
+
+/**
+ * Poll getStatus until completed or timeout.
+ */
+async function waitForRun(
+  svc: ReturnType<typeof createRunService>,
+  runId: string,
+  timeoutMs = 15_000,
+): Promise<NonNullable<ReturnType<typeof svc.getStatus>>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const st = svc.getStatus(runId);
+    if (st && (st.status === 'completed' || st.status === 'failed' || st.status === 'cancelled')) {
+      return st;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const finalStatus = svc.getStatus(runId);
+  throw new Error(`Run ${runId} did not complete within ${timeoutMs}ms. Last status: ${JSON.stringify(finalStatus)}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Property 1: Process-restart survival
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Property 1: process-restart survival', () => {
+  it('closeDb + initDb on same file preserves all state', async () => {
+    const dbPath = path.join(tmpDir, 'restart-test.db');
+    const config = makeConfig(dbPath);
+
+    // ── Phase 1: run a research cycle ─────────────────────────────
+    initDb(dbPath);
+    const svc1 = createRunService();
+    const { runId, familyId } = await svc1.startRun({
+      query: 'What are the benefits of TypeScript over JavaScript?',
+      provider: mockProvider,
+      config,
+      strategy: 'pipeline',
+    });
+
+    await waitForRun(svc1, runId);
+
+    // Snapshot state before restart
+    const statusBefore = svc1.getStatus(runId);
+    expect(statusBefore).not.toBeNull();
+    expect(statusBefore!.status).toBe('completed');
+    expect(statusBefore!.claimCount).toBeGreaterThan(0);
+
+    // Build projection from running db and record all claims
+    const stateBefore = rebuildProjection(ALL_HANDLERS);
+    const claimsBefore = getClaimsByFamily(stateBefore, familyId);
+    expect(claimsBefore.length).toBeGreaterThan(0);
+    const claimIdsBefore = claimsBefore.map((c) => c.id).sort();
+    const familyBefore = getFamilyById(stateBefore, familyId);
+    expect(familyBefore).toBeDefined();
+
+    // Record evidence and contradictions counts
+    const evidenceBefore = claimsBefore.flatMap((c) => getEvidenceForClaim(stateBefore, c.id));
+    const contradictionsBefore = getContradictionsByFamily(stateBefore, familyId);
+    const gapsBefore = getGapsByFamily(stateBefore, familyId);
+    const sourcesBeforeCount = stateBefore.sources.size;
+
+    // ── Phase 2: simulate process exit + restart ──────────────────
+    closeDb();
+    // Verify db file still exists on disk
+    expect(fs.existsSync(dbPath)).toBe(true);
+
+    initDb(dbPath);
+
+    // ── Phase 3: rebuild projection and verify everything ─────────
+    const stateAfter = rebuildProjection(ALL_HANDLERS);
+
+    // Family survived
+    const familyAfter = getFamilyById(stateAfter, familyId);
+    expect(familyAfter).toBeDefined();
+    expect(familyAfter!.label).toBe(familyBefore!.label);
+
+    // All claims survived
+    const claimsAfter = getClaimsByFamily(stateAfter, familyId);
+    const claimIdsAfter = claimsAfter.map((c) => c.id).sort();
+    expect(claimIdsAfter).toEqual(claimIdsBefore);
+
+    // Evidence survived
+    const evidenceAfter = claimsAfter.flatMap((c) => getEvidenceForClaim(stateAfter, c.id));
+    expect(evidenceAfter.length).toBe(evidenceBefore.length);
+
+    // Contradictions survived (may be 0 — that's fine, just verify count matches)
+    const contradictionsAfter = getContradictionsByFamily(stateAfter, familyId);
+    expect(contradictionsAfter.length).toBe(contradictionsBefore.length);
+
+    // Gaps survived
+    const gapsAfter = getGapsByFamily(stateAfter, familyId);
+    expect(gapsAfter.length).toBe(gapsBefore.length);
+
+    // Sources survived
+    expect(stateAfter.sources.size).toBe(sourcesBeforeCount);
+
+    // Run status still queryable via event store
+    const svc2 = createRunService();
+    const statusAfter = svc2.getStatus(runId);
+    expect(statusAfter).not.toBeNull();
+    expect(statusAfter!.status).toBe('completed');
+    expect(statusAfter!.claimCount).toBe(statusBefore!.claimCount);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Property 2: Multi-run longitudinal accumulation within one family
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Property 2: multi-run longitudinal accumulation', () => {
+  it('two runs with explicit same familyId accumulate claims correctly', async () => {
+    const dbPath = path.join(tmpDir, 'longitudinal-test.db');
+    const config = makeConfig(dbPath);
+    initDb(dbPath);
+
+    const FAMILY = 'fam_typescript_benefits';
+
+    // ── Run 1 ─────────────────────────────────────────────────────
+    const svc = createRunService();
+    const run1 = await svc.startRun({
+      query: 'Benefits of TypeScript',
+      provider: mockProvider,
+      config,
+      strategy: 'pipeline',
+      explicitFamilyId: FAMILY,
+    });
+    await waitForRun(svc, run1.runId);
+
+    const state1 = rebuildProjection(ALL_HANDLERS);
+    const claimsRun1 = getClaimsByFamily(state1, FAMILY);
+    expect(claimsRun1.length).toBeGreaterThan(0);
+
+    // ── Run 2 (different query, same explicit family) ─────────────
+    const run2 = await svc.startRun({
+      query: 'TypeScript vs JavaScript performance',
+      provider: mockProvider,
+      config,
+      strategy: 'pipeline',
+      explicitFamilyId: FAMILY,
+    });
+    await waitForRun(svc, run2.runId);
+
+    const state2 = rebuildProjection(ALL_HANDLERS);
+
+    // Both runs' claims coexist under the same family
+    const allClaims = getClaimsByFamily(state2, FAMILY);
+    expect(allClaims.length).toBeGreaterThanOrEqual(claimsRun1.length);
+    expect(allClaims.length).toBeGreaterThan(0);
+
+    // Each claim's firstSeenRunId reflects which run created it
+    for (const claim of allClaims) {
+      expect(claim.firstSeenRunId).toBeTruthy();
+      expect(claim.lastSeenRunId).toBeTruthy();
+      const isValidRun = claim.firstSeenRunId === run1.runId || claim.firstSeenRunId === run2.runId;
+      expect(isValidRun).toBe(true);
+    }
+
+    // At least one claim from run1 should still exist with firstSeenRunId = run1
+    const claimsFromRun1 = allClaims.filter((c) => c.firstSeenRunId === run1.runId);
+    const claimsFromRun2 = allClaims.filter((c) => c.firstSeenRunId === run2.runId);
+    expect(claimsFromRun1.length).toBeGreaterThan(0);
+    expect(claimsFromRun2.length).toBeGreaterThan(0);
+
+    // The family is the same
+    const family = getFamilyById(state2, FAMILY);
+    expect(family).toBeDefined();
+
+    // Sources from both runs are accumulated
+    expect(state2.sources.size).toBeGreaterThan(0);
+  });
+
+  it('both runs are queryable by status', async () => {
+    const dbPath = path.join(tmpDir, 'longitudinal-status.db');
+    const config = makeConfig(dbPath);
+    initDb(dbPath);
+
+    const FAMILY = 'fam_lang_comparison';
+    const svc = createRunService();
+
+    const run1 = await svc.startRun({
+      query: 'Python vs Go concurrency',
+      provider: mockProvider,
+      config,
+      strategy: 'pipeline',
+      explicitFamilyId: FAMILY,
+    });
+    await waitForRun(svc, run1.runId);
+
+    const run2 = await svc.startRun({
+      query: 'Python concurrency patterns',
+      provider: mockProvider,
+      config,
+      strategy: 'pipeline',
+      explicitFamilyId: FAMILY,
+    });
+    await waitForRun(svc, run2.runId);
+
+    // Both status checks succeed
+    const st1 = svc.getStatus(run1.runId);
+    const st2 = svc.getStatus(run2.runId);
+    expect(st1!.status).toBe('completed');
+    expect(st2!.status).toBe('completed');
+    expect(st1!.claimCount).toBeGreaterThan(0);
+    expect(st2!.claimCount).toBeGreaterThan(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Property 3: Full pipeline through MCP tool handlers
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Property 3: full pipeline through MCP tool handlers', () => {
+  it('start → poll status → query knowledge → rollback → confirm rollback', async () => {
+    const dbPath = path.join(tmpDir, 'mcp-handler-test.db');
+    const config = makeConfig(dbPath);
+    initDb(dbPath);
+
+    const svc = createRunService();
+    const deps = {
+      runService: svc,
+      config,
+      getProvider: async () => mockProvider,
+    };
+
+    // ── Step 1: start via handleResearchTool ──────────────────────
+    const startResult = await handleResearchTool(
+      { action: 'start', query: 'Node.js event loop internals', strategy: 'pipeline' },
+      deps,
+    );
+    const runId = startResult.runId as string;
+    const familyId = startResult.familyId as string;
+    expect(runId).toBeTruthy();
+    expect(familyId).toBeTruthy();
+
+    // ── Step 2: poll status until completed ───────────────────────
+    const deadline = Date.now() + 15_000;
+    let completed = false;
+    while (Date.now() < deadline) {
+      const pollResult = await handleResearchTool({ action: 'status', runId }, deps);
+      if ((pollResult as Record<string, unknown>).status === 'completed') {
+        completed = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(completed).toBe(true);
+
+    // ── Step 3: query knowledge.claims ────────────────────────────
+    const state = rebuildProjection(ALL_HANDLERS);
+    const claimsResult = handleKnowledgeTool(
+      { action: 'claims', familyId },
+      state,
+    );
+    const claims = (claimsResult as Record<string, unknown>).claims as Array<Record<string, unknown>>;
+    expect(claims.length).toBeGreaterThan(0);
+
+    // ── Step 4: query knowledge.evidence for first claim ──────────
+    const firstClaimId = claims[0]!.id as string;
+    const evidenceResult = handleKnowledgeTool(
+      { action: 'evidence', claimId: firstClaimId },
+      state,
+    );
+    const evidence = (evidenceResult as Record<string, unknown>).evidence as Array<Record<string, unknown>>;
+    expect(evidence.length).toBeGreaterThan(0);
+
+    // ── Step 5: query knowledge.contradictions ────────────────────
+    const contradictionsResult = handleKnowledgeTool(
+      { action: 'contradictions', familyId },
+      state,
+    );
+    expect(contradictionsResult).toHaveProperty('contradictions');
+
+    // ── Step 6: query knowledge.gaps ──────────────────────────────
+    const gapsResult = handleKnowledgeTool(
+      { action: 'gaps', familyId },
+      state,
+    );
+    expect(gapsResult).toHaveProperty('gaps');
+
+    // ── Step 7: query knowledge.families ──────────────────────────
+    const familiesResult = handleKnowledgeTool(
+      { action: 'families', familyId },
+      state,
+    );
+    expect((familiesResult as Record<string, unknown>).found).toBe(true);
+
+    // ── Step 8: rollback via handleResearchTool ───────────────────
+    const rollbackResult = await handleResearchTool({ action: 'rollback', runId }, deps);
+    expect(rollbackResult.skipped).toBeGreaterThanOrEqual(0);
+    expect(rollbackResult.blocked).toBeDefined();
+
+    // ── Step 9: after rollback, claims are gone from projection ───
+    const stateAfterRollback = rebuildProjection(ALL_HANDLERS);
+    const claimsAfterRollback = getClaimsByFamily(stateAfterRollback, familyId);
+    expect(claimsAfterRollback.length).toBe(0);
+
+    // Evidence gone too (linked to rolled-back claims)
+    const evidenceAfterRollback = claimsAfterRollback.flatMap((c) =>
+      getEvidenceForClaim(stateAfterRollback, c.id),
+    );
+    expect(evidenceAfterRollback.length).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sanity: all three properties can run in sequence on same db
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('combined: restart + longitudinal + MCP handlers', () => {
+  it('run, restart, run again with same family, then verify via MCP tool handlers', async () => {
+    const dbPath = path.join(tmpDir, 'combined-test.db');
+    const config = makeConfig(dbPath);
+    const FAMILY = 'fam_combined_test';
+
+    // ── Phase 1: first run ────────────────────────────────────────
+    initDb(dbPath);
+    const svc = createRunService();
+
+    const run1 = await svc.startRun({
+      query: 'Rust memory safety guarantees',
+      provider: mockProvider,
+      config,
+      strategy: 'pipeline',
+      explicitFamilyId: FAMILY,
+    });
+    await waitForRun(svc, run1.runId);
+
+    // ── Phase 2: restart ──────────────────────────────────────────
+    closeDb();
+    expect(fs.existsSync(dbPath)).toBe(true);
+    initDb(dbPath);
+
+    // State survives restart
+    const state1 = rebuildProjection(ALL_HANDLERS);
+    const claims1 = getClaimsByFamily(state1, FAMILY);
+    expect(claims1.length).toBeGreaterThan(0);
+
+    // ── Phase 3: second run (longitudinal accumulation) ───────────
+    const svc2 = createRunService();
+    const run2 = await svc2.startRun({
+      query: 'Rust ownership model explained',
+      provider: mockProvider,
+      config,
+      strategy: 'pipeline',
+      explicitFamilyId: FAMILY,
+    });
+    await waitForRun(svc2, run2.runId);
+
+    // ── Phase 4: verify via MCP tool handlers ─────────────────────
+    const deps = {
+      runService: svc2,
+      config,
+      getProvider: async () => mockProvider,
+    };
+
+    const state2 = rebuildProjection(ALL_HANDLERS);
+
+    // Claims from both runs coexist
+    const allClaims = handleKnowledgeTool({ action: 'claims', familyId: FAMILY }, state2);
+    const claimList = (allClaims as Record<string, unknown>).claims as Array<Record<string, unknown>>;
+    expect(claimList.length).toBeGreaterThanOrEqual(claims1.length);
+
+    // Status of both runs is completed
+    const st1Result = await handleResearchTool({ action: 'status', runId: run1.runId }, deps);
+    const st2Result = await handleResearchTool({ action: 'status', runId: run2.runId }, deps);
+    expect((st1Result as Record<string, unknown>).status).toBe('completed');
+    expect((st2Result as Record<string, unknown>).status).toBe('completed');
+
+    // Rollback run2 only — run1's claims and family survive
+    await handleResearchTool({ action: 'rollback', runId: run2.runId }, deps);
+
+    const state3 = rebuildProjection(ALL_HANDLERS);
+    const claimsAfterRollback = getClaimsByFamily(state3, FAMILY);
+
+    // Claims from run2 are gone, claims from run1 survive
+    for (const c of claimsAfterRollback) {
+      expect(c.firstSeenRunId).toBe(run1.runId);
+    }
+
+    // Family still exists (created by run1, not rolled back)
+    const family = getFamilyById(state3, FAMILY);
+    expect(family).toBeDefined();
+  });
+});

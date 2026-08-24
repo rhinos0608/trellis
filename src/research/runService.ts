@@ -89,11 +89,21 @@ function resolveFamilyForRun(
   projection: ProjectionState,
 ): { familyId: string; familyCreated: boolean; familyLabel: string; familyDescription: string } {
   if (input.explicitFamilyId !== undefined) {
+    const exists = projection.families.has(input.explicitFamilyId);
+    if (exists) {
+      return {
+        familyId: input.explicitFamilyId,
+        familyCreated: false,
+        familyLabel: '',
+        familyDescription: '',
+      };
+    }
+    // Family doesn't exist yet — create it so FAMILY_CREATED is emitted
     return {
       familyId: input.explicitFamilyId,
-      familyCreated: false,
-      familyLabel: '',
-      familyDescription: '',
+      familyCreated: true,
+      familyLabel: input.explicitFamilyId,
+      familyDescription: input.query,
     };
   }
 
