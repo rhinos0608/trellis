@@ -32,10 +32,6 @@ function rebuildState(): ProjectionState {
   return rebuildProjection(ALL_HANDLERS);
 }
 
-function emptyState(): ProjectionState {
-  return { families: new Map() } as ProjectionState;
-}
-
 // ── Init config + db (sync, always succeeds) ──────────────────────
 const config = loadConfig();
 const dbPath = config.storage.dbPath;
@@ -106,8 +102,10 @@ server.registerTool('knowledge', {
   let state: ProjectionState;
   try {
     state = rebuildState();
-  } catch {
-    state = emptyState();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error({ err: msg }, 'knowledge tool: projection rebuild failed');
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ error: `Projection rebuild failed: ${msg}` }, null, 2) }] };
   }
   const result = handleKnowledgeTool(input, state);
   return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };

@@ -18,20 +18,15 @@ import {
 import type { ProjectionState, EventHandlerRegistry } from './projectionState.js';
 
 // ── Audit-only events (never project, just logged) ──────────────────
-// Matches search-mcp's AUDIT_ONLY_EVENTS set, extended for Trellis.
-const AUDIT_ONLY_EVENTS: ReadonlySet<TrellisEventType> = new Set([
-  'RUN_STARTED',
-  'RUN_COMPLETED',
-  'RUN_FAILED',
-  'PROJECTION_REBUILT',
-  'CLAIM_EXTRACTED',
-  'EXTRACTION_FAILED',
-  'RUN_ROLLED_BACK',
-  'FAMILY_RESOLVED',
-  'THREAD_RESOLVED',
-  'SYNTHESIS_COMPLETED',
-  'RUN_CANCELLED',
-]);
+// Derived from ROLLBACK_CLASS so there is a single source of truth.
+// Previously a parallel hardcoded set drifted: THREAD_RESOLVED was
+// audit_only here but pure_run_local in ROLLBACK_CLASS, causing
+// handleThreadResolved to be dead code.
+const AUDIT_ONLY_EVENTS: ReadonlySet<TrellisEventType> = new Set(
+  (Object.entries(ROLLBACK_CLASS) as [TrellisEventType, string][])
+    .filter(([, cls]) => cls === 'audit_only')
+    .map(([type]) => type),
+);
 
 // ── Rollback skip logic ─────────────────────────────────────────────
 
@@ -54,7 +49,9 @@ function isEventSkippedByRollback(
   // dynamic_edge: skip only if the edge was added by this same rolled-back run
   if (rollbackClass === 'dynamic_edge') {
     const payload = event.payload as Record<string, unknown>;
-    const edgeId = payload.edge_id as string | undefined;
+    // EDGE_REMOVED payload uses `edgeId` (camelCase);
+    // EDGE_ADDED payload is a ClaimRelation with field `id`.
+    const edgeId = (payload.edgeId ?? payload.id) as string | undefined;
     if (edgeId !== undefined) {
       const existingEdge = state.claimRelations.get(edgeId);
       if (existingEdge?.runId === event.runId) {

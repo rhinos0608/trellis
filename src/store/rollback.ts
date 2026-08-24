@@ -4,11 +4,24 @@
  * For pure_run_local / audit_only / dynamic_edge: replay-time skip only
  * (handled by projectionBuilder — no action needed here).
  *
- * For cross_run_mutation: APPEND a compensating event that reverses the
- * effect. Detects interference from later runs and returns blocked when
- * unresolvable.
+ * For cross_run_mutation: APPEND compensating events that reverse the
+ * original mutation. Detects interference from later runs and returns
+ * blocked when unresolvable.
  *
  * Never guesses or silently misattributes data.
+ *
+ * ## Known limitations
+ *
+ * - ENTITY_MERGED compensation recreates the merged-away entities with their
+ *   pre-merge label/aliases/metadata but does NOT strip the survivor's
+ *   accumulated aliases/metadata (the survivor's pre-merge snapshot is never
+ *   stored in the forward payload).
+ *
+ * - FAMILY_MERGED compensation recreates the merged-away families as new
+ *   FAMILY_CREATED records but does NOT automatically reattribute entities or
+ *   threads back to those families (that requires a FAMILY_CLASSIFIED event
+ *   per entity, which the simple flat reattributedEntityIds payload cannot
+ *   disambiguate for the multi-family case).
  */
 
 import { logger } from '../logger.js';
@@ -19,7 +32,9 @@ import type {
   RollbackOutcome,
   EntityMergedPayload,
   EntitySplitPayload,
+  EntityMergeSnapshot,
   FamilyMergedPayload,
+  FamilyMergeSnapshot,
   RelabelPayload,
   ValueRevisionPayload,
   SourceChangedPayload,
@@ -42,28 +57,70 @@ function hasLaterInterference(
 
 // ── Compensating event synthesis ────────────────────────────────────
 
+/**
+ * Synthesize one or more compensating events for a cross_run_mutation event.
+ *
+ * Returns `EventEnvelope[]` with at least one element on success,
+ * or `null` when later interference makes safe reversal impossible.
+ *
+ * For most event types the array has exactly one element; for FAMILY_MERGED
+ * it may have multiple (one FAMILY_CREATED per merged-away family).
+ */
 function synthesizeCompensation(
   original: EventEnvelope,
-  _state: ProjectionState,
-): EventEnvelope | null {
+  state: ProjectionState,
+): EventEnvelope[] | null {
   const rollbackTimestamp = new Date().toISOString();
 
   switch (original.eventType) {
     case 'ENTITY_MERGED': {
       const p = original.payload as EntityMergedPayload;
-      // Check interference on each merged entity
+      // Interference check: survivor + every merged entity.
+      // If any of them was touched by a later run, compensation is unsafe.
+      if (hasLaterInterference(p.survivorId, original.timestamp, original.runId)) {
+        return null;
+      }
       for (const mergedId of p.mergedIds) {
         if (hasLaterInterference(mergedId, original.timestamp, original.runId)) {
-          return null; // blocked — signal to caller
+          return null;
         }
       }
-      // Reverse: split survivor back into original parts
+
+      // Build EntitySplitPayload: recreate the merged-away entities using
+      // the real snapshots from the forward event (these carry pre-merge
+      // label/aliases/metadata for each merged entity).
+      const restoredSnapshots: EntityMergeSnapshot[] = p.mergedSnapshots.map(
+        (snap) => ({
+          id: snap.id,
+          label: snap.label,
+          aliases: [...snap.aliases],
+          metadata: { ...snap.metadata },
+          claimIds: [...snap.claimIds],
+          evidenceIds: [...snap.evidenceIds],
+        }),
+      );
+
+      // Survivor snapshot: the survivor's current state in the projection
+      // includes accumulated aliases/metadata from the merge — we record
+      // that so the EntitySplit handler at least knows what it was working
+      // with, even though we cannot perfectly restore the pre-merge survivor.
+      const survivorEntity = state.entities.get(p.survivorId);
+      const originalSnapshot = survivorEntity
+        ? {
+            label: survivorEntity.label,
+            aliases: [...survivorEntity.aliases],
+            metadata: { ...survivorEntity.metadata },
+          }
+        : { label: '', aliases: [], metadata: {} };
+
       const inversePayload: EntitySplitPayload = {
         originalId: p.survivorId,
-        originalSnapshot: { label: '', aliases: [], metadata: {} },
-        resultingIds: p.mergedIds,
+        originalSnapshot,
+        resultingIds: [...p.mergedIds],
+        restoredSnapshots,
       };
-      return appendEvent({
+
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'ENTITY_SPLIT',
         eventVersion: 1,
@@ -74,23 +131,52 @@ function synthesizeCompensation(
         entityType: 'entity',
         payload: inversePayload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'ENTITY_SPLIT': {
       const p = original.payload as EntitySplitPayload;
-      // Check interference on each resulting entity
+      // Interference check: original entity + every resulting entity.
+      if (hasLaterInterference(p.originalId, original.timestamp, original.runId)) {
+        return null;
+      }
       for (const rid of p.resultingIds) {
         if (hasLaterInterference(rid, original.timestamp, original.runId)) {
           return null;
         }
       }
-      // Reverse: merge the split pieces back
+
+      // Build mergedSnapshots for the compensating ENTITY_MERGED event.
+      // Prefer restoredSnapshots (carry full per-entity data) when present;
+      // fall back to live projection state for the current label/aliases/metadata.
+      const mergedSnapshots: EntityMergeSnapshot[] = p.restoredSnapshots
+        ? p.restoredSnapshots.map((snap) => ({
+            id: snap.id,
+            label: snap.label,
+            aliases: [...snap.aliases],
+            metadata: { ...snap.metadata },
+            claimIds: [...snap.claimIds],
+            evidenceIds: [...snap.evidenceIds],
+          }))
+        : p.resultingIds.map((rid) => {
+            const entity = state.entities.get(rid);
+            return {
+              id: rid,
+              label: entity?.label ?? '',
+              aliases: entity ? [...entity.aliases] : [],
+              metadata: entity ? { ...entity.metadata } : {},
+              claimIds: [] as string[],
+              evidenceIds: [] as string[],
+            };
+          });
+
       const inversePayload: EntityMergedPayload = {
         survivorId: p.originalId,
-        mergedIds: p.resultingIds,
-        mergedSnapshots: [],
+        mergedIds: [...p.resultingIds],
+        mergedSnapshots,
       };
-      return appendEvent({
+
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'ENTITY_MERGED',
         eventVersion: 1,
@@ -101,6 +187,7 @@ function synthesizeCompensation(
         entityType: 'entity',
         payload: inversePayload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'NODE_RELABELED': {
@@ -113,7 +200,7 @@ function synthesizeCompensation(
         oldLabel: p.newLabel,
         newLabel: p.oldLabel,
       };
-      return appendEvent({
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'NODE_RELABELED',
         eventVersion: 1,
@@ -124,6 +211,7 @@ function synthesizeCompensation(
         entityType: 'entity',
         payload: inversePayload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'NODE_METADATA_UPDATED':
@@ -139,7 +227,7 @@ function synthesizeCompensation(
         oldValue: p.newValue,
         newValue: p.oldValue,
       };
-      return appendEvent({
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: original.eventType,
         eventVersion: 1,
@@ -150,6 +238,7 @@ function synthesizeCompensation(
         entityType: null,
         payload: inversePayload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'SOURCE_CHANGED': {
@@ -162,7 +251,7 @@ function synthesizeCompensation(
         oldContentHash: p.newContentHash,
         newContentHash: p.oldContentHash,
       };
-      return appendEvent({
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'SOURCE_CHANGED',
         eventVersion: 1,
@@ -173,17 +262,15 @@ function synthesizeCompensation(
         entityType: 'source',
         payload: inversePayload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'SOURCE_RETRACTED': {
-      // Source retraction reversal = re-add source. Need the original
-      // SOURCE_ADDED event to reconstruct — this is a complex case.
-      // For now, block if we can't find the original add.
+      // Source retraction reversal = re-add source from original SOURCE_ADDED.
       const p = original.payload as { sourceId: string };
       if (hasLaterInterference(p.sourceId, original.timestamp, original.runId)) {
         return null;
       }
-      // Find original SOURCE_ADDED for this source
       const addedEvents = queryEvents({ eventType: 'SOURCE_ADDED' });
       const originalAdd = addedEvents.find(
         (e) => (e.payload as Record<string, unknown>).id === p.sourceId,
@@ -191,7 +278,7 @@ function synthesizeCompensation(
       if (originalAdd === undefined) {
         return null; // can't reconstruct
       }
-      return appendEvent({
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'SOURCE_ADDED',
         eventVersion: 1,
@@ -202,6 +289,7 @@ function synthesizeCompensation(
         entityType: 'source',
         payload: originalAdd.payload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'FAMILY_RENAMED': {
@@ -214,7 +302,7 @@ function synthesizeCompensation(
         oldLabel: p.newLabel,
         newLabel: p.oldLabel,
       };
-      return appendEvent({
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'FAMILY_RENAMED',
         eventVersion: 1,
@@ -225,42 +313,55 @@ function synthesizeCompensation(
         entityType: 'family',
         payload: inversePayload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'FAMILY_MERGED': {
       const p = original.payload as FamilyMergedPayload;
+      // Interference check: survivor + every merged family.
+      if (hasLaterInterference(p.survivorFamilyId, original.timestamp, original.runId)) {
+        return null;
+      }
       for (const mergedId of p.mergedFamilyIds) {
         if (hasLaterInterference(mergedId, original.timestamp, original.runId)) {
           return null;
         }
       }
-      // Reverse: recreate the merged families
-      const inversePayload: FamilyMergedPayload = {
-        survivorFamilyId: p.survivorFamilyId,
-        mergedFamilyIds: p.mergedFamilyIds,
-        mergedSnapshots: p.mergedSnapshots,
-        reattributedEntityIds: p.reattributedEntityIds,
-      };
-      return appendEvent({
-        timestamp: rollbackTimestamp,
-        eventType: 'FAMILY_MERGED',
-        eventVersion: 1,
-        runId: original.runId,
-        batchId: null,
-        actor: 'rollback',
-        entityId: p.survivorFamilyId,
-        entityType: 'family',
-        payload: inversePayload,
-      });
+
+      // Recreate each merged-away family as a FAMILY_CREATED event.
+      // Using FamilyCreatedPayload shape (snake_case family_id) matching
+      // workspace/projectionHandlers.ts's handleFamilyCreated.
+      const events: EventEnvelope[] = [];
+      const snapshots: FamilyMergeSnapshot[] = p.mergedSnapshots;
+      for (const mergedId of p.mergedFamilyIds) {
+        const snap = snapshots.find((s) => s.id === mergedId);
+        const created = appendEvent({
+          timestamp: rollbackTimestamp,
+          eventType: 'FAMILY_CREATED',
+          eventVersion: 1,
+          runId: original.runId,
+          batchId: null,
+          actor: 'rollback',
+          entityId: mergedId,
+          entityType: 'family',
+          payload: {
+            family_id: mergedId,
+            label: snap?.label ?? mergedId,
+            description: snap?.description,
+          },
+        });
+        if (created === null) return null;
+        events.push(created);
+      }
+      return events.length > 0 ? events : null;
     }
 
     case 'FAMILY_RELATION_REMOVED': {
-      // Need to find original FAMILY_RELATED event to reconstruct
       const p = original.payload as { familyId: string; relatedFamilyId: string };
       if (hasLaterInterference(p.familyId, original.timestamp, original.runId)) {
         return null;
       }
-      return appendEvent({
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'FAMILY_RELATED',
         eventVersion: 1,
@@ -271,6 +372,7 @@ function synthesizeCompensation(
         entityType: 'family',
         payload: original.payload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'CONTRADICTION_RESOLVED': {
@@ -283,7 +385,7 @@ function synthesizeCompensation(
         previousStatus: p.newStatus,
         newStatus: p.previousStatus,
       };
-      return appendEvent({
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'CONTRADICTION_RESOLVED',
         eventVersion: 1,
@@ -294,6 +396,7 @@ function synthesizeCompensation(
         entityType: 'contradiction',
         payload: inversePayload,
       });
+      return event !== null ? [event] : null;
     }
 
     case 'GAP_RESOLVED': {
@@ -306,7 +409,7 @@ function synthesizeCompensation(
         previousStatus: p.newStatus,
         newStatus: p.previousStatus,
       };
-      return appendEvent({
+      const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'GAP_RESOLVED',
         eventVersion: 1,
@@ -317,6 +420,7 @@ function synthesizeCompensation(
         entityType: 'gap',
         payload: inversePayload,
       });
+      return event !== null ? [event] : null;
     }
 
     default:
@@ -328,7 +432,7 @@ function synthesizeCompensation(
 
 /**
  * Roll back a single cross_run_mutation event.
- * Returns executed (with inverse event id) or blocked (with reason).
+ * Returns executed (with representative inverse event id) or blocked (with reason).
  */
 export function rollbackCrossRunMutation(
   event: EventEnvelope,
@@ -342,31 +446,48 @@ export function rollbackCrossRunMutation(
     };
   }
 
-  const inverse = synthesizeCompensation(event, state);
+  const inverses = synthesizeCompensation(event, state);
 
-  if (inverse !== null) {
-    logger.info(
-      { originalEventId: event.id, inverseEventId: inverse.id, eventType: event.eventType },
-      'store: cross_run_mutation rollback executed',
-    );
-    return { kind: 'executed', inverseEventId: inverse.id };
+  if (inverses === null || inverses.length === 0) {
+    return {
+      kind: 'blocked',
+      reason: `Later interference detected for event ${event.id} (${event.eventType}) — cannot safely reverse without guessing`,
+    };
   }
 
-  return {
-    kind: 'blocked',
-    reason: `Later interference detected for event ${event.id} (${event.eventType}) — cannot safely reverse without guessing`,
-  };
+  // synthesizeCompensation guarantees non-empty array when non-null
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  const first: EventEnvelope = inverses[0]!;
+  logger.info(
+    {
+      originalEventId: event.id,
+      eventType: event.eventType,
+      inverseCount: inverses.length,
+      representativeInverseId: first.id,
+    },
+    'store: cross_run_mutation rollback executed',
+  );
+  return { kind: 'executed', inverseEventId: first.id };
 }
 
 /**
  * Roll back an entire run. For pure_run_local/audit_only/dynamic_edge:
  * mark in rolledBackRuns (replay-time skip). For cross_run_mutation events
  * in the run: attempt individual compensation.
+ *
+ * Idempotent: if the run was already rolled back (RUN_ROLLED_BACK event
+ * exists), returns the previous outcome without reprocessing.
  */
 export function rollbackRun(
   runId: string,
   state: ProjectionState,
 ): { skipped: number; executed: number; blocked: { eventId: string; reason: string }[] } {
+  // Idempotency: if already rolled back, skip.
+  if (state.rolledBackRuns.has(runId)) {
+    logger.info({ runId }, 'store: run already rolled back — skipping');
+    return { skipped: 0, executed: 0, blocked: [] };
+  }
+
   // Persist the rollback as a RUN_ROLLED_BACK event so the projection
   // builder's pre-scan picks it up on future rebuilds.
   appendEvent({

@@ -110,7 +110,7 @@ export const ROLLBACK_CLASS: Record<TrellisEventType, RollbackClass> = {
   // new
   FAMILY_RESOLVED: 'audit_only',
   THREAD_CREATED: 'pure_run_local',
-  THREAD_RESOLVED: 'audit_only',
+  THREAD_RESOLVED: 'pure_run_local',
   SOURCE_READ: 'pure_run_local',
   CLAIM_ACCEPTED: 'pure_run_local',
   EVIDENCE_LINKED: 'pure_run_local',
@@ -165,6 +165,13 @@ export interface EntitySplitPayload {
   originalId: string;
   originalSnapshot: { label: string; aliases: string[]; metadata: Record<string, unknown> };
   resultingIds: string[];
+  /**
+   * Full per-entity snapshots for each resulting id, when this split is a
+   * rollback compensation for a prior ENTITY_MERGED (the only current
+   * producer of ENTITY_SPLIT). Without this the projection handler has no
+   * data to recreate the resulting entities' label/aliases/metadata from.
+   */
+  restoredSnapshots?: EntityMergeSnapshot[];
 }
 
 export interface FamilyMergeSnapshot {

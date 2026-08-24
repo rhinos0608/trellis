@@ -233,9 +233,8 @@ describe('handleResearchTool', () => {
         throw new Error('Provider not configured');
       },
     };
-    await expect(
-      handleResearchTool({ action: 'start', query: 'test' }, deps),
-    ).rejects.toThrow('Provider not configured');
+    const result = await handleResearchTool({ action: 'start', query: 'test' }, deps);
+    expect(result).toEqual({ error: 'Provider not configured' });
   });
 });
 

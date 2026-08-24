@@ -130,8 +130,8 @@ export function appendEvents(events: NewEventInput[]): EventEnvelope[] {
     txn();
     return result;
   } catch (err) {
-    logger.warn({ err, count: events.length }, 'store: appendEvents failed');
-    return [];
+    logger.error({ err, count: events.length }, 'store: appendEvents failed');
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }
 
@@ -202,8 +202,8 @@ export function queryEvents(opts: QueryEventsOpts = {}): EventEnvelope[] {
     const rows = db.prepare(sql).all(params) as EventRow[];
     return rows.map(rowToEnvelope);
   } catch (err) {
-    logger.warn({ err, opts }, 'store: queryEvents failed');
-    return [];
+    logger.error({ err, opts }, 'store: queryEvents failed');
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }
 
