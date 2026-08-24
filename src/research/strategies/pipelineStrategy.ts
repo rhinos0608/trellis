@@ -66,6 +66,7 @@ export class PipelineStrategy implements ResearchStrategy {
   async analyze(query: string, ctx: StrategyContext): Promise<ResearchResult> {
     const startTime = Date.now();
     this.progress = [];
+    ctx.state.initialize(query, ctx.budget);
 
     logger.info({ query, depth: ctx.depth }, 'Pipeline research started');
     await this.reportProgress(ctx, 0, 'Starting research', 'initializing');

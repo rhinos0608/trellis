@@ -221,6 +221,7 @@ export class AgentStrategy implements ResearchStrategy {
     }
 
     logger.info({ query }, 'Agent strategy starting');
+    ctx.state.initialize(query, ctx.budget);
 
     const systemPrompt = this.buildSystemPrompt();
     let iteration = 0;
