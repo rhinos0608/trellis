@@ -30,8 +30,12 @@ function shutdown(exitCode = 0): void {
   if (exitCode !== 0) process.exit(exitCode);
 }
 
-process.on('SIGINT', () => shutdown(0));
-process.on('SIGTERM', () => shutdown(0));
+process.on('SIGINT', () => {
+  shutdown(0);
+});
+process.on('SIGTERM', () => {
+  shutdown(0);
+});
 process.on('uncaughtException', (err: unknown) => {
   logger.fatal({ err }, 'Uncaught exception');
   shutdown(1);
@@ -41,7 +45,7 @@ process.on('unhandledRejection', (err: unknown) => {
   shutdown(1);
 });
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   logger.fatal({ err }, 'Failed to start Trellis MCP server');
   process.exit(1);
 });
