@@ -10,6 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { TrellisConfig } from '../../config/index.js';
 import { logger } from '../../logger.js';
+import { withRetry, type RetryOptions } from '../../research/retry.js';
 
 export interface ToolCallResult {
   /** Parsed tool result data (JSON-deserialized from MCP response). */
@@ -50,7 +51,7 @@ export async function createSearchMcpClient(
     'search-mcp server connected, tools discovered',
   );
 
-  return {
+  return wrapClientWithRetry({
     async callTool(
       name: string,
       args: Record<string, unknown>,
@@ -62,6 +63,25 @@ export async function createSearchMcpClient(
     async close(): Promise<void> {
       await client.close();
     },
+  });
+}
+
+/**
+ * Wrap a SearchMcpClient with retry logic for transient failures.
+ * Exported for direct use and testing; also applied inside createSearchMcpClient.
+ */
+export function wrapClientWithRetry(
+  client: SearchMcpClient,
+  opts?: RetryOptions,
+): SearchMcpClient {
+  return {
+    async callTool(
+      name: string,
+      args: Record<string, unknown>,
+    ): Promise<ToolCallResult> {
+      return withRetry(() => client.callTool(name, args), opts);
+    },
+    close: () => client.close(),
   };
 }
 
