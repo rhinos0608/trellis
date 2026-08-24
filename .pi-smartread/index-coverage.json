@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "records": [
+    {
+      "file": "eslint.config.js",
+      "phase": "context-graph",
+      "status": "partial",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/config/index.ts",
+      "phase": "context-graph",
+      "status": "indexed",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/graph/index.ts",
+      "phase": "context-graph",
+      "status": "partial",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/logger.ts",
+      "phase": "context-graph",
+      "status": "indexed",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/mcp/index.ts",
+      "phase": "context-graph",
+      "status": "partial",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/mcp/server.ts",
+      "phase": "context-graph",
+      "status": "indexed",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/providers/index.ts",
+      "phase": "context-graph",
+      "status": "partial",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/research/index.ts",
+      "phase": "context-graph",
+      "status": "partial",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/store/index.ts",
+      "phase": "context-graph",
+      "status": "partial",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "src/workspace/index.ts",
+      "phase": "context-graph",
+      "status": "partial",
+      "updatedAt": 1787552562023
+    },
+    {
+      "file": "test/smoke.test.ts",
+      "phase": "context-graph",
+      "status": "indexed",
+      "updatedAt": 1787552562023
+    }
+  ]
+}

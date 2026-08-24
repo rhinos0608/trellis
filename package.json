@@ -1,0 +1,37 @@
+{
+  "name": "trellis",
+  "version": "0.1.0",
+  "description": "Deep research orchestration + longitudinal knowledge graph — standalone MCP service",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/mcp/server.ts",
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/mcp/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "better-sqlite3": "^11.10.0",
+    "dotenv": "^16.4.0",
+    "pino": "^9.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^10.0.0",
+    "pino-pretty": "^13.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.25.0",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=20.16.0"
+  }
+}
