@@ -4,3 +4,5 @@ dist/
 *.db
 .cache/
 .pi-smartread*/
+src/.smart-edit-undo/
+.smart-edit-undo/
