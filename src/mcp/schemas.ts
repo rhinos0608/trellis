@@ -11,8 +11,8 @@ import { z } from 'zod';
 const ResearchStartSchema = z.object({
   action: z.literal('start'),
   query: z.string().describe('Research query'),
-  strategy: z.enum(['agent', 'pipeline', 'tree']).optional().describe('Research strategy (default: pipeline)'),
-  depth: z.string().optional().describe('Research depth (default: standard)'),
+  strategy: z.enum(['agent', 'pipeline']).optional().describe('Research strategy (default: pipeline)'),
+  depth: z.enum(['quick', 'standard', 'deep', 'exhaustive', 'tree']).optional().describe('Research depth (default: standard)'),
   familyId: z.string().optional().describe('Explicit family ID — skips resolution'),
   threadId: z.string().optional().describe('Thread ID for thread-level scoping'),
   sessionId: z.string().optional().describe('Session ID for correlation'),
