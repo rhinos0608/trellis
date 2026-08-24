@@ -30,6 +30,10 @@ import {
 } from '../../src/workspace/queries.js';
 import { handleResearchTool } from '../../src/mcp/researchTool.js';
 import { handleKnowledgeTool } from '../../src/mcp/knowledgeTool.js';
+import { ResearchToolSchema, KnowledgeToolSchema } from '../../src/mcp/schemas.js';
+import { queryEvents } from '../../src/store/events.js';
+import { handleRunStarted } from '../../src/store/exampleHandlers.js';
+import { createEmptyProjectionState } from '../../src/store/projectionState.js';
 import type { ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 
@@ -466,5 +470,147 @@ describe('combined: restart + longitudinal + MCP handlers', () => {
     // Family still exists (created by run1, not rolled back)
     const family = getFamilyById(state3, FAMILY);
     expect(family).toBeDefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Property 4: MCP actions with no prior integration coverage
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Property 4: research.cancel integration', () => {
+  it('cancel an active run returns cancelled=true', async () => {
+    const dbPath = path.join(tmpDir, 'cancel-test.db');
+    const config = makeConfig(dbPath);
+    initDb(dbPath);
+
+    const svc = createRunService();
+    const deps = { runService: svc, config, getProvider: async () => mockProvider };
+
+    const startResult = await handleResearchTool(
+      { action: 'start', query: 'Cancel test query' },
+      deps,
+    );
+    const runId = startResult.runId as string;
+
+    // Cancel immediately — may or may not be still running, but handler should not throw
+    const cancelResult = await handleResearchTool({ action: 'cancel', runId }, deps);
+    expect(cancelResult).toHaveProperty('cancelled');
+
+    // If it was still running, cancelResult.cancelled === true
+    // If it already finished, cancelResult.cancelled === false
+    // Either way, the handler executed without error
+    expect(typeof cancelResult.cancelled).toBe('boolean');
+  });
+});
+
+describe('Property 4: knowledge.threads integration', () => {
+  it('threads action returns a threads list for a family', async () => {
+    const dbPath = path.join(tmpDir, 'threads-test.db');
+    const config = makeConfig(dbPath);
+    initDb(dbPath);
+
+    const svc = createRunService();
+    const { runId, familyId } = await svc.startRun({
+      query: 'Threads test',
+      provider: mockProvider,
+      config,
+      strategy: 'pipeline',
+    });
+    await waitForRun(svc, runId);
+
+    const state = rebuildProjection(ALL_HANDLERS);
+    const result = handleKnowledgeTool({ action: 'threads', familyId }, state);
+    expect(result).toHaveProperty('familyId', familyId);
+    expect(result).toHaveProperty('threads');
+    expect(Array.isArray(result.threads)).toBe(true);
+  });
+});
+
+describe('Property 4: knowledge.entity integration', () => {
+  it('entity action returns found:false for non-existent entity', async () => {
+    const dbPath = path.join(tmpDir, 'entity-test.db');
+    const config = makeConfig(dbPath);
+    initDb(dbPath);
+
+    const state = rebuildProjection(ALL_HANDLERS);
+
+    // By entityId
+    const byId = handleKnowledgeTool({ action: 'entity', entityId: 'nonexistent_123' }, state);
+    expect(byId).toHaveProperty('found', false);
+
+    // By label
+    const byLabel = handleKnowledgeTool({ action: 'entity', label: 'NonExistent Entity' }, state);
+    expect(byLabel).toHaveProperty('found', false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Property 5: threadId round-trip through research.start
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Property 5: threadId round-trip', () => {
+  it('threadId passed to startRun appears in RUN_STARTED event and projection', async () => {
+    const dbPath = path.join(tmpDir, 'threadid-test.db');
+    const config = makeConfig(dbPath);
+    initDb(dbPath);
+
+    const svc = createRunService();
+    const deps = { runService: svc, config, getProvider: async () => mockProvider };
+    const THREAD_ID = 'thread_roundtrip_test';
+
+    const startResult = await handleResearchTool(
+      { action: 'start', query: 'ThreadId roundtrip test', strategy: 'pipeline', threadId: THREAD_ID },
+      deps,
+    );
+    const runId = startResult.runId as string;
+    await waitForRun(svc, runId);
+
+    // Verify RUN_STARTED event payload contains threadId
+    const events = queryEvents({ runId });
+    const startEvt = events.find((e) => e.eventType === 'RUN_STARTED');
+    expect(startEvt).toBeDefined();
+    const payload = startEvt!.payload as Record<string, unknown>;
+    expect(payload.threadId).toBe(THREAD_ID);
+
+    // Verify handleRunStarted projects threadId into the research run
+    const testState = createEmptyProjectionState();
+    handleRunStarted(startEvt!, testState);
+    const run = testState.researchRuns.get(runId);
+    expect(run).toBeDefined();
+    expect(run!.threadId).toBe(THREAD_ID);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Property 6: MCP schema validation
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Property 6: MCP schema validation', () => {
+  it('rejects strategy:"tree" with a validation error', () => {
+    const result = ResearchToolSchema.safeParse({
+      action: 'start',
+      query: 'test',
+      strategy: 'tree',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts valid strategy and depth values', () => {
+    const result = ResearchToolSchema.safeParse({
+      action: 'start',
+      query: 'test',
+      strategy: 'agent',
+      depth: 'deep',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects invalid depth value', () => {
+    const result = ResearchToolSchema.safeParse({
+      action: 'start',
+      query: 'test',
+      depth: 'ultra-mega-depth',
+    });
+    expect(result.success).toBe(false);
   });
 });

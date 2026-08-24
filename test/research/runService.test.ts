@@ -6,6 +6,7 @@ import {
   initDb,
   closeDb,
   appendEvents,
+  queryEvents,
   rebuildProjection,
   rollbackRun,
 } from '../../src/store/index.js';
@@ -518,6 +519,35 @@ describe('run lifecycle: concurrent runs do not cross-contaminate', () => {
     const projection2 = rebuildProjection(ALL_HANDLERS);
     expect(projection2.claims.has('clmA1')).toBe(false);
     expect(projection2.claims.has('clmB1')).toBe(true);
+  });
+});
+
+// ── FAMILY_RESOLVED event payload carries score + method ───────────
+
+describe('run lifecycle: FAMILY_RESOLVED event payload', () => {
+  it('includes score and method fields in FAMILY_RESOLVED event', async () => {
+    const svc = createRunService();
+
+    const { runId } = await svc.startRun({
+      query: 'TypeScript framework comparison',
+      provider: mockProvider,
+      config: mockConfig,
+      strategy: 'pipeline',
+    });
+
+    // Wait for background execution to persist events
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Query FAMILY_RESOLVED events for this run
+    const events = queryEvents({ eventType: 'FAMILY_RESOLVED', runId });
+    expect(events.length).toBeGreaterThanOrEqual(1);
+
+    const payload = events[0]!.payload as Record<string, unknown>;
+    expect(typeof payload.score).toBe('number');
+    expect(payload.method).toBe('lexical_manifest_overlap');
+    expect(typeof payload.familyId).toBe('string');
+    expect(typeof payload.query).toBe('string');
+    expect(typeof payload.isNew).toBe('boolean');
   });
 });
 

@@ -139,6 +139,92 @@ describe('resolveFamily', () => {
 
     expect(existing.lastActivity).toBe(later);
   });
+
+  it('returns score 0 when creating new family', () => {
+    const result = resolveFamily('quantum computing basics', [], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+
+    expect(result.score).toBe(0);
+    expect(result.isNew).toBe(true);
+  });
+
+  it('returns actual score when reusing existing family', () => {
+    const existing = makeFamily({
+      id: 'fam-1',
+      label: 'Vitest Testing',
+      manifest: {
+        scopeQuery: 'vitest configuration and testing',
+        scopeSummary: 'How to configure and use vitest for testing',
+        tags: ['vitest', 'testing', 'config'],
+      },
+    });
+
+    const result = resolveFamily('vitest testing configuration', [existing], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+
+    expect(result.isNew).toBe(false);
+    expect(result.score).toBeGreaterThan(0);
+    expect(typeof result.score).toBe('number');
+  });
+
+  it('returns candidates sorted descending by score', () => {
+    const famLow = makeFamily({
+      id: 'fam-low',
+      label: 'General JavaScript',
+      manifest: { scopeQuery: 'javascript web development' },
+    });
+    const famHigh = makeFamily({
+      id: 'fam-high',
+      label: 'Vitest Testing',
+      manifest: {
+        scopeQuery: 'vitest unit testing configuration',
+        tags: ['vitest', 'testing'],
+      },
+    });
+
+    // Force a reuse so candidates are populated above threshold
+    const result = resolveFamily('vitest testing setup', [famLow, famHigh], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+
+    expect(result.candidates).toBeDefined();
+    expect(result.candidates!.length).toBe(2);
+    expect(result.candidates![0].familyId).toBe('fam-high');
+    expect(result.candidates![0].score).toBeGreaterThanOrEqual(result.candidates![1].score);
+    expect(result.candidates![0].score).toBeGreaterThan(result.candidates![1].score);
+  });
+
+  it('returns candidates when no match creates new family', () => {
+    const existing = makeFamily({
+      id: 'fam-1',
+      label: 'React Hooks',
+      manifest: { scopeQuery: 'react hooks patterns', tags: ['react', 'hooks'] },
+    });
+
+    const result = resolveFamily('quantum computing basics', [existing], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+
+    expect(result.isNew).toBe(true);
+    expect(result.candidates).toBeDefined();
+    expect(result.candidates!.length).toBe(1);
+    expect(result.candidates![0].familyId).toBe('fam-1');
+  });
+
+  it('returns undefined candidates when no families exist', () => {
+    const result = resolveFamily('anything', [], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+
+    expect(result.candidates).toBeUndefined();
+  });
 });
 
 // ── projection handler tests ──────────────────────────────────────────────
