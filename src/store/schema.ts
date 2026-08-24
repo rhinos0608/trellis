@@ -43,8 +43,22 @@ export const SCHEMA_DDL = `
   );
 `;
 
+const MIGRATION_ADD_COLUMNS = [
+  'ALTER TABLE projection_checkpoints ADD COLUMN snapshot_json TEXT',
+  'ALTER TABLE projection_checkpoints ADD COLUMN rolled_back_run_ids TEXT',
+];
+
 export function initializeSchema(db: BetterSqliteDatabase): void {
   db.exec(SCHEMA_DDL);
+
+  // Add new columns if missing (safe to re-run: SQLite raises if column exists)
+  for (const sql of MIGRATION_ADD_COLUMNS) {
+    try {
+      db.prepare(sql).run();
+    } catch {
+      // column already exists — ignore
+    }
+  }
 
   const current = db
     .prepare('SELECT schema_version FROM projection_checkpoints WHERE id = ?')

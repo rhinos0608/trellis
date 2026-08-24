@@ -9,5 +9,5 @@ export { rebuildProjection, AUDIT_ONLY_EVENTS, isEventSkippedByRollback } from '
 export type { ProjectionRebuildResult } from './projectionBuilder.js';
 export { rollbackCrossRunMutation, rollbackRun } from './rollback.js';
 export { handleRunStarted, handleRunCompleted } from './exampleHandlers.js';
-export { createEmptyProjectionState } from './projectionState.js';
+export { createEmptyProjectionState, serializeProjectionState, deserializeProjectionState } from './projectionState.js';
 export type { ProjectionState, EventHandlerRegistry } from './projectionState.js';

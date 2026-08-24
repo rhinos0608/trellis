@@ -20,15 +20,17 @@ export interface ProjectionCheckpoint {
   eventCount: number;
   checksum: string;
   compatible: boolean;
+  snapshotJson?: string;
+  rolledBackRunIds?: string[];
 }
 
 const INSERT_CHECKPOINT_SQL = `
   INSERT INTO projection_checkpoints
     (id, created_at, event_cursor, projection_version, schema_version,
-     event_count, checksum, compatible)
+     event_count, checksum, compatible, snapshot_json, rolled_back_run_ids)
   VALUES
     (@id, @createdAt, @eventCursor, @projectionVersion, @schemaVersion,
-     @eventCount, @checksum, @compatible)
+     @eventCount, @checksum, @compatible, @snapshotJson, @rolledBackRunIds)
 `;
 
 const LATEST_COMPATIBLE_SQL = `
@@ -39,7 +41,7 @@ const LATEST_COMPATIBLE_SQL = `
 `;
 
 function rowToCheckpoint(row: Record<string, unknown>): ProjectionCheckpoint {
-  return {
+  const cp: ProjectionCheckpoint = {
     id: row.id as string,
     createdAt: row.created_at as string,
     eventCursor: row.event_cursor as string,
@@ -49,6 +51,13 @@ function rowToCheckpoint(row: Record<string, unknown>): ProjectionCheckpoint {
     checksum: row.checksum as string,
     compatible: Boolean(row.compatible),
   };
+  if (row.snapshot_json != null && row.snapshot_json !== '') {
+    cp.snapshotJson = row.snapshot_json as string;
+  }
+  if (row.rolled_back_run_ids != null && row.rolled_back_run_ids !== '') {
+    cp.rolledBackRunIds = JSON.parse(row.rolled_back_run_ids as string) as string[];
+  }
+  return cp;
 }
 
 /**
@@ -73,6 +82,8 @@ export function createCheckpoint(
   eventCursor: string,
   eventCount: number,
   checksum: string,
+  snapshotJson?: string,
+  rolledBackRunIds?: string[],
 ): ProjectionCheckpoint | null {
   const db = getDb();
   if (db === null) {
@@ -91,11 +102,13 @@ export function createCheckpoint(
       eventCount,
       checksum,
       compatible: 1,
+      snapshotJson: snapshotJson ?? null,
+      rolledBackRunIds: rolledBackRunIds !== undefined ? JSON.stringify(rolledBackRunIds) : null,
     };
 
     db.prepare(INSERT_CHECKPOINT_SQL).run(row);
 
-    return {
+    const cp: ProjectionCheckpoint = {
       id: row.id,
       createdAt: row.createdAt,
       eventCursor: row.eventCursor,
@@ -105,6 +118,9 @@ export function createCheckpoint(
       checksum: row.checksum,
       compatible: true,
     };
+    if (snapshotJson !== undefined) cp.snapshotJson = snapshotJson;
+    if (rolledBackRunIds !== undefined) cp.rolledBackRunIds = rolledBackRunIds;
+    return cp;
   } catch (err) {
     logger.warn({ err, eventCursor }, 'store: createCheckpoint failed');
     return null;

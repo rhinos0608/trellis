@@ -79,6 +79,61 @@ export interface ProjectionState {
   familyMergeHistory: Map<string, FamilyMergeRecord>;
 }
 
+// ── Serialization ──────────────────────────────────────────────────
+
+/** Serialize ProjectionState to JSON-safe object. All Maps → [key,value][] arrays, Sets → arrays. */
+export function serializeProjectionState(state: ProjectionState): string {
+  return JSON.stringify({
+    entities: [...state.entities],
+    claims: [...state.claims],
+    claimRelations: [...state.claimRelations],
+    contradictions: [...state.contradictions],
+    evidence: [...state.evidence],
+    sources: [...state.sources],
+    gaps: [...state.gaps],
+    families: [...state.families],
+    threads: [...state.threads],
+    researchRuns: [...state.researchRuns],
+    claimRelationsByFromClaimId: [...state.claimRelationsByFromClaimId].map(([k, v]) => [k, [...v]]),
+    claimRelationsByToClaimId: [...state.claimRelationsByToClaimId].map(([k, v]) => [k, [...v]]),
+    evidenceByClaimId: [...state.evidenceByClaimId].map(([k, v]) => [k, [...v]]),
+    claimsByFamilyId: [...state.claimsByFamilyId].map(([k, v]) => [k, [...v]]),
+    threadsByFamilyId: [...state.threadsByFamilyId].map(([k, v]) => [k, [...v]]),
+    entityFamilyMemberships: state.entityFamilyMemberships,
+    entityFamilyKeys: [...state.entityFamilyKeys],
+    rolledBackRuns: [...state.rolledBackRuns],
+    entityMergeHistory: [...state.entityMergeHistory],
+    familyMergeHistory: [...state.familyMergeHistory],
+  });
+}
+
+/** Deserialize a JSON string back into a live ProjectionState. */
+export function deserializeProjectionState(json: string): ProjectionState {
+  const raw = JSON.parse(json) as Record<string, unknown>;
+  return {
+    entities: new Map(raw.entities as [string, CanonicalEntity][]),
+    claims: new Map(raw.claims as [string, Claim][]),
+    claimRelations: new Map(raw.claimRelations as [string, ClaimRelation][]),
+    contradictions: new Map(raw.contradictions as [string, Contradiction][]),
+    evidence: new Map(raw.evidence as [string, Evidence][]),
+    sources: new Map(raw.sources as [string, Source][]),
+    gaps: new Map(raw.gaps as [string, Gap][]),
+    families: new Map(raw.families as [string, Family][]),
+    threads: new Map(raw.threads as [string, Thread][]),
+    researchRuns: new Map(raw.researchRuns as [string, ResearchRun][]),
+    claimRelationsByFromClaimId: new Map((raw.claimRelationsByFromClaimId as [string, string[]][]).map(([k, v]) => [k, new Set(v)])),
+    claimRelationsByToClaimId: new Map((raw.claimRelationsByToClaimId as [string, string[]][]).map(([k, v]) => [k, new Set(v)])),
+    evidenceByClaimId: new Map((raw.evidenceByClaimId as [string, string[]][]).map(([k, v]) => [k, new Set(v)])),
+    claimsByFamilyId: new Map((raw.claimsByFamilyId as [string, string[]][]).map(([k, v]) => [k, new Set(v)])),
+    threadsByFamilyId: new Map((raw.threadsByFamilyId as [string, string[]][]).map(([k, v]) => [k, new Set(v)])),
+    entityFamilyMemberships: raw.entityFamilyMemberships as EntityFamilyMembership[],
+    entityFamilyKeys: new Set(raw.entityFamilyKeys as string[]),
+    rolledBackRuns: new Set(raw.rolledBackRuns as string[]),
+    entityMergeHistory: new Map(raw.entityMergeHistory as [string, EntityMergeRecord][]),
+    familyMergeHistory: new Map(raw.familyMergeHistory as [string, FamilyMergeRecord][]),
+  };
+}
+
 export function createEmptyProjectionState(): ProjectionState {
   return {
     entities: new Map(),
