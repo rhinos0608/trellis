@@ -21,6 +21,7 @@ import { ResearchToolSchema, KnowledgeToolSchema } from './schemas.js';
 import { handleResearchTool, type ResearchToolDeps } from './researchTool.js';
 import { handleKnowledgeTool } from './knowledgeTool.js';
 import type { ResearchProvider } from '../providers/types.js';
+import { getProvider as getSharedProvider, closeProvider } from '../providers/searchMcp/owner.js';
 import type { ProjectionState } from '../store/projectionState.js';
 import { graphEventHandlers } from '../graph/index.js';
 import { workspaceEventHandlers } from '../workspace/index.js';
@@ -45,30 +46,9 @@ if (!db) {
 // ── RunService (owns in-flight bookkeeping, not a global singleton) ──
 const runService = createRunService();
 
-// ── Lazy provider init ─────────────────────────────────────────────
-let providerInstance: ResearchProvider | null = null;
-
+// ── Lazy provider init (process-wide shared owner) ────────────────
 async function getProvider(): Promise<ResearchProvider> {
-  if (providerInstance) return providerInstance;
-
-  const { args } = config.searchProvider;
-  if (args.length === 0) {
-    throw new Error(
-      'Search provider not configured. Set TRELLIS_SEARCH_MCP_PATH to point at the search-mcp entrypoint, then retry.',
-    );
-  }
-
-  try {
-    const { createSearchMcpProvider } = await import('../providers/searchMcp/index.js');
-    providerInstance = await createSearchMcpProvider(config);
-    logger.info('Search provider initialized');
-    return providerInstance;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `Failed to connect to search-mcp provider: ${msg}. Is search-mcp built and reachable?`,
-    );
-  }
+  return getSharedProvider(config);
 }
 
 // ── MCP Server ─────────────────────────────────────────────────────
@@ -115,29 +95,35 @@ server.registerTool('knowledge', {
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  runService.startScheduler();
   logger.info('Trellis MCP server started (2 tools: research, knowledge)');
 }
 
 // Shutdown handler
-function shutdown(exitCode = 0): void {
+let shuttingDown = false;
+async function shutdown(exitCode = 0): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info('Shutting down Trellis MCP server');
+  await runService.shutdownScheduler();
+  await closeProvider();
   closeDb();
   if (exitCode !== 0) process.exit(exitCode);
 }
 
-process.on('SIGINT', () => {
-  shutdown(0);
+process.once('SIGINT', () => {
+  void shutdown(0);
 });
-process.on('SIGTERM', () => {
-  shutdown(0);
+process.once('SIGTERM', () => {
+  void shutdown(0);
 });
 process.on('uncaughtException', (err: unknown) => {
   logger.fatal({ err }, 'Uncaught exception');
-  shutdown(1);
+  void shutdown(1);
 });
 process.on('unhandledRejection', (err: unknown) => {
   logger.fatal({ err }, 'Unhandled rejection');
-  shutdown(1);
+  void shutdown(1);
 });
 
 main().catch((err: unknown) => {

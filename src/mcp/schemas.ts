@@ -10,12 +10,12 @@ import { z } from 'zod';
 
 const ResearchStartSchema = z.object({
   action: z.literal('start'),
-  query: z.string().describe('Research query'),
+  query: z.string().trim().min(1).describe('Research query'),
   strategy: z.enum(['agent', 'pipeline']).optional().describe('Research strategy (default: pipeline)'),
   depth: z.enum(['quick', 'standard', 'deep', 'exhaustive', 'tree']).optional().describe('Research depth (default: standard)'),
-  familyId: z.string().optional().describe('Explicit family ID — skips resolution'),
-  threadId: z.string().optional().describe('Thread ID for thread-level scoping'),
-  sessionId: z.string().optional().describe('Session ID for correlation'),
+  familyId: z.string().trim().min(1).optional().describe('Explicit family ID — skips resolution'),
+  threadId: z.string().trim().min(1).optional().describe('Thread ID for thread-level scoping'),
+  sessionId: z.string().trim().min(1).optional().describe('Session ID for correlation'),
 });
 
 const ResearchStatusSchema = z.object({
@@ -33,11 +33,43 @@ const ResearchRollbackSchema = z.object({
   runId: z.string().describe('Run ID to roll back'),
 });
 
+const ResearchListSchema = z.object({
+  action: z.literal('list'),
+  status: z.string().optional(),
+  familyId: z.string().optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+  beforeSeq: z.number().int().min(0).optional(),
+});
+
+const ResearchHistorySchema = z.object({
+  action: z.literal('history'),
+  runId: z.string(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+
+const ResearchRetrySchema = z.object({
+  action: z.literal('retry'),
+  runId: z.string(),
+  idempotencyKey: z.string().optional(),
+  deadlineMs: z.number().int().min(1).optional(),
+});
+
+const ResearchContinueSchema = z.object({
+  action: z.literal('continue'),
+  familyId: z.string().trim().min(1),
+  depth: z.enum(['quick', 'standard']).optional(),
+  idempotencyKey: z.string().optional(),
+});
+
 export const ResearchToolSchema = z.discriminatedUnion('action', [
   ResearchStartSchema,
   ResearchStatusSchema,
   ResearchCancelSchema,
   ResearchRollbackSchema,
+  ResearchListSchema,
+  ResearchHistorySchema,
+  ResearchRetrySchema,
+  ResearchContinueSchema,
 ]);
 
 export type ResearchToolInput = z.infer<typeof ResearchToolSchema>;
