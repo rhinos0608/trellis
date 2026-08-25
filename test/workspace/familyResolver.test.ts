@@ -31,9 +31,10 @@ function makeEvent(
   payload: unknown,
   overrides?: Partial<EventEnvelope>,
 ): EventEnvelope {
+  idCounter++;
   return {
-    seq: overrides?.seq ?? ++idCounter,
-    id: overrides?.id ?? `evt-${idCounter}`,
+    seq: idCounter,
+    id: `evt-${idCounter}`,
     timestamp: overrides?.timestamp ?? FIXED_TIME,
     eventType: eventType as EventEnvelope['eventType'],
     eventVersion: 1,
@@ -44,6 +45,7 @@ function makeEvent(
     entityType: null,
     payload,
     payloadHash: crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+    ...overrides,
   };
 }
 

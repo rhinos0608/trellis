@@ -52,13 +52,12 @@ const EVENT_WEIGHTS: WeightedType[] = [
   { type: 'RUN_COMPLETED', weight: 5 },
 ];
 
-const TOTAL_WEIGHT = EVENT_WEIGHTS.reduce((s, w) => s + w.weight, 0);
 const SECONDARY_WEIGHTS = EVENT_WEIGHTS.filter(({ type }) =>
   !['NODE_ADDED', 'CLAIM_ACCEPTED', 'SOURCE_ADDED', 'FAMILY_CREATED'].includes(type),
 );
-const SECONDARY_TOTAL_WEIGHT = SECONDARY_WEIGHTS.reduce((s, w) => s + w.weight, 0);
 
-function pickWeighted(rand: number, weights = EVENT_WEIGHTS, totalWeight = TOTAL_WEIGHT): string {
+function pickWeighted(rand: number, weights = EVENT_WEIGHTS): string {
+  const totalWeight = weights.reduce((s, w) => s + w.weight, 0);
   let acc = 0;
   for (const w of weights) {
     acc += w.weight;
@@ -103,7 +102,7 @@ function generateEvents(count: number, offset: number): NewEventInput[] {
   const remainingCount = count - prerequisiteTypes.length;
   const eventTypes = [
     ...prerequisiteTypes,
-    ...Array.from({ length: remainingCount }, () => pickWeighted(rand(), SECONDARY_WEIGHTS, SECONDARY_TOTAL_WEIGHT)),
+    ...Array.from({ length: remainingCount }, () => pickWeighted(rand(), SECONDARY_WEIGHTS)),
   ];
 
   const events: NewEventInput[] = [];

@@ -54,7 +54,7 @@ const mockProvider: ResearchProvider = {
   search: async () => [
     { url: 'https://example.com/result1', title: 'Result One', snippet: 'first snippet' },
   ],
-  read: async (url) => ({
+  read: async (_ctx, url) => ({
     url,
     title: 'Mock Content Title',
     content: 'This is mock content that is definitely long enough to pass the threshold check for creating a finding from the extracted source.',
@@ -79,11 +79,23 @@ const ALL_HANDLERS = { ...graphEventHandlers, ...workspaceEventHandlers };
 
 let tmpDir: string;
 
+// Every RunService owns a live scheduler; if one is still running when a
+// test closes the db, its timers can append lifecycle events into the
+// NEXT test's fresh database and corrupt its run ledger. Track all
+// instances and shut them down before closeDb.
+const createdServices: ReturnType<typeof createRunService>[] = [];
+function trackedCreateRunService(): ReturnType<typeof createRunService> {
+  const svc = createRunService();
+  createdServices.push(svc);
+  return svc;
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-sys-'));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const svc of createdServices.splice(0)) await svc.shutdownScheduler();
   closeDb();
   try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* cleanup ok */ }
 });
@@ -119,7 +131,7 @@ describe('Property 1: process-restart survival', () => {
 
     // ── Phase 1: run a research cycle ─────────────────────────────
     initDb(dbPath);
-    const svc1 = createRunService();
+    const svc1 = trackedCreateRunService();
     const { runId, familyId } = await svc1.startRun({
       query: 'What are the benefits of TypeScript over JavaScript?',
       provider: mockProvider,
@@ -185,7 +197,7 @@ describe('Property 1: process-restart survival', () => {
     expect(stateAfter.sources.size).toBe(sourcesBeforeCount);
 
     // Run status still queryable via event store
-    const svc2 = createRunService();
+    const svc2 = trackedCreateRunService();
     const statusAfter = svc2.getStatus(runId);
     expect(statusAfter).not.toBeNull();
     expect(statusAfter!.status).toBe('completed');
@@ -206,7 +218,7 @@ describe('Property 2: multi-run longitudinal accumulation', () => {
     const FAMILY = 'fam_typescript_benefits';
 
     // ── Run 1 ─────────────────────────────────────────────────────
-    const svc = createRunService();
+    const svc = trackedCreateRunService();
     const run1 = await svc.startRun({
       query: 'Benefits of TypeScript',
       provider: mockProvider,
@@ -247,7 +259,8 @@ describe('Property 2: multi-run longitudinal accumulation', () => {
 
     // At least one claim from run1 should still exist with firstSeenRunId = run1
     const claimsFromRun1 = allClaims.filter((c) => c.firstSeenRunId === run1.runId);
-    const claimsFromRun2 = allClaims.filter((c) => c.firstSeenRunId === run2.runId);
+    // Run 2 reconciles same claim, so its observation updates lastSeenRunId.
+    const claimsFromRun2 = allClaims.filter((c) => c.lastSeenRunId === run2.runId);
     expect(claimsFromRun1.length).toBeGreaterThan(0);
     expect(claimsFromRun2.length).toBeGreaterThan(0);
 
@@ -265,7 +278,7 @@ describe('Property 2: multi-run longitudinal accumulation', () => {
     initDb(dbPath);
 
     const FAMILY = 'fam_lang_comparison';
-    const svc = createRunService();
+    const svc = trackedCreateRunService();
 
     const run1 = await svc.startRun({
       query: 'Python vs Go concurrency',
@@ -305,7 +318,7 @@ describe('Property 3: full pipeline through MCP tool handlers', () => {
     const config = makeConfig(dbPath);
     initDb(dbPath);
 
-    const svc = createRunService();
+    const svc = trackedCreateRunService();
     const deps = {
       runService: svc,
       config,
@@ -392,6 +405,91 @@ describe('Property 3: full pipeline through MCP tool handlers', () => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// Property 7: MCP research wire-format parity (Stage 8A refactor)
+// ═══════════════════════════════════════════════════════════════════
+
+// The research tool handler was refactored into a thin adapter over the
+// ResearchApplicationService (src/app). These assertions pin the exact
+// JSON response shapes for every action so the internal extraction
+// cannot silently change the MCP contract.
+
+describe('Property 7: research wire-format parity through application service', () => {
+  it('list/history/retry/continue/rollback responses keep their exact shapes', async () => {
+    const dbPath = path.join(tmpDir, 'parity-test.db');
+    const config = makeConfig(dbPath);
+    initDb(dbPath);
+
+    const FAMILY = 'fam_wire_parity';
+    const svc = trackedCreateRunService();
+    const deps = { runService: svc, config, getProvider: async () => mockProvider };
+
+    const startResult = await handleResearchTool(
+      { action: 'start', query: 'Wire parity query', strategy: 'pipeline', familyId: FAMILY },
+      deps,
+    );
+    // start response shape is exactly { runId, familyId }
+    expect(Object.keys(startResult).sort()).toEqual(['familyId', 'runId']);
+    const runId = startResult.runId as string;
+    const familyId = startResult.familyId as string;
+    expect(runId).toBeTruthy();
+    expect(familyId).toBe(FAMILY);
+
+    const finalStatus = await waitForRun(svc, runId);
+    expect(finalStatus.status).toBe('completed');
+
+    // status: { found: true } + full RunStatus spread
+    const statusResult = await handleResearchTool({ action: 'status', runId }, deps);
+    expect(statusResult).toMatchObject({ found: true, runId, familyId, status: 'completed', query: 'Wire parity query' });
+    expect(typeof (statusResult as Record<string, unknown>).startedAt).toBe('string');
+    expect(statusResult).toHaveProperty('progress');
+
+    // status for unknown run keeps the { found: false, error } shape
+    const unknown = await handleResearchTool({ action: 'status', runId: 'run_unknown' }, deps);
+    expect(unknown).toEqual({ found: false, error: 'Run not found: run_unknown' });
+
+    // list: top level { runs }, each entry has exactly the narrow summary fields
+    const listResult = await handleResearchTool({ action: 'list', familyId: FAMILY }, deps);
+    expect(Object.keys(listResult)).toEqual(['runs']);
+    const runs = (listResult as { runs: Array<Record<string, unknown>> }).runs;
+    expect(runs.length).toBeGreaterThanOrEqual(1);
+    for (const run of runs) {
+      expect(Object.keys(run).sort()).toEqual(
+        ['completedAt', 'createdAt', 'familyId', 'query', 'runId', 'status', 'strategy'],
+      );
+    }
+
+    // history: top level { runId, events }; each event { seq, eventType, timestamp, payload }
+    const historyResult = await handleResearchTool({ action: 'history', runId, limit: 50 }, deps);
+    expect(Object.keys(historyResult).sort()).toEqual(['events', 'runId']);
+    const historyEvents = (historyResult as { events: Array<Record<string, unknown>> }).events;
+    expect(historyEvents.length).toBeGreaterThan(0);
+    for (const event of historyEvents) {
+      expect(Object.keys(event).sort()).toEqual(['eventType', 'payload', 'seq', 'timestamp']);
+    }
+
+    // retry on a completed run keeps the catch-all { error } response shape
+    const retryResult = await handleResearchTool({ action: 'retry', runId }, deps);
+    expect(retryResult).toEqual({ error: 'Cannot retry run in status: completed' });
+
+    // continue: discriminated result carries familyId/followUpsUsed/followUpCap + status
+    const continueResult = await handleResearchTool({ action: 'continue', familyId: FAMILY }, deps);
+    const cr = continueResult as Record<string, unknown>;
+    expect(['queued', 'no_work', 'cap_reached']).toContain(cr.status);
+    expect(cr.familyId).toBe(FAMILY);
+    expect(typeof cr.followUpsUsed).toBe('number');
+    expect(cr.followUpCap).toBe(3);
+
+    // rollback: exact key set, readModelError omitted when absent
+    const rollbackResult = await handleResearchTool({ action: 'rollback', runId }, deps);
+    expect(Object.keys(rollbackResult).sort()).toEqual(['blocked', 'executed', 'readModelRebuilt', 'skipped']);
+    expect((rollbackResult as Record<string, unknown>).readModelRebuilt).toBe(true);
+    expect(Array.isArray((rollbackResult as Record<string, unknown>).blocked)).toBe(true);
+
+    await svc.shutdownScheduler();
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // Sanity: all three properties can run in sequence on same db
 // ═══════════════════════════════════════════════════════════════════════
@@ -404,7 +502,7 @@ describe('combined: restart + longitudinal + MCP handlers', () => {
 
     // ── Phase 1: first run ────────────────────────────────────────
     initDb(dbPath);
-    const svc = createRunService();
+    const svc = trackedCreateRunService();
 
     const run1 = await svc.startRun({
       query: 'Rust memory safety guarantees',
@@ -416,6 +514,7 @@ describe('combined: restart + longitudinal + MCP handlers', () => {
     await waitForRun(svc, run1.runId);
 
     // ── Phase 2: restart ──────────────────────────────────────────
+    await svc.shutdownScheduler();
     closeDb();
     expect(fs.existsSync(dbPath)).toBe(true);
     initDb(dbPath);
@@ -426,7 +525,7 @@ describe('combined: restart + longitudinal + MCP handlers', () => {
     expect(claims1.length).toBeGreaterThan(0);
 
     // ── Phase 3: second run (longitudinal accumulation) ───────────
-    const svc2 = createRunService();
+    const svc2 = trackedCreateRunService();
     const run2 = await svc2.startRun({
       query: 'Rust ownership model explained',
       provider: mockProvider,
@@ -483,7 +582,7 @@ describe('Property 4: research.cancel integration', () => {
     const config = makeConfig(dbPath);
     initDb(dbPath);
 
-    const svc = createRunService();
+    const svc = trackedCreateRunService();
     const deps = { runService: svc, config, getProvider: async () => mockProvider };
 
     const startResult = await handleResearchTool(
@@ -509,7 +608,7 @@ describe('Property 4: knowledge.threads integration', () => {
     const config = makeConfig(dbPath);
     initDb(dbPath);
 
-    const svc = createRunService();
+    const svc = trackedCreateRunService();
     const { runId, familyId } = await svc.startRun({
       query: 'Threads test',
       provider: mockProvider,
@@ -549,12 +648,12 @@ describe('Property 4: knowledge.entity integration', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('Property 5: threadId round-trip', () => {
-  it('threadId passed to startRun appears in RUN_STARTED event and projection', async () => {
+  it('threadId passed to startRun appears in RUN_QUEUED event and projection', async () => {
     const dbPath = path.join(tmpDir, 'threadid-test.db');
     const config = makeConfig(dbPath);
     initDb(dbPath);
 
-    const svc = createRunService();
+    const svc = trackedCreateRunService();
     const deps = { runService: svc, config, getProvider: async () => mockProvider };
     const THREAD_ID = 'thread_roundtrip_test';
     const familyState = rebuildProjection(ALL_HANDLERS);
@@ -578,9 +677,9 @@ describe('Property 5: threadId round-trip', () => {
     const runId = startResult.runId as string;
     await waitForRun(svc, runId);
 
-    // Verify RUN_STARTED event payload contains threadId
+    // Verify RUN_QUEUED event payload contains threadId
     const events = queryEvents({ runId });
-    const startEvt = events.find((e) => e.eventType === 'RUN_STARTED');
+    const startEvt = events.find((e) => e.eventType === 'RUN_QUEUED');
     expect(startEvt).toBeDefined();
     const payload = startEvt!.payload as Record<string, unknown>;
     expect(payload.threadId).toBe(THREAD_ID);

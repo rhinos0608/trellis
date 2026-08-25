@@ -7,11 +7,17 @@
     "dev": "tsx watch src/mcp/server.ts",
     "build": "tsc --project tsconfig.json",
     "start": "node dist/mcp/server.js",
-    "test": "vitest run",
+    "test": "npm run build && vitest run",
     "test:watch": "vitest",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "bench:projection": "tsx scripts/bench-projection.ts"
+    "bench:projection": "tsx scripts/bench-projection.ts",
+    "eval:reconciler": "tsx scripts/eval-reconciler.ts",
+    "serve": "node dist/cli/main.js serve",
+    "serve:http": "tsx src/http/main.ts"
+  },
+  "bin": {
+    "trellis": "dist/cli/main.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",

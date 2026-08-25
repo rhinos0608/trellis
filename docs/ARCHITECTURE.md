@@ -1,6 +1,6 @@
 # Trellis — Architecture Decisions (Phase 0 Synthesis)
 
-Status: DRAFT — pending user checkpoint before implementation begins.
+
 Source repo inspected: `/Users/rhinesharar/search-mcp` (main, clean except two scratch recon files, since removed).
 Recon date: 2026-08-24.
 
