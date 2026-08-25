@@ -10,6 +10,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
+const providerCtx = { signal: new AbortController().signal, runId: 'test', deadlineAt: Date.now() + 300_000, trace: { traceId: 'test', spanId: 'test' } };
+const callOptions = { signal: new AbortController().signal, deadlineAt: Date.now() + 300_000 };
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -46,7 +49,7 @@ function createMockClient(
   toolHandler: (name: string, args: Record<string, unknown>) => ToolCallResult | Promise<ToolCallResult>,
 ): SearchMcpClient {
   return {
-    async callTool(name: string, args: Record<string, unknown>): Promise<ToolCallResult> {
+    async callTool(name: string, args: Record<string, unknown>, _options: { signal: AbortSignal; deadlineAt: number }): Promise<ToolCallResult> {
       return toolHandler(name, args);
     },
     async close() {},
@@ -120,7 +123,7 @@ describe('Failure mode: process/client death mid-call', () => {
       maxDelayMs: 1,
     });
 
-    await expect(wrapped.callTool('web_search', { query: 'test' })).rejects.toThrow('ECONNRESET');
+    await expect(wrapped.callTool('web_search', { query: 'test' }, callOptions)).rejects.toThrow('ECONNRESET');
     // 1 initial + 2 retries = 3 total calls
     expect(callCount).toBe(maxRetries + 1);
   });
@@ -140,7 +143,7 @@ describe('Failure mode: process/client death mid-call', () => {
       maxDelayMs: 1,
     });
 
-    await expect(wrapped.callTool('web_search', { query: 'test' })).rejects.toThrow('Not found');
+    await expect(wrapped.callTool('web_search', { query: 'test' }, callOptions)).rejects.toThrow('Not found');
     expect(callCount).toBe(1); // no retry
   });
 
@@ -158,7 +161,7 @@ describe('Failure mode: process/client death mid-call', () => {
       maxDelayMs: 1,
     });
 
-    const result = await wrapped.callTool('web_search', { query: 'test' });
+    const result = await wrapped.callTool('web_search', { query: 'test' }, callOptions);
     expect(result.data).toEqual({ results: [] });
     expect(callCount).toBe(3);
   });
@@ -188,28 +191,28 @@ describe('Failure mode: malformed responses', () => {
   it('provider.search() returns [] when data is undefined', async () => {
     const client = createMockClient(emptyHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.search('query');
+    const hits = await provider.search(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.search() returns [] when data is null', async () => {
     const client = createMockClient(nullHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.search('query');
+    const hits = await provider.search(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.search() returns [] when data is a raw string', async () => {
     const client = createMockClient(stringHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.search('query');
+    const hits = await provider.search(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.read() returns empty ReadResult when data is undefined', async () => {
     const client = createMockClient(emptyHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const result = await provider.read('https://example.com');
+    const result = await provider.read(providerCtx, 'https://example.com');
     expect(result.url).toBe('https://example.com');
     expect(result.content).toBe('');
     expect(result.contentHash).toMatch(/^djb2:/);
@@ -218,7 +221,7 @@ describe('Failure mode: malformed responses', () => {
   it('provider.read() returns empty ReadResult when data is null', async () => {
     const client = createMockClient(nullHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const result = await provider.read('https://example.com');
+    const result = await provider.read(providerCtx, 'https://example.com');
     expect(result.url).toBe('https://example.com');
     expect(result.content).toBe('');
   });
@@ -226,7 +229,7 @@ describe('Failure mode: malformed responses', () => {
   it('provider.read() returns empty ReadResult when data is a raw string', async () => {
     const client = createMockClient(stringHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const result = await provider.read('https://example.com');
+    const result = await provider.read(providerCtx, 'https://example.com');
     expect(result.url).toBe('https://example.com');
     expect(result.content).toBe('');
   });
@@ -234,56 +237,56 @@ describe('Failure mode: malformed responses', () => {
   it('provider.crawl() returns [] when data is undefined', async () => {
     const client = createMockClient(emptyHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const results = await provider.crawl('https://example.com');
+    const results = await provider.crawl(providerCtx, 'https://example.com');
     expect(results).toEqual([]);
   });
 
   it('provider.crawl() returns [] when data is a raw string', async () => {
     const client = createMockClient(stringHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const results = await provider.crawl('https://example.com');
+    const results = await provider.crawl(providerCtx, 'https://example.com');
     expect(results).toEqual([]);
   });
 
   it('provider.github() returns [] when data is undefined', async () => {
     const client = createMockClient(emptyHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.github!('query');
+    const hits = await provider.github!(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.reddit() returns [] when data is null', async () => {
     const client = createMockClient(nullHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.reddit!('query');
+    const hits = await provider.reddit!(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.youtube() returns [] when data is undefined', async () => {
     const client = createMockClient(emptyHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.youtube!('query');
+    const hits = await provider.youtube!(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.youtubeTranscript() returns [] when data is a raw string', async () => {
     const client = createMockClient(stringHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const segments = await provider.youtubeTranscript!('abc123');
+    const segments = await provider.youtubeTranscript!(providerCtx, 'abc123');
     expect(segments).toEqual([]);
   });
 
   it('provider.wikipedia() returns [] when data is null', async () => {
     const client = createMockClient(nullHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.wikipedia!('query');
+    const hits = await provider.wikipedia!(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.redditThread() returns empty thread when data is a raw string', async () => {
     const client = createMockClient(stringHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const thread = await provider.redditThread!('https://reddit.com/r/test/abc');
+    const thread = await provider.redditThread!(providerCtx, 'https://reddit.com/r/test/abc');
     expect(thread.title).toBe('');
     expect(thread.comments).toEqual([]);
   });
@@ -291,21 +294,21 @@ describe('Failure mode: malformed responses', () => {
   it('provider.academic() returns [] when data is undefined', async () => {
     const client = createMockClient(emptyHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.academic('query');
+    const hits = await provider.academic(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.hackernews() returns [] when data is null', async () => {
     const client = createMockClient(nullHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.hackernews!('query');
+    const hits = await provider.hackernews!(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 
   it('provider.stackoverflow() returns [] when data is undefined', async () => {
     const client = createMockClient(emptyHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
-    const hits = await provider.stackoverflow!('query');
+    const hits = await provider.stackoverflow!(providerCtx, 'query');
     expect(hits).toEqual([]);
   });
 });
@@ -342,10 +345,10 @@ describe('Failure mode: cancellation mid-read', () => {
       search: async () => {
         searchCallCount++;
         // Simulate a slow provider call that takes real time
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 1_000));
         return [{ url: 'https://example.com', title: 'Slow Result', snippet: 'slow' }];
       },
-      read: async (url) => ({
+      read: async (_ctx, url) => ({
         url,
         title: 'Mock',
         content: 'mock content that is long enough for the threshold',
@@ -418,7 +421,7 @@ describe('Failure mode: concurrent runs against one db', () => {
       search: async () => [
         { url: 'https://example.com/r1', title: 'Result One', snippet: 'first' },
       ],
-      read: async (url) => ({
+      read: async (_ctx, url) => ({
         url,
         title: 'Content',
         content: 'Content long enough for the pipeline extraction threshold check to pass. This needs to exceed one hundred characters for the pipeline to create a finding from the extracted source content.',
@@ -529,7 +532,7 @@ describe('Failure mode: restart mid-run', () => {
         await new Promise((r) => setTimeout(r, 200));
         return [{ url: 'https://example.com/r1', title: 'Result', snippet: 'snippet' }];
       },
-      read: async (url) => ({
+      read: async (_ctx, url) => ({
         url,
         title: 'Content',
         content: 'Content long enough for the pipeline extraction threshold',
@@ -548,14 +551,15 @@ describe('Failure mode: restart mid-run', () => {
       explicitFamilyId: 'fam_restart_mid',
     });
 
-    // Wait briefly for RUN_STARTED to be appended, but NOT for completion
+    // Wait briefly for RUN_QUEUED to be appended, but NOT for completion
     await new Promise((r) => setTimeout(r, 50));
 
-    // Verify RUN_STARTED was persisted before we "crash"
+    // Verify RUN_QUEUED was persisted before we "crash"
     const eventsBeforeCrash = queryEvents({ runId });
-    expect(eventsBeforeCrash.some((e) => e.eventType === 'RUN_STARTED')).toBe(true);
+    expect(eventsBeforeCrash.some((e) => e.eventType === 'RUN_QUEUED')).toBe(true);
 
     // ── Simulate crash: close db while run is in-flight ──
+    await svc.shutdownScheduler();
     closeDb();
     expect(fs.existsSync(dbPath)).toBe(true);
 

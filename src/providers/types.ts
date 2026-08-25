@@ -14,6 +14,22 @@
  * core must never import a specific provider's internals directly.
  */
 
+export interface ProviderTraceMetadata {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  phase?: string;
+  subquestionId?: string;
+}
+
+export interface ProviderCallContext {
+  signal: AbortSignal;
+  runId: string;
+  /** Absolute Unix epoch deadline in milliseconds; provider calls must stop before it. */
+  deadlineAt: number;
+  trace: ProviderTraceMetadata;
+}
+
 export interface ResearchCapabilities {
   search: boolean;
   read: boolean;
@@ -147,27 +163,30 @@ export interface ResearchProvider {
   readonly name: string;
   readonly capabilities: ResearchCapabilities;
 
-  search(query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
-  read(url: string): Promise<ReadResult>;
-  crawl(url: string, opts?: { maxPages?: number }): Promise<CrawlResult[]>;
-  academic(query: string, opts?: AcademicOpts): Promise<ResearchHit[]>;
+  search(ctx: ProviderCallContext, query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
+  read(ctx: ProviderCallContext, url: string): Promise<ReadResult>;
+  crawl(ctx: ProviderCallContext, url: string, opts?: { maxPages?: number }): Promise<CrawlResult[]>;
+  academic(ctx: ProviderCallContext, query: string, opts?: AcademicOpts): Promise<ResearchHit[]>;
 
-  github?(query: string, opts?: SearchOpts): Promise<GitHubHit[]>;
-  reddit?(query: string, opts?: CommunityOpts): Promise<RedditHit[]>;
-  redditThread?(url: string, opts?: { limit?: number }): Promise<RedditThread>;
-  hackernews?(query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
-  stackoverflow?(query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
-  youtube?(query: string, opts?: MediaOpts): Promise<YouTubeHit[]>;
-  youtubeTranscript?(videoId: string, language?: string): Promise<TranscriptSegment[]>;
-  wikipedia?(query: string, opts?: { language?: string }): Promise<ResearchHit[]>;
+  github?(ctx: ProviderCallContext, query: string, opts?: SearchOpts): Promise<GitHubHit[]>;
+  reddit?(ctx: ProviderCallContext, query: string, opts?: CommunityOpts): Promise<RedditHit[]>;
+  redditThread?(ctx: ProviderCallContext, url: string, opts?: { limit?: number }): Promise<RedditThread>;
+  hackernews?(ctx: ProviderCallContext, query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
+  stackoverflow?(ctx: ProviderCallContext, query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
+  youtube?(ctx: ProviderCallContext, query: string, opts?: MediaOpts): Promise<YouTubeHit[]>;
+  youtubeTranscript?(ctx: ProviderCallContext, videoId: string, language?: string): Promise<TranscriptSegment[]>;
+  wikipedia?(ctx: ProviderCallContext, query: string, opts?: { language?: string }): Promise<ResearchHit[]>;
 
-  semanticSearch?(query: string, opts: SemanticOpts): Promise<SemanticResult>;
-  semanticCrawl?(url: string, query: string, opts?: SemanticOpts): Promise<SemanticResult>;
-  semanticCode?(query: string, opts: SemanticCodeOpts): Promise<SemanticCodeResult>;
+  semanticSearch?(ctx: ProviderCallContext, query: string, opts: SemanticOpts): Promise<SemanticResult>;
+  semanticCrawl?(ctx: ProviderCallContext, url: string, query: string, opts?: SemanticOpts): Promise<SemanticResult>;
+  semanticCode?(ctx: ProviderCallContext, query: string, opts: SemanticCodeOpts): Promise<SemanticCodeResult>;
 
   browser?: {
-    open(opts?: Record<string, unknown>): Promise<string>;
-    extract(sessionId: string, url: string, plan: BrowserExtractPlan): Promise<BrowserExtractResult>;
-    close(sessionId: string): Promise<void>;
+    open(ctx: ProviderCallContext, opts?: Record<string, unknown>): Promise<string>;
+    extract(ctx: ProviderCallContext, sessionId: string, url: string, plan: BrowserExtractPlan): Promise<BrowserExtractResult>;
+    close(ctx: ProviderCallContext, sessionId: string): Promise<void>;
   };
+
+  /** Release underlying resources (e.g. terminate the MCP child process). Optional. */
+  close?(): Promise<void>;
 }

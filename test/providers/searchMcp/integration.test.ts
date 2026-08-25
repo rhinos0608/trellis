@@ -9,6 +9,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+
+const testCtx = { signal: new AbortController().signal, runId: 'test', deadlineAt: Date.now() + 300_000, trace: { traceId: 'test', spanId: 'test' } };
 import { createSearchMcpProviderFromClient } from '../../../src/providers/searchMcp/index.js';
 import type { SearchMcpClient, ToolCallResult } from '../../../src/providers/searchMcp/client.js';
 
@@ -18,7 +20,7 @@ function createMockClient(
   toolHandler: (name: string, args: Record<string, unknown>) => ToolCallResult,
 ): SearchMcpClient {
   return {
-    async callTool(name: string, args: Record<string, unknown>): Promise<ToolCallResult> {
+    async callTool(name: string, args: Record<string, unknown>, _options: { signal: AbortSignal; deadlineAt: number }): Promise<ToolCallResult> {
       return toolHandler(name, args);
     },
     async close() {},
@@ -181,7 +183,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const hits = await provider.search('machine learning', { limit: 5 });
+    const hits = await provider.search(testCtx, 'machine learning', { limit: 5 });
 
     expect(calls).toHaveLength(1);
     expect(calls[0].name).toBe('web_search');
@@ -199,7 +201,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const result = await provider.read('https://example.com');
+    const result = await provider.read(testCtx, 'https://example.com');
 
     expect(calls[0].name).toBe('web_crawl');
     expect(calls[0].args.url).toBe('https://example.com');
@@ -214,7 +216,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const hits = await provider.academic('quantum computing', { source: 'arxiv', limit: 10 });
+    const hits = await provider.academic(testCtx, 'quantum computing', { source: 'arxiv', limit: 10 });
 
     expect(calls[0].name).toBe('research');
     expect(calls[0].args.action).toBe('academic');
@@ -230,7 +232,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const hits = await provider.wikipedia('quantum mechanics');
+    const hits = await provider.wikipedia(testCtx, 'quantum mechanics');
 
     expect(calls[0].name).toBe('research');
     expect(calls[0].args.action).toBe('wikipedia');
@@ -242,7 +244,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const hits = await provider.github('react');
+    const hits = await provider.github(testCtx, 'react');
 
     expect(calls[0].name).toBe('github');
     expect(calls[0].args.action).toBe('search');
@@ -255,7 +257,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const hits = await provider.reddit('frameworks', { subreddit: 'javascript' });
+    const hits = await provider.reddit(testCtx, 'frameworks', { subreddit: 'javascript' });
 
     expect(calls[0].name).toBe('reddit');
     expect(calls[0].args.action).toBe('search');
@@ -316,7 +318,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const segments = await provider.youtubeTranscript!('abc123', 'en');
+    const segments = await provider.youtubeTranscript!(testCtx, 'abc123', 'en');
 
     expect(calls[0].name).toBe('youtube');
     expect(calls[0].args.action).toBe('transcript');
@@ -330,7 +332,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const results = await provider.crawl('https://example.com', { maxPages: 3 });
+    const results = await provider.crawl(testCtx, 'https://example.com', { maxPages: 3 });
 
     expect(calls[0].name).toBe('web_crawl');
     expect(calls[0].args.maxPages).toBe(3);
@@ -355,10 +357,10 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(emptyHandler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const hits = await provider.search('nothing');
+    const hits = await provider.search(testCtx, 'nothing');
     expect(hits).toEqual([]);
 
-    const githubHits = await provider.github('nothing');
+    const githubHits = await provider.github(testCtx, 'nothing');
     expect(githubHits).toEqual([]);
   });
 });
