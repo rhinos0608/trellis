@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "name": "ambiguity-rejection",
+  "orderInvariant": false,
+  "description": "Ambiguous mentions must be rejected from the anchor claim yet their exact repeats must still cohere into their own cluster; an object-superset variant forks as elaboration; a hedged variant forks as qualification. Pool-sensitive once rejection clusters exist.",
+  "seedClaims": [
+    {
+      "id": "claim-1",
+      "subjectText": "Trellis",
+      "predicate": "supports",
+      "objectText": "claim reconciliation",
+      "polarity": "asserted",
+      "hedge": "certain",
+      "evidenceType": "study",
+      "canonicalKey": {
+        "subject": "trellis",
+        "predicate": "supports"
+      }
+    }
+  ],
+  "observations": [
+    {
+      "id": "a1",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "mentions",
+        "objectText": "other data",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "mentions"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_a1"
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    },
+    {
+      "id": "a2",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation tools",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports",
+          "quantifierCanonical": "50%"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_a2"
+      },
+      "expected": {
+        "classification": "elaboration",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "a3",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "mentions",
+        "objectText": "other data",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "mentions"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_a1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim_a1"
+      }
+    },
+    {
+      "id": "a4",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "possible",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_a4"
+      },
+      "expected": {
+        "classification": "qualification",
+        "matchedClaimId": "claim-1"
+      }
+    }
+  ]
+}

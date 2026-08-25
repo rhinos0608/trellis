@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "labelPolicyVersion": 1,
+  "cases": [
+    {
+      "id": "temporal-same-claim-same-period",
+      "category": "temporal",
+      "rationale": "Identical assertions in the same eventDate period pass the temporal gate of sameKey \u2014 same_claim.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2024-06-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "released",
+          "dateConfidence": "exact",
+          "eventDate": "2024-06-01"
+        }
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "temporal-supersedes-version-bump",
+      "category": "temporal",
+      "rationale": "Version 2.0.0 > 1.0.0 plus 'deprecates' wording is a replacement signal across versions.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "version": "1.0.0"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "deprecates legacy claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "version": "2.0.0"
+        }
+      },
+      "expected": {
+        "classification": "supersedes",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "temporal-contradiction-within-same-period",
+      "category": "temporal",
+      "rationale": "Polarity flip inside one period is scoped contradiction; the scope gate only blocks cross-period flips.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2024-06-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "released",
+          "dateConfidence": "exact",
+          "eventDate": "2024-06-01"
+        }
+      },
+      "expected": {
+        "classification": "contradiction",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "temporal-near-duplicate-cross-period-paraphrase",
+      "category": "temporal",
+      "rationale": "Score 0.925 clears the same_claim threshold but different periods fail sameScope, so it falls to near_duplicate.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2023-01-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "released",
+          "dateConfidence": "exact",
+          "eventDate": "2024-01-01"
+        }
+      },
+      "expected": {
+        "classification": "near_duplicate",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "temporal-qualification-time-condition",
+      "category": "temporal",
+      "rationale": "'when offline' triggers the narrowing keyword set \u2014 qualification wins before elaboration could.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation when offline",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "qualification",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "temporal-elaboration-changelog-notes",
+      "category": "temporal",
+      "rationale": "Changelog detail extends the object superset-style with no narrowing keywords \u2014 elaboration.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation changelog notes",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "elaboration",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "temporal-new-claim-other-era-other-subject",
+      "category": "temporal",
+      "rationale": "No lexical or temporal bridge to the candidate \u2014 separate claim.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2023-01-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Kubernetes",
+        "predicate": "schedules",
+        "objectText": "pods",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "kubernetes",
+          "predicate": "schedules"
+        }
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    }
+  ]
+}

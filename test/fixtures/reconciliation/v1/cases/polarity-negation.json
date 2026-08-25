@@ -1,0 +1,268 @@
+{
+  "schemaVersion": 1,
+  "labelPolicyVersion": 1,
+  "cases": [
+    {
+      "id": "polarity-same-claim-both-negated",
+      "category": "polarity-negation",
+      "rationale": "Two negations agree: polarity equality preserves the canonical-key shortcut to same_claim.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "negated",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "polarity-near-duplicate-hedged-denial",
+      "category": "polarity-negation",
+      "rationale": "Matching negation keeps the polarity term at full weight; 0.8 text overlap scores ~0.785 -> near_duplicate.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation tools",
+          "polarity": "negated",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports",
+          "quantifierCanonical": "50%"
+        }
+      },
+      "expected": {
+        "classification": "near_duplicate",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "polarity-contradiction-asserted-versus-negated",
+      "category": "polarity-negation",
+      "rationale": "Canonical polarity flip in shared scope \u2014 textbook contradiction.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "contradiction",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "polarity-supersedes-retraction-notice",
+      "category": "polarity-negation",
+      "rationale": "'no longer supported'/'replaces' phrasing with newer eventDate signals replacement of the older claim.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2024-01-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "no longer supported, replaces deprecated approach",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "eventDate": "2025-01-01"
+        }
+      },
+      "expected": {
+        "classification": "supersedes",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "polarity-qualification-conditional-narrowing",
+      "category": "polarity-negation",
+      "rationale": "Conditional observation against an asserted base narrows scope instead of contradicting.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "conditional",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "qualification",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "polarity-elaboration-expanded-negative-finding",
+      "category": "polarity-negation",
+      "rationale": "Negated finding extended with reproduction detail stays one negated cluster's elaboration, not a new polarity conflict.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "memory leak",
+          "polarity": "negated",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "memory leak reproduction steps",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "elaboration",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "polarity-new-claim-separate-positive-finding",
+      "category": "polarity-negation",
+      "rationale": "An unrelated positive assertion shares nothing with the negated base claim.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "negated",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Redis",
+        "predicate": "caches",
+        "objectText": "sessions",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "redis",
+          "predicate": "caches"
+        }
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    }
+  ]
+}

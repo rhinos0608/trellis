@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "name": "longitudinal-paraphrases",
+  "orderInvariant": true,
+  "description": "Same claim re-observed across runs with paraphrase drift; exact repeats reuse the founder cluster, an object-superset variant forks an elaboration cluster (v2 checks elaboration before near_duplicate), one unrelated observation is rejected. Order-invariant: every step matches against stable lexical anchors.",
+  "seedClaims": [
+    {
+      "id": "claim-1",
+      "subjectText": "Trellis",
+      "predicate": "supports",
+      "objectText": "claim reconciliation",
+      "polarity": "asserted",
+      "hedge": "certain",
+      "evidenceType": "study",
+      "canonicalKey": {
+        "subject": "trellis",
+        "predicate": "supports"
+      }
+    }
+  ],
+  "observations": [
+    {
+      "id": "o1",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "o2",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "o3",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation module",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports",
+          "quantifierCanonical": "50%"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_o3"
+      },
+      "expected": {
+        "classification": "elaboration",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "o4",
+      "assertion": {
+        "subjectText": "SQLite",
+        "predicate": "stores",
+        "objectText": "events in wal",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "sqlite",
+          "predicate": "stores"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_o4"
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    }
+  ]
+}

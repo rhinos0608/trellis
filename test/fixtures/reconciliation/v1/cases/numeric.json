@@ -1,0 +1,308 @@
+{
+  "schemaVersion": 1,
+  "labelPolicyVersion": 1,
+  "cases": [
+    {
+      "id": "numeric-same-claim-tolerance-within",
+      "category": "numeric",
+      "rationale": "10% relative tolerance: |105-100|/105 = 4.8% <= 10% keeps numericCompatibility true, so canonical key match yields score 1.0 same_claim.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "quantifier": {
+            "value": 100,
+            "unit": "%",
+            "comparisonType": "increase"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 105,
+          "unit": "%",
+          "comparisonType": "increase"
+        }
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-near-duplicate-metadata-only-on-observation",
+      "category": "numeric",
+      "rationale": "Quantifier present on the observation only is neutral (0.5) in scoring; text overlap 0.8 gives ~0.785 -> near_duplicate despite missing claim-side numbers.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation tools",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports",
+          "quantifierCanonical": "50%"
+        },
+        "quantifier": {
+          "value": 50,
+          "unit": "%",
+          "comparisonType": "increase"
+        }
+      },
+      "expected": {
+        "classification": "near_duplicate",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-contradiction-out-of-tolerance",
+      "category": "numeric",
+      "rationale": "|10-50|/50 = 80% far exceeds tolerance in the same scope \u2014 scoped numeric mismatch is contradiction even though raw text is identical.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "quantifier": {
+            "value": 50,
+            "unit": "%",
+            "comparisonType": "increase"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 10,
+          "unit": "%",
+          "comparisonType": "increase"
+        }
+      },
+      "expected": {
+        "classification": "contradiction",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-supersedes-benchmark-revision",
+      "category": "numeric",
+      "rationale": "'supersedes' verb with newer eventDate replaces the earlier benchmark claim regardless of textual elaboration.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "throughput benchmark result",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2024-01-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "supersedes prior throughput benchmark result",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "eventDate": "2025-01-01"
+        }
+      },
+      "expected": {
+        "classification": "supersedes",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-qualification-conditional-measurement",
+      "category": "numeric",
+      "rationale": "Conditional polarity on a within-tolerance measurement narrows rather than contradicts or confirms.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "quantifier": {
+            "value": 100,
+            "unit": "%",
+            "comparisonType": "increase"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "conditional",
+        "hedge": "likely",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 105,
+          "unit": "%",
+          "comparisonType": "increase"
+        }
+      },
+      "expected": {
+        "classification": "qualification",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-elaboration-metric-detail",
+      "category": "numeric",
+      "rationale": "Object extension ('benchmark result' -> 'benchmark result details') with same subject/predicate is elaboration.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "benchmark result",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "benchmark result details",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "elaboration",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-new-claim-different-measure-domain",
+      "category": "numeric",
+      "rationale": "Different domain entirely; numeric machinery never engages without candidate overlap.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "quantifier": {
+            "value": 100,
+            "unit": "%",
+            "comparisonType": "increase"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Postgres",
+        "predicate": "indexes",
+        "objectText": "json columns",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "postgres",
+          "predicate": "indexes"
+        }
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    }
+  ]
+}

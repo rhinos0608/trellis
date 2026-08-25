@@ -1,0 +1,268 @@
+{
+  "schemaVersion": 1,
+  "labelPolicyVersion": 1,
+  "cases": [
+    {
+      "id": "baseline-same-claim-exact-key",
+      "category": "baseline",
+      "rationale": "Identical canonical key, objectText, polarity, and hedge \u2014 unambiguous cluster reuse.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "baseline-near-duplicate-paraphrase",
+      "category": "baseline",
+      "rationale": "High lexical overlap (jaccard 0.8) but quantifierCanonical differs so sameKey fails; score ~0.785 lands in near_duplicate band, not same_claim (needs >=0.92).",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation tools",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports",
+          "quantifierCanonical": "50%"
+        }
+      },
+      "expected": {
+        "classification": "near_duplicate",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "baseline-contradiction-polarity-flip",
+      "category": "baseline",
+      "rationale": "Same scope, asserted vs negated with neither side conditional \u2014 direct polarity contradiction.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "contradiction",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "baseline-supersedes-explicit-replacement",
+      "category": "baseline",
+      "rationale": "Replacement verb plus strictly newer eventDate satisfies hasReplacementSignal; supersedes precedes all similarity branches.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2024-01-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "replaces old claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "eventDate": "2025-01-01"
+        }
+      },
+      "expected": {
+        "classification": "supersedes",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "baseline-elaboration-object-extension",
+      "category": "baseline",
+      "rationale": "Same subject/predicate with objectText a strict superset of the existing object \u2014 elaboration.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation process",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "elaboration",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "baseline-new-claim-unrelated-topic",
+      "category": "baseline",
+      "rationale": "Disjoint subject/predicate/object vocabulary; no candidate reaches the near_duplicate band.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "SQLite",
+        "predicate": "stores",
+        "objectText": "events",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "sqlite",
+          "predicate": "stores"
+        }
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    },
+    {
+      "id": "baseline-qualification-conditional-polarity",
+      "category": "baseline",
+      "rationale": "Conditional-polarity observation is narrowing, never contradiction \u2014 qualification precedes same_claim even at score 1.0.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "conditional",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "qualification",
+        "matchedClaimId": "claim-1"
+      }
+    }
+  ]
+}

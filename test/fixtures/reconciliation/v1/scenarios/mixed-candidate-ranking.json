@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "name": "mixed-candidate-ranking",
+  "orderInvariant": false,
+  "description": "Two seed claims compete for each observation; best-score candidate selection must route each observation to its true cluster, including a scoped contradiction against the second seed and a boundary same_claim via the 0.92 lexical path.",
+  "seedClaims": [
+    {
+      "id": "claim-1",
+      "subjectText": "Trellis",
+      "predicate": "supports",
+      "objectText": "claim reconciliation",
+      "polarity": "asserted",
+      "hedge": "certain",
+      "evidenceType": "study",
+      "canonicalKey": {
+        "subject": "trellis",
+        "predicate": "supports"
+      }
+    },
+    {
+      "id": "claim-2",
+      "subjectText": "SQLite",
+      "predicate": "stores",
+      "objectText": "events",
+      "polarity": "asserted",
+      "hedge": "certain",
+      "evidenceType": "benchmark",
+      "canonicalKey": {
+        "subject": "sqlite",
+        "predicate": "stores"
+      }
+    }
+  ],
+  "observations": [
+    {
+      "id": "m1",
+      "assertion": {
+        "subjectText": "SQLite",
+        "predicate": "stores",
+        "objectText": "events",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "benchmark",
+        "canonicalKey": {
+          "subject": "sqlite",
+          "predicate": "stores"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-2"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-2"
+      }
+    },
+    {
+      "id": "m2",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "m3",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports",
+          "quantifierCanonical": "50%"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "m4",
+      "assertion": {
+        "subjectText": "SQLite",
+        "predicate": "stores",
+        "objectText": "events",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "benchmark",
+        "canonicalKey": {
+          "subject": "sqlite",
+          "predicate": "stores"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_m4"
+      },
+      "expected": {
+        "classification": "contradiction",
+        "matchedClaimId": "claim-2"
+      }
+    },
+    {
+      "id": "m5",
+      "assertion": {
+        "subjectText": "Redis",
+        "predicate": "caches",
+        "objectText": "sessions",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "opinion",
+        "canonicalKey": {
+          "subject": "redis",
+          "predicate": "caches"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_m5"
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    }
+  ]
+}

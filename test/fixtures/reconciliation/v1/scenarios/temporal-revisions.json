@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "name": "temporal-revisions",
+  "orderInvariant": false,
+  "description": "Supersession chain across versions. Order-sensitive by design: replaying the v1-era duplicate after the supersession yields new_claim because the canonical claim has moved to the v2 period; before the supersession it would have been same_claim.",
+  "seedClaims": [
+    {
+      "id": "claim-1",
+      "subjectText": "Trellis",
+      "predicate": "supports",
+      "objectText": "sync engine",
+      "polarity": "asserted",
+      "hedge": "certain",
+      "evidenceType": "study",
+      "canonicalKey": {
+        "subject": "trellis",
+        "predicate": "supports"
+      },
+      "temporalScope": {
+        "eventType": "released",
+        "dateConfidence": "exact",
+        "eventDate": "2024-01-01"
+      }
+    }
+  ],
+  "observations": [
+    {
+      "id": "t1",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "replaces legacy sync engine",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "eventDate": "2025-01-01"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "supersedes",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "t2",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "replaces legacy sync engine",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "eventDate": "2025-01-01"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "t3",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "sync engine",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "released",
+          "dateConfidence": "exact",
+          "eventDate": "2024-01-01"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_t3"
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    },
+    {
+      "id": "t4",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "replaces legacy sync engine entirely",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "eventDate": "2026-01-01"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "supersedes",
+        "matchedClaimId": "claim-1"
+      }
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "name": "negation-and-qualification",
+  "orderInvariant": false,
+  "description": "Contradiction and qualification fork sibling clusters; the base assertion keeps matching the founder; a repeat of the negated reading converges on the earlier contradiction twin rather than re-forking (twin attraction makes this pool-sensitive). Note: g2's qualification matches the contradiction twin claim_g1 because asserted and negated candidates tie at 0.825 and localeCompare collation ranks 'claim_g1' ahead of 'claim-1' \u2014 recorded v2 tie-break behavior.",
+  "seedClaims": [
+    {
+      "id": "claim-1",
+      "subjectText": "Trellis",
+      "predicate": "supports",
+      "objectText": "claim reconciliation",
+      "polarity": "asserted",
+      "hedge": "certain",
+      "evidenceType": "study",
+      "canonicalKey": {
+        "subject": "trellis",
+        "predicate": "supports"
+      }
+    }
+  ],
+  "observations": [
+    {
+      "id": "g1",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_g1"
+      },
+      "expected": {
+        "classification": "contradiction",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "g2",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "conditional",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_g2"
+      },
+      "expected": {
+        "classification": "qualification",
+        "matchedClaimId": "claim_g1"
+      }
+    },
+    {
+      "id": "g3",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "g4",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_g1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim_g1"
+      }
+    }
+  ]
+}

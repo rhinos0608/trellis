@@ -1,0 +1,507 @@
+{
+  "corpusVersion": 1,
+  "projectionVersion": 5,
+  "reconcilerVersion": 2,
+  "checksum": "sha256:projection-v1:2d0064aaf2daa4bb43b549d0347b06eca0291b9fc52c770015232bc3adb3c994",
+  "state": {
+    "lastAppliedSeq": 0,
+    "entities": [],
+    "claims": [
+      [
+        "claim-1",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.8500000000000001,
+          "confidenceHistory": [
+            {
+              "confidence": 0.8,
+              "observationId": "obs_legacy_claim-1",
+              "observedAt": "2025-01-01T00:00:01.000Z",
+              "runId": "eval-seed-run"
+            },
+            {
+              "confidence": 0.9,
+              "observationId": "g3",
+              "observedAt": "2025-01-01T00:00:00.000Z",
+              "runId": "eval-run"
+            }
+          ],
+          "contradictionState": "none",
+          "currentObservationId": "g3",
+          "evidenceIds": [],
+          "evidenceType": "study",
+          "familyId": "eval-family",
+          "firstSeenAt": "2025-01-01T00:00:01.000Z",
+          "firstSeenRunId": "eval-seed-run",
+          "hedge": "certain",
+          "id": "claim-1",
+          "lastSeenAt": "2025-01-01T00:00:00.000Z",
+          "lastSeenRunId": "eval-run",
+          "objectText": "claim reconciliation",
+          "observationCount": 2,
+          "observationIds": [
+            "obs_legacy_claim-1",
+            "g3"
+          ],
+          "opposingEvidenceCount": 0,
+          "polarity": "asserted",
+          "predicate": "supports",
+          "revisionHistory": [],
+          "subjectText": "Trellis",
+          "supportingEvidenceCount": 0
+        }
+      ],
+      [
+        "claim_g1",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.9,
+          "confidenceHistory": [
+            {
+              "confidence": 0.9,
+              "observationId": "g1",
+              "observedAt": "2025-01-01T00:00:00.000Z",
+              "runId": "eval-run"
+            },
+            {
+              "confidence": 0.9,
+              "observationId": "g4",
+              "observedAt": "2025-01-01T00:00:00.000Z",
+              "runId": "eval-run"
+            }
+          ],
+          "contradictionState": "none",
+          "currentObservationId": "g4",
+          "epistemicStatus": "unknown",
+          "evidenceIds": [],
+          "evidenceType": "study",
+          "familyId": "eval-family",
+          "firstSeenAt": "2025-01-01T00:00:00.000Z",
+          "firstSeenRunId": "eval-run",
+          "hedge": "certain",
+          "id": "claim_g1",
+          "lastSeenAt": "2025-01-01T00:00:00.000Z",
+          "lastSeenRunId": "eval-run",
+          "objectText": "claim reconciliation",
+          "observationCount": 2,
+          "observationIds": [
+            "g1",
+            "g4"
+          ],
+          "opposingEvidenceCount": 0,
+          "polarity": "negated",
+          "predicate": "supports",
+          "revisionHistory": [],
+          "subjectText": "Trellis",
+          "supportingEvidenceCount": 0
+        }
+      ],
+      [
+        "claim_g2",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.9,
+          "confidenceHistory": [
+            {
+              "confidence": 0.9,
+              "observationId": "g2",
+              "observedAt": "2025-01-01T00:00:00.000Z",
+              "runId": "eval-run"
+            }
+          ],
+          "contradictionState": "none",
+          "currentObservationId": "g2",
+          "epistemicStatus": "unknown",
+          "evidenceIds": [],
+          "evidenceType": "study",
+          "familyId": "eval-family",
+          "firstSeenAt": "2025-01-01T00:00:00.000Z",
+          "firstSeenRunId": "eval-run",
+          "hedge": "certain",
+          "id": "claim_g2",
+          "lastSeenAt": "2025-01-01T00:00:00.000Z",
+          "lastSeenRunId": "eval-run",
+          "objectText": "claim reconciliation",
+          "observationCount": 1,
+          "observationIds": [
+            "g2"
+          ],
+          "opposingEvidenceCount": 0,
+          "polarity": "conditional",
+          "predicate": "supports",
+          "revisionHistory": [],
+          "subjectText": "Trellis",
+          "supportingEvidenceCount": 0
+        }
+      ]
+    ],
+    "claimObservations": [
+      [
+        "g1",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.9,
+          "evidenceType": "study",
+          "extractionVersion": "eval-v1",
+          "familyId": "eval-family",
+          "hedge": "certain",
+          "id": "g1",
+          "objectText": "claim reconciliation",
+          "observedAt": "2025-01-01T00:00:00.000Z",
+          "polarity": "negated",
+          "predicate": "supports",
+          "runId": "eval-run",
+          "sourceIds": [],
+          "subjectText": "Trellis"
+        }
+      ],
+      [
+        "g2",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.9,
+          "evidenceType": "study",
+          "extractionVersion": "eval-v1",
+          "familyId": "eval-family",
+          "hedge": "certain",
+          "id": "g2",
+          "objectText": "claim reconciliation",
+          "observedAt": "2025-01-01T00:00:00.000Z",
+          "polarity": "conditional",
+          "predicate": "supports",
+          "runId": "eval-run",
+          "sourceIds": [],
+          "subjectText": "Trellis"
+        }
+      ],
+      [
+        "g3",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.9,
+          "evidenceType": "study",
+          "extractionVersion": "eval-v1",
+          "familyId": "eval-family",
+          "hedge": "certain",
+          "id": "g3",
+          "objectText": "claim reconciliation",
+          "observedAt": "2025-01-01T00:00:00.000Z",
+          "polarity": "asserted",
+          "predicate": "supports",
+          "runId": "eval-run",
+          "sourceIds": [],
+          "subjectText": "Trellis"
+        }
+      ],
+      [
+        "g4",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.9,
+          "evidenceType": "study",
+          "extractionVersion": "eval-v1",
+          "familyId": "eval-family",
+          "hedge": "certain",
+          "id": "g4",
+          "objectText": "claim reconciliation",
+          "observedAt": "2025-01-01T00:00:00.000Z",
+          "polarity": "negated",
+          "predicate": "supports",
+          "runId": "eval-run",
+          "sourceIds": [],
+          "subjectText": "Trellis"
+        }
+      ],
+      [
+        "obs_legacy_claim-1",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.8,
+          "contradictionState": "none",
+          "evidenceType": "study",
+          "extractionVersion": "claim-accepted-v1",
+          "familyId": "eval-family",
+          "firstSeenRunId": "eval-seed-run",
+          "hedge": "certain",
+          "id": "obs_legacy_claim-1",
+          "lastSeenRunId": "eval-seed-run",
+          "objectText": "claim reconciliation",
+          "observedAt": "2025-01-01T00:00:01.000Z",
+          "polarity": "asserted",
+          "predicate": "supports",
+          "runId": "eval-seed-run",
+          "sourceIds": [],
+          "subjectText": "Trellis"
+        }
+      ]
+    ],
+    "claimReconciliations": [
+      [
+        "g1",
+        {
+          "candidates": [
+            {
+              "claimId": "claim-1",
+              "classification": "contradiction",
+              "score": 0.825
+            }
+          ],
+          "canonicalClaimId": "claim_g1",
+          "classification": "contradiction",
+          "matchedClaimId": "claim-1",
+          "method": "canonical_key_exact",
+          "observationId": "g1",
+          "rationale": "Deterministic lexical reconciliation: contradiction (score=0.825).",
+          "reconcilerVersion": 2,
+          "score": 0.825
+        }
+      ],
+      [
+        "g2",
+        {
+          "candidates": [
+            {
+              "claimId": "claim_g1",
+              "classification": "qualification",
+              "score": 0.825
+            },
+            {
+              "claimId": "claim-1",
+              "classification": "qualification",
+              "score": 0.825
+            }
+          ],
+          "canonicalClaimId": "claim_g2",
+          "classification": "qualification",
+          "matchedClaimId": "claim_g1",
+          "method": "canonical_key_exact",
+          "observationId": "g2",
+          "rationale": "Deterministic lexical reconciliation: qualification (score=0.825).",
+          "reconcilerVersion": 2,
+          "score": 0.825
+        }
+      ],
+      [
+        "g3",
+        {
+          "candidates": [
+            {
+              "claimId": "claim-1",
+              "classification": "same_claim",
+              "score": 1
+            },
+            {
+              "claimId": "claim_g1",
+              "classification": "contradiction",
+              "score": 0.825
+            },
+            {
+              "claimId": "claim_g2",
+              "classification": "same_claim",
+              "score": 0.825
+            }
+          ],
+          "canonicalClaimId": "claim-1",
+          "classification": "same_claim",
+          "matchedClaimId": "claim-1",
+          "method": "canonical_key_exact",
+          "observationId": "g3",
+          "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
+          "reconcilerVersion": 2,
+          "score": 1
+        }
+      ],
+      [
+        "g4",
+        {
+          "candidates": [
+            {
+              "claimId": "claim_g1",
+              "classification": "same_claim",
+              "score": 1
+            },
+            {
+              "claimId": "claim_g2",
+              "classification": "same_claim",
+              "score": 0.825
+            },
+            {
+              "claimId": "claim-1",
+              "classification": "contradiction",
+              "score": 0.825
+            }
+          ],
+          "canonicalClaimId": "claim_g1",
+          "classification": "same_claim",
+          "matchedClaimId": "claim_g1",
+          "method": "canonical_key_exact",
+          "observationId": "g4",
+          "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
+          "reconcilerVersion": 2,
+          "score": 1
+        }
+      ]
+    ],
+    "observationToClaimId": [
+      [
+        "g1",
+        "claim_g1"
+      ],
+      [
+        "g2",
+        "claim_g2"
+      ],
+      [
+        "g3",
+        "claim-1"
+      ],
+      [
+        "g4",
+        "claim_g1"
+      ],
+      [
+        "obs_legacy_claim-1",
+        "claim-1"
+      ]
+    ],
+    "observationsByClaimId": [
+      [
+        "claim-1",
+        [
+          "g3",
+          "obs_legacy_claim-1"
+        ]
+      ],
+      [
+        "claim_g1",
+        [
+          "g1",
+          "g4"
+        ]
+      ],
+      [
+        "claim_g2",
+        [
+          "g2"
+        ]
+      ]
+    ],
+    "claimRelations": [
+      [
+        "rel_ev-eval-0002",
+        {
+          "fromClaimId": "claim_g1",
+          "id": "rel_ev-eval-0002",
+          "rationale": "Deterministic lexical reconciliation: contradiction (score=0.825).",
+          "relation": "contradicts",
+          "runId": "eval-run",
+          "score": 0.825,
+          "strength": "strong",
+          "toClaimId": "claim-1"
+        }
+      ],
+      [
+        "rel_ev-eval-0003",
+        {
+          "fromClaimId": "claim_g2",
+          "id": "rel_ev-eval-0003",
+          "rationale": "Deterministic lexical reconciliation: qualification (score=0.825).",
+          "relation": "qualifies",
+          "runId": "eval-run",
+          "score": 0.825,
+          "strength": "strong",
+          "toClaimId": "claim_g1"
+        }
+      ]
+    ],
+    "contradictions": [
+      [
+        "contra_ev-eval-0002",
+        {
+          "claimIdA": "claim_g1",
+          "claimIdB": "claim-1",
+          "contradictionType": "factual_disagreement",
+          "familyId": "eval-family",
+          "firstSeenRunId": "eval-run",
+          "id": "contra_ev-eval-0002",
+          "resolutionStatus": "unresolved"
+        }
+      ]
+    ],
+    "evidence": [],
+    "sources": [],
+    "gaps": [],
+    "families": [],
+    "threads": [],
+    "researchRuns": [],
+    "claimRelationsByFromClaimId": [
+      [
+        "claim_g1",
+        [
+          "rel_ev-eval-0002"
+        ]
+      ],
+      [
+        "claim_g2",
+        [
+          "rel_ev-eval-0003"
+        ]
+      ]
+    ],
+    "claimRelationsByToClaimId": [
+      [
+        "claim-1",
+        [
+          "rel_ev-eval-0002"
+        ]
+      ],
+      [
+        "claim_g1",
+        [
+          "rel_ev-eval-0003"
+        ]
+      ]
+    ],
+    "evidenceByClaimId": [],
+    "claimsByFamilyId": [
+      [
+        "eval-family",
+        [
+          "claim-1",
+          "claim_g1",
+          "claim_g2"
+        ]
+      ]
+    ],
+    "threadsByFamilyId": [],
+    "entityFamilyMemberships": [],
+    "entityFamilyKeys": [],
+    "rolledBackRuns": [],
+    "entityMergeHistory": [],
+    "familyMergeHistory": []
+  }
+}

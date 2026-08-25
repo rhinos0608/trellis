@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "name": "numeric-disagreement",
+  "orderInvariant": false,
+  "description": "Quantified claim re-observed at drifting magnitudes. Within-tolerance repeats reuse the cluster; an out-of-tolerance negated reading forks a contradiction cluster that later observations must not be attracted to (candidate ranking is pool-sensitive, hence order-sensitive).",
+  "seedClaims": [
+    {
+      "id": "claim-1",
+      "subjectText": "Trellis",
+      "predicate": "supports",
+      "objectText": "claim reconciliation",
+      "polarity": "asserted",
+      "hedge": "certain",
+      "evidenceType": "study",
+      "canonicalKey": {
+        "subject": "trellis",
+        "predicate": "supports"
+      },
+      "quantifier": {
+        "value": 50,
+        "unit": "%",
+        "comparisonType": "increase"
+      }
+    }
+  ],
+  "observations": [
+    {
+      "id": "n1",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 55,
+          "unit": "%",
+          "comparisonType": "increase"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "n2",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "negated",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 10,
+          "unit": "%",
+          "comparisonType": "increase"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_n2"
+      },
+      "expected": {
+        "classification": "contradiction",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "n3",
+      "assertion": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 52,
+          "unit": "%",
+          "comparisonType": "increase"
+        }
+      },
+      "gold": {
+        "clusterId": "claim-1"
+      },
+      "expected": {
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "n4",
+      "assertion": {
+        "subjectText": "SQLite",
+        "predicate": "stores",
+        "objectText": "events in wal",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "sqlite",
+          "predicate": "stores"
+        }
+      },
+      "gold": {
+        "clusterId": "claim_n4"
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    }
+  ]
+}
