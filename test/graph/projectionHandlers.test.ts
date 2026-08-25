@@ -223,6 +223,13 @@ describe('projectionHandlers', () => {
       expect(state.evidence.size).toBe(1);
       expect(state.evidenceByClaimId.get('c1')!.has('ev1')).toBe(true);
     });
+    it('updates claim evidence counts and deduplicates replay', () => {
+      const state = freshState();
+      state.claims.set('c1', { id: 'c1', familyId: 'f', subjectText: 's', predicate: 'p', polarity: 'asserted', hedge: 'certain', evidenceType: 'study', canonicalKey: { subject: 's', predicate: 'p' }, confidence: 1, contradictionState: 'none', firstSeenRunId: 'r', lastSeenRunId: 'r', evidenceIds: [], supportingEvidenceCount: 0, opposingEvidenceCount: 0 });
+      const input = makeEvent('EVIDENCE_LINKED', { id: 'ev1', claimId: 'c1', sourceId: 'src-1', runId: 'run-1', stance: 'supports' });
+      graphEventHandlers.EVIDENCE_LINKED(input as EventEnvelope, state); graphEventHandlers.EVIDENCE_LINKED(input as EventEnvelope, state);
+      expect(state.claims.get('c1')?.evidenceIds).toEqual(['ev1']); expect(state.claims.get('c1')?.supportingEvidenceCount).toBe(1);
+    });
   });
 
   // ── CONTRADICTION_IDENTIFIED ───────────────────────────────────────────
@@ -332,13 +339,40 @@ describe('projectionHandlers', () => {
           isPrimary: true,
           extractionStatus: 'pending',
           contentHash: 'abc',
-          retrievedAt: new Date().toISOString(),
+          retrievedAt: '2025-01-01T00:00:00.000Z',
           firstSeenRunId: 'run-1',
         }) as EventEnvelope,
         state,
       );
       expect(state.sources.size).toBe(1);
       expect(state.sources.get('src-1')!.url).toBe('https://example.com');
+      expect(state.sources.get('src-1')!.canonicalUrl).toBe('https://example.com/');
+      expect(state.sources.get('src-1')!.lastSeenRunId).toBe('run-1');
+      expect(state.sources.get('src-1')!.retrievedAt).toBe('2025-01-01T00:00:00.000Z');
+      expect(state.sources.get('src-1')!.runCount).toBe(1);
+    });
+  });
+
+  // ── SOURCE_OBSERVED ────────────────────────────────────────────────────
+  describe('SOURCE_OBSERVED', () => {
+    it('bootstraps and accumulates observations by canonical source ID', () => {
+      const state = freshState();
+      const first = {
+        sourceId: 'https://example.com/page', observedSourceId: 'provider-1',
+        canonicalUrl: 'https://example.com/page', url: 'https://example.com/page#one',
+        domain: 'example.com', sourceType: 'web', isPrimary: true,
+        extractionStatus: 'extracted', runId: 'run-1', observedAt: '2025-01-01T00:00:00.000Z',
+      };
+      graphEventHandlers.SOURCE_OBSERVED(makeEvent('SOURCE_OBSERVED', first) as EventEnvelope, state);
+      graphEventHandlers.SOURCE_OBSERVED(makeEvent('SOURCE_OBSERVED', {
+        ...first, observedSourceId: 'provider-2', url: 'https://example.com/page#two',
+        runId: 'run-2', observedAt: '2025-01-02T00:00:00.000Z',
+      }) as EventEnvelope, state);
+      const source = state.sources.get(first.sourceId)!;
+      expect(source.runCount).toBe(2);
+      expect(source.firstSeenRunId).toBe('run-1');
+      expect(source.lastSeenRunId).toBe('run-2');
+      expect(source.lastSeenAt).toBe('2025-01-02T00:00:00.000Z');
     });
   });
 
@@ -423,6 +457,7 @@ describe('projectionHandlers', () => {
   describe('EDGE_ADDED', () => {
     it('adds claim relation and updates indices', () => {
       const state = freshState();
+      state.claims.set('c1', {} as never); state.claims.set('c2', {} as never);
       graphEventHandlers.EDGE_ADDED(
         makeEvent('EDGE_ADDED', {
           id: 'cr1',
@@ -438,6 +473,12 @@ describe('projectionHandlers', () => {
       expect(state.claimRelations.size).toBe(1);
       expect(state.claimRelationsByFromClaimId.get('c1')!.has('cr1')).toBe(true);
       expect(state.claimRelationsByToClaimId.get('c2')!.has('cr1')).toBe(true);
+    });
+    it('skips self-edges and edges with both claims absent', () => {
+      const state = freshState();
+      const edge = (fromClaimId: string, toClaimId: string) => makeEvent('EDGE_ADDED', { id: `${fromClaimId}-${toClaimId}`, fromClaimId, toClaimId, relation: 'supports', strength: 'strong', score: 1, runId: 'r' }) as EventEnvelope;
+      graphEventHandlers.EDGE_ADDED(edge('missing', 'missing2'), state); graphEventHandlers.EDGE_ADDED(edge('same', 'same'), state);
+      expect(state.claimRelations.size).toBe(0);
     });
   });
 

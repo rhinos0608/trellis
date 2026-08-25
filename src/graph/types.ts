@@ -129,10 +129,7 @@ export type ClaimContradictionState = 'none' | 'contested' | 'resolved';
  * id is an independent ULID — never derived from subject/predicate/object —
  * so identity survives edits to any of those fields.
  */
-export interface Claim {
-  id: string;
-  familyId: string;
-  threadId?: string;
+export interface ClaimAssertion {
   subjectEntityId?: string;
   subjectText: string;
   predicate: string;
@@ -141,17 +138,51 @@ export interface Claim {
   quantifier?: CanonicalQuantifier;
   polarity: ClaimPolarity;
   hedge: ClaimHedge;
-  epistemicStatus?: EpistemicStatus;
   evidenceType: ClaimEvidenceType;
   temporalScope?: TemporalScope;
-  confidence: number;
   authorityClass?: AuthorityClass;
   authorityRequirement?: ClaimAuthorityRequirement;
   supportLevel?: SupportLevel;
   canonicalKey: NormalizedClaimKey;
-  contradictionState: ClaimContradictionState;
-  firstSeenRunId: string;
-  lastSeenRunId: string;
+}
+
+export interface ClaimObservation extends ClaimAssertion {
+  id: string; familyId: string; threadId?: string; runId: string; observedAt: string;
+  confidence: number; sourceIds: string[]; extractionVersion: string;
+  /** Lifecycle status — absent means active. Mutated only by curation events. */
+  curationStatus?: 'active' | 'retracted';
+  lastCuration?: CurationMark;
+}
+export interface ClaimConfidencePoint { observationId: string; runId: string; observedAt: string; confidence: number; }
+export interface ClaimRevision {
+  revision: number; classification: 'supersedes'; fromObservationId: string; toObservationId: string;
+  runId: string; revisedAt: string; before: ClaimAssertion; after: ClaimAssertion; rationale: string;
+}
+/** Provenance for the most recent curation action applied to a claim or
+ * observation. Written by CLAIM_MERGED / CLAIM_SPLIT / CLAIM_RETRACTION_SET
+ * projection handlers; curation events own the full history, this mark only
+ * records the latest touch. */
+export interface CurationMark {
+  commandId: string;
+  actorId: string;
+  reason: string;
+  at: string;
+}
+
+export interface Claim extends ClaimAssertion {
+  id: string; familyId: string; threadId?: string; currentObservationId?: string; confidence: number;
+  epistemicStatus?: EpistemicStatus; contradictionState: ClaimContradictionState;
+  firstSeenRunId: string; firstSeenAt?: string; lastSeenRunId: string; lastSeenAt?: string;
+  observationIds?: string[]; evidenceIds?: string[]; observationCount?: number;
+  supportingEvidenceCount?: number; opposingEvidenceCount?: number;
+  confidenceHistory?: ClaimConfidencePoint[]; revisionHistory?: ClaimRevision[];
+  /** Lifecycle status — absent means active. Mutated only by curation events. */
+  curationStatus?: 'active' | 'retracted' | 'merged' | 'split';
+  /** Set when curationStatus === 'merged': the claim that absorbed this one. */
+  mergedIntoClaimId?: string;
+  /** Set when curationStatus === 'split': the claims this one was split into. */
+  splitIntoClaimIds?: string[];
+  lastCuration?: CurationMark;
 }
 
 // ── Evidence ──────────────────────────────────────────────────────────────
@@ -175,13 +206,10 @@ export interface EvidenceAlignment {
  * minted directly from research's EvidenceItem/EvidenceAlignment, not
  * re-derived from prose.
  */
+export type EvidenceStance = 'supports' | 'opposes' | 'context';
 export interface Evidence {
-  id: string;
-  claimId: string;
-  sourceId: string;
-  excerpt?: string;
-  alignment?: EvidenceAlignment;
-  runId: string;
+  id: string; claimId: string; sourceId: string; observationId?: string; stance?: EvidenceStance;
+  excerpt?: string; alignment?: EvidenceAlignment; runId: string;
 }
 
 // ── Claim relations (independent edge identity) ────────────────────────────
@@ -192,10 +220,19 @@ export type ClaimRelationType =
   | 'near_duplicate'
   | 'supports'
   | 'elaborates'
+  | 'qualifies'
   | 'contradicts'
   | 'background';
 
 export type ClaimRelationStrength = 'strong' | 'weak';
+export type ClaimReconciliationKind = 'same_claim' | 'near_duplicate' | 'elaboration' | 'qualification' | 'contradiction' | 'supersedes' | 'new_claim';
+export type ClaimReconciliationMethod = 'canonical_key_exact' | 'lexical_rules_v1' | 'lexical_rules_v2' | 'legacy_import';
+export interface ClaimMatchCandidate { claimId: string; classification: Exclude<ClaimReconciliationKind, 'new_claim'>; score: number; }
+export interface ClaimReconciliation {
+  observationId: string; classification: ClaimReconciliationKind; canonicalClaimId: string; matchedClaimId?: string;
+  score: number; method: ClaimReconciliationMethod; rationale: string; reconcilerVersion: 1 | 2;
+  candidates: ClaimMatchCandidate[]; supersedes?: { previousObservationId: string; previousAssertion: ClaimAssertion };
+}
 
 /**
  * Claim -> claim link with its own ULID — never a from->to composite key.
@@ -310,7 +347,7 @@ export type DiscardReason =
 export interface Source {
   id: string;
   url: string;
-  canonicalUrl?: string;
+  canonicalUrl: string;
   title?: string;
   domain: string;
   sourceType: SourceType;
@@ -320,10 +357,13 @@ export interface Source {
   extractionStatus: ExtractionStatus;
   usageStatus?: SourceUsageStatus;
   discardReason?: DiscardReason;
-  contentHash: string;
+  contentHash?: string;
   retrievedAt: string;
   publishedAt?: string;
   firstSeenRunId: string;
+  lastSeenRunId: string;
+  lastSeenAt: string;
+  runCount: number;
 }
 
 // ── Gaps ──────────────────────────────────────────────────────────────────
