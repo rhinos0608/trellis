@@ -42,16 +42,17 @@ import type {
   GapResolutionPayload,
 } from './eventTypes.js';
 import type { ProjectionState } from './projectionState.js';
+import type { AppendContext } from './events.js';
 
 // ── Interference check helpers ──────────────────────────────────────
 
-/** Check if any run OTHER than `excludeRunId` appended events referencing `entityId` after `afterTimestamp`. */
+/** Check if any run OTHER than `excludeRunId` appended events referencing `entityId` after `afterSeq`. */
 function hasLaterInterference(
   entityId: string,
-  afterTimestamp: string,
+  afterSeq: number,
   excludeRunId: string,
 ): boolean {
-  const laterEvents = queryEvents({ entityId, since: afterTimestamp });
+  const laterEvents = queryEvents({ entityId, afterSeq });
   return laterEvents.some((e) => e.runId !== excludeRunId);
 }
 
@@ -69,6 +70,7 @@ function hasLaterInterference(
 function synthesizeCompensation(
   original: EventEnvelope,
   state: ProjectionState,
+  context: AppendContext,
 ): EventEnvelope[] | null {
   const rollbackTimestamp = new Date().toISOString();
 
@@ -77,11 +79,11 @@ function synthesizeCompensation(
       const p = original.payload as EntityMergedPayload;
       // Interference check: survivor + every merged entity.
       // If any of them was touched by a later run, compensation is unsafe.
-      if (hasLaterInterference(p.survivorId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.survivorId, original.seq, original.runId)) {
         return null;
       }
       for (const mergedId of p.mergedIds) {
-        if (hasLaterInterference(mergedId, original.timestamp, original.runId)) {
+        if (hasLaterInterference(mergedId, original.seq, original.runId)) {
           return null;
         }
       }
@@ -130,18 +132,18 @@ function synthesizeCompensation(
         entityId: p.survivorId,
         entityType: 'entity',
         payload: inversePayload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
     case 'ENTITY_SPLIT': {
       const p = original.payload as EntitySplitPayload;
       // Interference check: original entity + every resulting entity.
-      if (hasLaterInterference(p.originalId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.originalId, original.seq, original.runId)) {
         return null;
       }
       for (const rid of p.resultingIds) {
-        if (hasLaterInterference(rid, original.timestamp, original.runId)) {
+        if (hasLaterInterference(rid, original.seq, original.runId)) {
           return null;
         }
       }
@@ -186,13 +188,13 @@ function synthesizeCompensation(
         entityId: p.originalId,
         entityType: 'entity',
         payload: inversePayload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
     case 'NODE_RELABELED': {
       const p = original.payload as RelabelPayload;
-      if (hasLaterInterference(p.targetId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.targetId, original.seq, original.runId)) {
         return null;
       }
       const inversePayload: RelabelPayload = {
@@ -210,7 +212,7 @@ function synthesizeCompensation(
         entityId: p.targetId,
         entityType: 'entity',
         payload: inversePayload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
@@ -218,7 +220,7 @@ function synthesizeCompensation(
     case 'EXTRACTION_CONFIDENCE_REVISED':
     case 'RELATIONSHIP_STRENGTH_REVISED': {
       const p = original.payload as ValueRevisionPayload;
-      if (hasLaterInterference(p.targetId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.targetId, original.seq, original.runId)) {
         return null;
       }
       const inversePayload: ValueRevisionPayload = {
@@ -237,13 +239,13 @@ function synthesizeCompensation(
         entityId: p.targetId,
         entityType: null,
         payload: inversePayload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
     case 'SOURCE_CHANGED': {
       const p = original.payload as SourceChangedPayload;
-      if (hasLaterInterference(p.sourceId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.sourceId, original.seq, original.runId)) {
         return null;
       }
       const inversePayload: SourceChangedPayload = {
@@ -261,14 +263,14 @@ function synthesizeCompensation(
         entityId: p.sourceId,
         entityType: 'source',
         payload: inversePayload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
     case 'SOURCE_RETRACTED': {
       // Source retraction reversal = re-add source from original SOURCE_ADDED.
       const p = original.payload as { sourceId: string };
-      if (hasLaterInterference(p.sourceId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.sourceId, original.seq, original.runId)) {
         return null;
       }
       const addedEvents = queryEvents({ eventType: 'SOURCE_ADDED' });
@@ -288,13 +290,13 @@ function synthesizeCompensation(
         entityId: p.sourceId,
         entityType: 'source',
         payload: originalAdd.payload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
     case 'FAMILY_RENAMED': {
       const p = original.payload as RelabelPayload;
-      if (hasLaterInterference(p.targetId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.targetId, original.seq, original.runId)) {
         return null;
       }
       const inversePayload: RelabelPayload = {
@@ -312,18 +314,18 @@ function synthesizeCompensation(
         entityId: p.targetId,
         entityType: 'family',
         payload: inversePayload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
     case 'FAMILY_MERGED': {
       const p = original.payload as FamilyMergedPayload;
       // Interference check: survivor + every merged family.
-      if (hasLaterInterference(p.survivorFamilyId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.survivorFamilyId, original.seq, original.runId)) {
         return null;
       }
       for (const mergedId of p.mergedFamilyIds) {
-        if (hasLaterInterference(mergedId, original.timestamp, original.runId)) {
+        if (hasLaterInterference(mergedId, original.seq, original.runId)) {
           return null;
         }
       }
@@ -349,7 +351,7 @@ function synthesizeCompensation(
             label: snap?.label ?? mergedId,
             description: snap?.description,
           },
-        });
+        }, context);
         if (created === null) return null;
         events.push(created);
       }
@@ -357,10 +359,17 @@ function synthesizeCompensation(
     }
 
     case 'FAMILY_RELATION_REMOVED': {
-      const p = original.payload as { familyId: string; relatedFamilyId: string };
-      if (hasLaterInterference(p.familyId, original.timestamp, original.runId)) {
+      const p = original.payload as { family_a: string; family_b: string; relation_type: string; relation_id?: string; reason?: string };
+      if (hasLaterInterference(p.family_a, original.seq, original.runId)) {
         return null;
       }
+      const compensatingPayload = {
+        relation_id: p.relation_id ?? `rollback-${original.id}`,
+        family_a: p.family_a,
+        family_b: p.family_b,
+        relation_type: p.relation_type,
+        ...(p.reason !== undefined ? { reason: p.reason } : {}),
+      };
       const event = appendEvent({
         timestamp: rollbackTimestamp,
         eventType: 'FAMILY_RELATED',
@@ -368,16 +377,16 @@ function synthesizeCompensation(
         runId: original.runId,
         batchId: null,
         actor: 'rollback',
-        entityId: p.familyId,
+        entityId: p.family_a,
         entityType: 'family',
-        payload: original.payload,
-      });
+        payload: compensatingPayload,
+      }, context);
       return event !== null ? [event] : null;
     }
 
     case 'CONTRADICTION_RESOLVED': {
       const p = original.payload as ContradictionResolutionPayload;
-      if (hasLaterInterference(p.contradictionId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.contradictionId, original.seq, original.runId)) {
         return null;
       }
       const inversePayload: ContradictionResolutionPayload = {
@@ -395,13 +404,13 @@ function synthesizeCompensation(
         entityId: p.contradictionId,
         entityType: 'contradiction',
         payload: inversePayload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
     case 'GAP_RESOLVED': {
       const p = original.payload as GapResolutionPayload;
-      if (hasLaterInterference(p.gapId, original.timestamp, original.runId)) {
+      if (hasLaterInterference(p.gapId, original.seq, original.runId)) {
         return null;
       }
       const inversePayload: GapResolutionPayload = {
@@ -419,7 +428,7 @@ function synthesizeCompensation(
         entityId: p.gapId,
         entityType: 'gap',
         payload: inversePayload,
-      });
+      }, context);
       return event !== null ? [event] : null;
     }
 
@@ -437,6 +446,7 @@ function synthesizeCompensation(
 export function rollbackCrossRunMutation(
   event: EventEnvelope,
   state: ProjectionState,
+  context: AppendContext,
 ): RollbackOutcome {
   const rollbackClass = ROLLBACK_CLASS[event.eventType];
   if (rollbackClass !== 'cross_run_mutation') {
@@ -446,7 +456,7 @@ export function rollbackCrossRunMutation(
     };
   }
 
-  const inverses = synthesizeCompensation(event, state);
+  const inverses = synthesizeCompensation(event, state, context);
 
   if (inverses === null || inverses.length === 0) {
     return {
@@ -481,6 +491,7 @@ export function rollbackCrossRunMutation(
 export function rollbackRun(
   runId: string,
   state: ProjectionState,
+  context: AppendContext,
 ): { skipped: number; executed: number; blocked: { eventId: string; reason: string }[] } {
   // Idempotency: if already rolled back, skip.
   if (state.rolledBackRuns.has(runId)) {
@@ -500,7 +511,7 @@ export function rollbackRun(
     entityId: null,
     entityType: null,
     payload: { run_id: runId },
-  });
+  }, context);
 
   // Mark the run as rolled back — projectionBuilder will skip on next rebuild
   state.rolledBackRuns.add(runId);
@@ -516,7 +527,7 @@ export function rollbackRun(
   const blocked: { eventId: string; reason: string }[] = [];
 
   for (const event of crossRunEvents) {
-    const outcome = rollbackCrossRunMutation(event, state);
+    const outcome = rollbackCrossRunMutation(event, state, context);
     if (outcome.kind === 'executed') {
       executed++;
     } else {

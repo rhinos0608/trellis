@@ -8,13 +8,16 @@ import crypto from 'node:crypto';
 import { logger } from '../logger.js';
 import { getDb } from './db.js';
 import { SCHEMA_VERSION } from './schema.js';
+import type { EventCursor } from './eventTypes.js';
+import type { ProjectionState } from './projectionState.js';
+import { canonicalSerializeProjectionState } from './projectionState.js';
 
-export const CURRENT_PROJECTION_VERSION = 1;
+export const CURRENT_PROJECTION_VERSION = 2;
 
 export interface ProjectionCheckpoint {
   id: string;
   createdAt: string;
-  eventCursor: string;
+  eventCursor: EventCursor;
   projectionVersion: number;
   schemaVersion: number;
   eventCount: number;
@@ -36,7 +39,7 @@ const INSERT_CHECKPOINT_SQL = `
 const LATEST_COMPATIBLE_SQL = `
   SELECT * FROM projection_checkpoints
   WHERE compatible = 1 AND projection_version = @projectionVersion
-  ORDER BY created_at DESC
+  ORDER BY event_cursor DESC, created_at DESC, id DESC
   LIMIT 1
 `;
 
@@ -44,7 +47,7 @@ function rowToCheckpoint(row: Record<string, unknown>): ProjectionCheckpoint {
   const cp: ProjectionCheckpoint = {
     id: row.id as string,
     createdAt: row.created_at as string,
-    eventCursor: row.event_cursor as string,
+    eventCursor: Number(row.event_cursor),
     projectionVersion: Number(row.projection_version),
     schemaVersion: Number(row.schema_version),
     eventCount: Number(row.event_count),
@@ -60,26 +63,22 @@ function rowToCheckpoint(row: Record<string, unknown>): ProjectionCheckpoint {
   return cp;
 }
 
+export const PROJECTION_CHECKSUM_VERSION = 1;
+
 /**
- * Compute a deterministic checksum of the current projection.
- * sha256(sorted entity ids + '|' + sorted claim ids) — mirrors
- * search-mcp's sha256(sorted_node_ids + '|' + sorted_edge_ids).
+ * Compute a deterministic checksum of the entire projection state.
+ * Uses canonical serialization (sorted Maps/Sets, sorted object keys)
+ * so identical logical state always produces the same hash regardless
+ * of Map/Set insertion order.
  */
-export function computeProjectionChecksum(state: {
-  entities: Map<string, { id: string }>;
-  claims: Map<string, { id: string }>;
-}): string {
-  const entityIds = JSON.stringify([...state.entities.keys()].sort());
-  const claimIds = JSON.stringify([...state.claims.keys()].sort());
-  const hash = crypto.createHash('sha256');
-  hash.update(entityIds);
-  hash.update('|');
-  hash.update(claimIds);
-  return hash.digest('hex');
+export function computeProjectionChecksum(state: ProjectionState): string {
+  const canonical = canonicalSerializeProjectionState(state);
+  const digest = crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
+  return `sha256:projection-v${String(PROJECTION_CHECKSUM_VERSION)}:${digest}`;
 }
 
 export function createCheckpoint(
-  eventCursor: string,
+  eventCursor: EventCursor,
   eventCount: number,
   checksum: string,
   snapshotJson?: string,
@@ -151,7 +150,7 @@ export function invalidateAllCheckpoints(): void {
   if (db === null) return;
 
   try {
-    db.prepare('UPDATE projection_checkpoints SET compatible = 0 WHERE id != ?').run('__schema_version');
+    db.prepare('UPDATE projection_checkpoints SET compatible = 0').run();
     logger.info('store: all projection checkpoints invalidated');
   } catch (err) {
     logger.warn({ err }, 'store: invalidateAllCheckpoints failed');

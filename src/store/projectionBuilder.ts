@@ -7,7 +7,8 @@
  */
 
 import { logger } from '../logger.js';
-import { queryEvents, countEvents, getLatestEventCursor } from './events.js';
+import { queryEvents, queryStoredRows, countEvents, getLatestEventCursor, hashPayload, rowToEnvelope } from './events.js';
+import { decodeEventPayload, validateEventReferences, validateProjectionReferences } from './eventValidation.js';
 import { createCheckpoint, getLatestCompatibleCheckpoint, computeProjectionChecksum, CURRENT_PROJECTION_VERSION } from './checkpoints.js';
 import { ROLLBACK_CLASS } from './eventTypes.js';
 import type { TrellisEventType } from './eventTypes.js';
@@ -105,7 +106,7 @@ function collectRolledBackRuns(): Set<string> {
 function isCheckpointStale(
   currentRolledBackRuns: Set<string>,
   checkpointRolledBackRunIds: string[] | undefined,
-  checkpointCursor: string,
+  checkpointCursor: number,
 ): boolean {
   const checkpointRollbackSet = new Set(checkpointRolledBackRunIds ?? []);
   for (const runId of currentRolledBackRuns) {
@@ -114,7 +115,7 @@ function isCheckpointStale(
     // are before/at the cursor (meaning they're baked into the snapshot).
     const runEvents = queryEvents({ runId });
     const firstEvent = runEvents[0];
-    if (firstEvent !== undefined && firstEvent.id <= checkpointCursor) {
+    if (firstEvent !== undefined && firstEvent.seq <= checkpointCursor) {
       return true;
     }
   }
@@ -127,20 +128,36 @@ function isCheckpointStale(
 function replayEvents(
   events: EventEnvelope[],
   handlers: EventHandlerRegistry,
-  state: ProjectionState,
+  validationState: ProjectionState,
+  projectionState: ProjectionState,
 ): void {
   for (const event of events) {
-    if (AUDIT_ONLY_EVENTS.has(event.eventType)) continue;
-    if (isEventSkippedByRollback(event, state)) continue;
-    const handler = handlers[event.eventType];
-    if (handler !== undefined) {
-      handler(event, state);
+    const decoded = decodeEventPayload(event.eventType, event.eventVersion, event.payload);
+    const decodedEvent = { ...event, payload: decoded.payload };
+
+    // Validate against complete historical state, including events later skipped by rollback.
+    validateEventReferences(event.eventType, decoded.payload, validationState);
+    const validationHandler = handlers[event.eventType];
+    if (validationHandler !== undefined) validationHandler(decodedEvent, validationState);
+    validationState.lastAppliedSeq = event.seq;
+
+    // Materialized projection preserves existing rollback skip semantics.
+    if (AUDIT_ONLY_EVENTS.has(event.eventType)) {
+      projectionState.lastAppliedSeq = event.seq;
+      continue;
     }
+    if (isEventSkippedByRollback(event, projectionState)) {
+      projectionState.lastAppliedSeq = event.seq;
+      continue;
+    }
+    const handler = handlers[event.eventType];
+    if (handler !== undefined) handler(decodedEvent, projectionState);
+    projectionState.lastAppliedSeq = event.seq;
   }
 }
 
 /**
- * Replay all events in timestamp order through the provided handler
+ * Replay all events in seq order through the provided handler
  * registry. Returns the fully materialized ProjectionState.
  *
  * Uses checkpoints for incremental rebuilds when available and not stale.
@@ -158,6 +175,7 @@ export function rebuildProjection(
   const checkpoint = getLatestCompatibleCheckpoint(CURRENT_PROJECTION_VERSION);
 
   let state: ProjectionState;
+  let validationState: ProjectionState;
   let eventsProcessed: number;
 
   if (checkpoint?.snapshotJson !== undefined && checkpoint.snapshotJson !== '' &&
@@ -169,9 +187,13 @@ export function rebuildProjection(
     // ── Incremental path ──
     state = deserializeProjectionState(checkpoint.snapshotJson);
     state.rolledBackRuns = fullRolledBackRuns;
+    validationState = deserializeProjectionState(checkpoint.snapshotJson);
+    validationState.rolledBackRuns = fullRolledBackRuns;
 
-    const deltaEvents = queryEvents({ cursor: checkpoint.eventCursor });
-    replayEvents(deltaEvents, handlers, state);
+    const storedDelta = queryStoredRows({ afterSeq: checkpoint.eventCursor });
+    for (const row of storedDelta) if (hashPayload(row.payload) !== row.payload_hash) throw new Error(`Payload hash mismatch at seq ${String(row.seq)}`);
+    const deltaEvents = storedDelta.map(rowToEnvelope);
+    replayEvents(deltaEvents, handlers, validationState, state);
     eventsProcessed = deltaEvents.length;
 
     logger.info(
@@ -187,9 +209,13 @@ export function rebuildProjection(
     // ── Genesis path ──
     state = createEmptyProjectionState();
     state.rolledBackRuns = fullRolledBackRuns;
+    validationState = createEmptyProjectionState();
+    validationState.rolledBackRuns = fullRolledBackRuns;
 
-    const allEvents = queryEvents({});
-    replayEvents(allEvents, handlers, state);
+    const stored = queryStoredRows();
+    for (const row of stored) if (hashPayload(row.payload) !== row.payload_hash) throw new Error(`Payload hash mismatch at seq ${String(row.seq)}`);
+    const allEvents = stored.map(rowToEnvelope);
+    replayEvents(allEvents, handlers, validationState, state);
     eventsProcessed = allEvents.length;
 
     logger.info(
@@ -202,6 +228,8 @@ export function rebuildProjection(
     );
   }
 
+  validateProjectionReferences(state);
+  state.lastAppliedSeq = getLatestEventCursor() ?? 0;
   const durationMs = Date.now() - startTime;
 
   logger.info(

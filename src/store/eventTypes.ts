@@ -233,12 +233,19 @@ export type RollbackOutcome =
 // ── Event envelope ──────────────────────────────────────────────────────
 
 /**
+ * Authoritative monotonic cursor — the `seq` column from the events table.
+ * Replaces the old ULID-string ordering; ordering is now by seq only.
+ */
+export type EventCursor = number;
+
+/**
  * Application-level typed event, as domain code (Worker 3/4/6/7) appends
  * and reads it. The DB row itself stores `payload` as a serialized JSON
  * string (matching search-mcp's KgEvent) — that raw-row <-> typed-envelope
  * mapping is store/'s internal concern (Worker 2), not exposed here.
  */
 export interface EventEnvelope<TPayload = unknown> {
+  seq: EventCursor;
   id: string;
   timestamp: string;
   eventType: TrellisEventType;
@@ -249,5 +256,5 @@ export interface EventEnvelope<TPayload = unknown> {
   entityId: string | null;
   entityType: string | null;
   payload: TPayload;
-  payloadHash: string | null;
+  payloadHash: string;
 }

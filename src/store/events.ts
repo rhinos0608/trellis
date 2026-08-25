@@ -6,7 +6,12 @@
 import crypto from 'node:crypto';
 import { logger } from '../logger.js';
 import { getDb } from './db.js';
-import type { EventEnvelope, TrellisEventType } from './eventTypes.js';
+import type { EventEnvelope, EventCursor, TrellisEventType } from './eventTypes.js';
+import type { ProjectionState, EventHandlerRegistry } from './projectionState.js';
+import { serializeProjectionState, deserializeProjectionState } from './projectionState.js';
+import { EVENT_CODECS } from './eventSchemas/registry.js';
+import { decodeEventPayload, validateEventReferences, validateProjectionReferences } from './eventValidation.js';
+import { EventTypeUnknownError, EventVersionUnsupportedError, StaleProjectionError } from './eventErrors.js';
 
 // ── ULID generation ─────────────────────────────────────────────────
 
@@ -14,8 +19,8 @@ let _lastUlidTs = 0;
 let _ulidCounter = 0;
 
 /**
- * Chronologically-sortable ID: base36 timestamp + 16 hex chars + monotonic counter.
- * Pure JS, no native ULID dependency.
+ * Opaque, roughly-sortable external identifier.
+ * No longer used for ordering — seq is the authoritative ordering primitive.
  */
 export function generateUlid(): string {
   const now = Date.now();
@@ -32,13 +37,14 @@ export function generateUlid(): string {
 
 // ── Payload hash ────────────────────────────────────────────────────
 
-function hashPayload(payload: string): string {
+export function hashPayload(payload: string): string {
   return crypto.createHash('sha256').update(payload, 'utf8').digest('hex');
 }
 
 // ── DB row shape ────────────────────────────────────────────────────
 
-interface EventRow {
+export interface EventRow {
+  seq: number;
   id: string;
   timestamp: string;
   event_type: string;
@@ -49,11 +55,12 @@ interface EventRow {
   entity_id: string | null;
   entity_type: string | null;
   payload: string;
-  payload_hash: string | null;
+  payload_hash: string;
 }
 
-function rowToEnvelope(row: EventRow): EventEnvelope {
+export function rowToEnvelope(row: EventRow): EventEnvelope {
   return {
+    seq: row.seq,
     id: row.id,
     timestamp: row.timestamp,
     eventType: row.event_type as TrellisEventType,
@@ -70,7 +77,8 @@ function rowToEnvelope(row: EventRow): EventEnvelope {
 
 // ── Append ──────────────────────────────────────────────────────────
 
-export type NewEventInput = Omit<EventEnvelope, 'id' | 'payloadHash'>;
+export type NewEventInput = Omit<EventEnvelope, 'seq' | 'id' | 'payloadHash'>;
+export interface AppendContext { projection: ProjectionState; handlers: EventHandlerRegistry; }
 
 const INSERT_SQL = `
   INSERT INTO events (id, timestamp, event_type, event_version, run_id, batch_id,
@@ -80,7 +88,7 @@ const INSERT_SQL = `
 `;
 
 /** Append multiple events in a single transaction. Returns fully-populated envelopes. */
-export function appendEvents(events: NewEventInput[]): EventEnvelope[] {
+export function appendEvents(events: readonly NewEventInput[], context: AppendContext): EventEnvelope[] {
   const db = getDb();
   if (db === null) {
     logger.warn('store: appendEvents called before database initialised');
@@ -88,16 +96,27 @@ export function appendEvents(events: NewEventInput[]): EventEnvelope[] {
   }
 
   try {
+    const working = deserializeProjectionState(serializeProjectionState(context.projection));
     const insert = db.prepare(INSERT_SQL);
     const result: EventEnvelope[] = [];
 
     const txn = db.transaction(() => {
+      const latest = getLatestEventCursor();
+      const expected = context.projection.lastAppliedSeq;
+      if ((latest ?? 0) !== expected) throw new StaleProjectionError(expected, latest);
+
       for (const ev of events) {
+        const codec = EVENT_CODECS[ev.eventType];
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        if (!codec) throw new EventTypeUnknownError(ev.eventType);
+        if (ev.eventVersion !== codec.latestVersion) throw new EventVersionUnsupportedError(ev.eventType, ev.eventVersion, codec.latestVersion);
+        const decoded = decodeEventPayload(ev.eventType, ev.eventVersion, ev.payload);
+        validateEventReferences(ev.eventType, decoded.payload, working);
         const id = generateUlid();
-        const payloadStr = JSON.stringify(ev.payload);
+        const payloadStr = JSON.stringify(decoded.payload);
         const payloadHash = hashPayload(payloadStr);
 
-        insert.run({
+        const info = insert.run({
           id,
           timestamp: ev.timestamp,
           eventType: ev.eventType,
@@ -111,7 +130,10 @@ export function appendEvents(events: NewEventInput[]): EventEnvelope[] {
           payloadHash,
         });
 
+        const seq = Number(info.lastInsertRowid);
+
         result.push({
+          seq,
           id,
           timestamp: ev.timestamp,
           eventType: ev.eventType,
@@ -121,13 +143,19 @@ export function appendEvents(events: NewEventInput[]): EventEnvelope[] {
           actor: ev.actor,
           entityId: ev.entityId,
           entityType: ev.entityType,
-          payload: ev.payload,
+          payload: decoded.payload,
           payloadHash,
         });
+        const handler = context.handlers[ev.eventType];
+        const inserted = result[result.length - 1];
+        if (handler && inserted) handler(inserted, working);
+        working.lastAppliedSeq = seq;
       }
+      validateProjectionReferences(working);
     });
 
-    txn();
+    txn.immediate();
+    Object.assign(context.projection, deserializeProjectionState(serializeProjectionState(working)));
     return result;
   } catch (err) {
     logger.error({ err, count: events.length }, 'store: appendEvents failed');
@@ -136,8 +164,8 @@ export function appendEvents(events: NewEventInput[]): EventEnvelope[] {
 }
 
 /** Append a single event. Convenience wrapper. */
-export function appendEvent(event: NewEventInput): EventEnvelope | null {
-  const results = appendEvents([event]);
+export function appendEvent(event: NewEventInput, context: AppendContext): EventEnvelope | null {
+  const results = appendEvents([event], context);
   return results[0] ?? null;
 }
 
@@ -147,19 +175,34 @@ export interface QueryEventsOpts {
   runId?: string;
   eventType?: TrellisEventType;
   entityId?: string;
+  /** Pure timestamp filter (timestamp >= since). No ordering semantics. */
   since?: string;
+  /** Cursor: only return events with seq > afterSeq. */
+  afterSeq?: EventCursor;
   limit?: number;
-  cursor?: string;
 }
 
 const QUERY_BASE = 'SELECT * FROM events WHERE 1=1';
-const QUERY_ORDER = 'ORDER BY timestamp ASC, id ASC';
+const QUERY_ORDER = 'ORDER BY seq ASC';
 
 /**
  * Query events with optional filters.
- * Cursor is the `id` of the last event in the previous page.
- * `since` is a timestamp (ISO string) — events with timestamp >= since.
+ * Ordering is always by seq ASC (insertion order).
+ * `afterSeq` filters to events appended after the given seq.
+ * `since` is a timestamp filter only — it does not affect ordering.
  */
+export function queryStoredRows(opts: QueryEventsOpts = {}): EventRow[] {
+  const db = getDb();
+  if (db === null) return [];
+  const where = opts.afterSeq !== undefined ? ' WHERE seq > @afterSeq' : '';
+  const rows = db.prepare(`SELECT * FROM events${where} ORDER BY seq ASC`).all(opts.afterSeq === undefined ? {} : { afterSeq: opts.afterSeq }) as EventRow[];
+  return rows;
+}
+
+export function queryStoredEvents(opts: QueryEventsOpts = {}): { envelope: EventEnvelope; rawPayload: string }[] {
+  return queryStoredRows(opts).map((row) => ({ envelope: rowToEnvelope(row), rawPayload: row.payload }));
+}
+
 export function queryEvents(opts: QueryEventsOpts = {}): EventEnvelope[] {
   const db = getDb();
   if (db === null) {
@@ -187,9 +230,9 @@ export function queryEvents(opts: QueryEventsOpts = {}): EventEnvelope[] {
       clauses.push('timestamp >= @since');
       params.since = opts.since;
     }
-    if (opts.cursor !== undefined) {
-      clauses.push('id > @cursor');
-      params.cursor = opts.cursor;
+    if (opts.afterSeq !== undefined) {
+      clauses.push('seq > @afterSeq');
+      params.afterSeq = opts.afterSeq;
     }
 
     const where = clauses.length > 0 ? ' AND ' + clauses.join(' AND ') : '';
@@ -209,13 +252,13 @@ export function queryEvents(opts: QueryEventsOpts = {}): EventEnvelope[] {
 
 // ── Utilities ───────────────────────────────────────────────────────
 
-export function getLatestEventCursor(): string | null {
+export function getLatestEventCursor(): EventCursor | null {
   const db = getDb();
   if (db === null) return null;
   const row = db
-    .prepare('SELECT id FROM events ORDER BY timestamp DESC, id DESC LIMIT 1')
-    .get() as { id: string } | undefined;
-  return row?.id ?? null;
+    .prepare('SELECT seq FROM events ORDER BY seq DESC LIMIT 1')
+    .get() as { seq: number } | undefined;
+  return row?.seq ?? null;
 }
 
 export function countEvents(): number {
