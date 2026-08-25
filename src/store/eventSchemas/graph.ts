@@ -79,10 +79,7 @@ export const entitySplitPayload = z.strictObject({
 
 // ── Claim events ──────────────────────────────────────────────────────
 
-export const claimAcceptedPayload = z.strictObject({
-  id: z.string(),
-  familyId: z.string(),
-  threadId: z.string().optional(),
+const claimAssertionPayload = z.strictObject({
   subjectEntityId: z.string().optional(),
   subjectText: z.string(),
   predicate: z.string(),
@@ -99,9 +96,6 @@ export const claimAcceptedPayload = z.strictObject({
     .optional(),
   polarity: z.enum(['asserted', 'negated', 'conditional']),
   hedge: z.enum(['certain', 'likely', 'possible', 'speculative']),
-  epistemicStatus: z
-    .enum(['consensus', 'contested', 'emerging', 'speculative', 'unknown'])
-    .optional(),
   evidenceType: z.enum(['study', 'benchmark', 'claim', 'opinion', 'anecdote']),
   temporalScope: z
     .strictObject({
@@ -115,7 +109,6 @@ export const claimAcceptedPayload = z.strictObject({
       dateConfidence: z.enum(['exact', 'inferred', 'publication_only', 'unknown']),
     })
     .optional(),
-  confidence: z.number(),
   authorityClass: z
     .enum([
       'official_spec', 'official_changelog', 'official_repo', 'official_vendor',
@@ -132,10 +125,35 @@ export const claimAcceptedPayload = z.strictObject({
     predicate: z.string(),
     quantifierCanonical: z.string().optional(),
   }),
-  contradictionState: z.enum(['none', 'contested', 'resolved']),
-  firstSeenRunId: z.string(),
-  lastSeenRunId: z.string(),
 });
+
+export const claimAcceptedPayload = claimAssertionPayload.extend({
+  id: z.string(), familyId: z.string(), threadId: z.string().optional(),
+  epistemicStatus: z.enum(['consensus', 'contested', 'emerging', 'speculative', 'unknown']).optional(), confidence: z.number(),
+  contradictionState: z.enum(['none', 'contested', 'resolved']), firstSeenRunId: z.string(), lastSeenRunId: z.string(),
+});
+
+const claimReconciliationPayload = z.strictObject({
+  observationId: z.string(),
+  classification: z.enum(['same_claim', 'near_duplicate', 'elaboration', 'qualification', 'contradiction', 'supersedes', 'new_claim']),
+  canonicalClaimId: z.string(), matchedClaimId: z.string().optional(),
+  score: z.number().min(0).max(1),
+  method: z.enum(['canonical_key_exact', 'lexical_rules_v1', 'lexical_rules_v2', 'legacy_import']),
+  rationale: z.string(), reconcilerVersion: z.union([z.literal(1), z.literal(2)]),
+  candidates: z.array(z.strictObject({
+    claimId: z.string(), classification: z.enum(['same_claim', 'near_duplicate', 'elaboration', 'qualification', 'contradiction', 'supersedes']), score: z.number().min(0).max(1),
+  })).max(5),
+  supersedes: z.strictObject({ previousObservationId: z.string(), previousAssertion: claimAssertionPayload }).optional(),
+}).superRefine((r, ctx) => {
+  if (r.classification === 'new_claim' && r.matchedClaimId !== undefined) ctx.addIssue({ code: 'custom', path: ['matchedClaimId'], message: 'new_claim forbids matchedClaimId' });
+  if (r.classification !== 'new_claim' && r.matchedClaimId === undefined) ctx.addIssue({ code: 'custom', path: ['matchedClaimId'], message: 'classification requires matchedClaimId' });
+  if ((r.classification === 'same_claim' || r.classification === 'supersedes') && r.canonicalClaimId !== r.matchedClaimId) ctx.addIssue({ code: 'custom', path: ['canonicalClaimId'], message: 'canonicalClaimId must equal matchedClaimId' });
+  if (['near_duplicate', 'elaboration', 'qualification', 'contradiction'].includes(r.classification) && r.canonicalClaimId === r.matchedClaimId) ctx.addIssue({ code: 'custom', path: ['canonicalClaimId'], message: 'canonicalClaimId must differ from matchedClaimId' });
+  if (r.classification === 'supersedes' && r.supersedes === undefined) ctx.addIssue({ code: 'custom', path: ['supersedes'], message: 'supersedes required' });
+  if (r.classification !== 'supersedes' && r.supersedes !== undefined) ctx.addIssue({ code: 'custom', path: ['supersedes'], message: 'supersedes forbidden' });
+});
+
+export const claimObservedPayload = z.strictObject({ observation: claimAssertionPayload.extend({ id: z.string(), familyId: z.string(), threadId: z.string().optional(), runId: z.string(), observedAt: z.string(), confidence: z.number(), sourceIds: z.array(z.string()), extractionVersion: z.string() }), reconciliation: claimReconciliationPayload });
 
 // ── Evidence events ───────────────────────────────────────────────────
 
@@ -151,13 +169,18 @@ export const evidenceAlignment = z.strictObject({
   explanation: z.string(),
 });
 
-export const evidenceLinkedPayload = z.strictObject({
+export const evidenceLinkedPayloadV1 = z.strictObject({
   id: z.string(),
   claimId: z.string(),
   sourceId: z.string(),
   excerpt: z.string().optional(),
   alignment: evidenceAlignment.optional(),
   runId: z.string(),
+});
+export const evidenceLinkedPayload = evidenceLinkedPayloadV1;
+export const evidenceLinkedPayloadV2 = evidenceLinkedPayloadV1.extend({
+  observationId: z.string(),
+  stance: z.enum(['supports', 'opposes', 'context']),
 });
 
 // ── Edge / claim-relation events ──────────────────────────────────────
@@ -168,7 +191,7 @@ export const edgeAddedPayload = z.strictObject({
   toClaimId: z.string(),
   relation: z.enum([
     'same_claim', 'near_duplicate', 'supports',
-    'elaborates', 'contradicts', 'background',
+    'elaborates', 'qualifies', 'contradicts', 'background',
   ]),
   strength: z.enum(['strong', 'weak']),
   score: z.number(),
@@ -294,6 +317,36 @@ export const sourceAddedPayload = z.strictObject({
   firstSeenRunId: z.string(),
 });
 
+export const sourceObservedPayload = z.strictObject({
+  sourceId: z.string(),
+  observedSourceId: z.string(),
+  canonicalUrl: z.string(),
+  url: z.string(),
+  title: z.string().optional(),
+  domain: z.string(),
+  sourceType: z.enum([
+    'academic', 'web', 'github', 'reddit', 'hackernews', 'stackoverflow',
+    'documentation', 'official_docs', 'official_blog', 'package_registry',
+    'vendor_docs', 'forum', 'social', 'news', 'patent', 'pubmed',
+    'wikipedia', 'podcast', 'producthunt', 'youtube', 'browser-interactive',
+    'openalex', 'crossref', 'datacite', 'ror', 'semantic_scholar',
+    'gdelt', 'wikidata', 'unknown',
+  ]),
+  authorityClass: z
+    .enum([
+      'official_spec', 'official_changelog', 'official_repo', 'official_vendor',
+      'package_registry', 'vendor_sdk_docs', 'third_party_analysis', 'news',
+      'encyclopedia', 'forum_social', 'unknown',
+    ])
+    .optional(),
+  qualityScore: z.number().optional(),
+  isPrimary: z.boolean(),
+  extractionStatus: z.enum(['pending', 'extracted', 'failed']),
+  contentHash: z.string().optional(),
+  runId: z.string(),
+  observedAt: z.string(),
+});
+
 export const sourceReadPayload = z.strictObject({
   sourceId: z.string(),
 });
@@ -308,4 +361,104 @@ export const sourceRetractedPayload = z.strictObject({
   sourceId: z.string(),
   reasonType: z.string(),
   wasUsageStatus: z.string().optional(),
+});
+
+// ── Curation events (Phase 9 Stage 1) ──────────────────────────────
+
+/** Sane bounds for operator-supplied free-text/identifier fields — documented
+ * via named constants so tests and call sites share one source of truth. */
+export const CURATION_COMMAND_ID_MAX_LENGTH = 100;
+export const CURATION_REASON_MAX_LENGTH = 200;
+
+const evidenceStance = z.enum(['supports', 'opposes', 'context']);
+const retractionStatus = z.enum(['active', 'retracted']);
+
+export const curationContext = z.strictObject({
+  commandId: z.string().min(1).max(CURATION_COMMAND_ID_MAX_LENGTH),
+  reason: z.string().min(1).max(CURATION_REASON_MAX_LENGTH),
+  expectedSeq: z.number().int().nonnegative(),
+});
+
+export const claimMergedPayload = z
+  .strictObject({
+    curation: curationContext,
+    sourceClaimId: z.string(),
+    survivorClaimId: z.string(),
+    affectedObservationIds: z.array(z.string()),
+    affectedEvidenceIds: z.array(z.string()),
+    affectedRelationIds: z.array(z.string()),
+    affectedContradictionIds: z.array(z.string()),
+    affectedGapIds: z.array(z.string()),
+  })
+  .superRefine((r, ctx) => {
+    if (r.sourceClaimId === r.survivorClaimId) ctx.addIssue({ code: 'custom', path: ['survivorClaimId'], message: 'sourceClaimId must differ from survivorClaimId' });
+  });
+
+export const claimSplitResult = z.strictObject({
+  claimId: z.string(),
+  currentObservationId: z.string(),
+  observationIds: z.array(z.string()).min(1),
+  evidenceIds: z.array(z.string()),
+});
+
+export const claimSplitPayload = z
+  .strictObject({
+    curation: curationContext,
+    sourceClaimId: z.string(),
+    results: z.array(claimSplitResult).min(2),
+  })
+  .superRefine((r, ctx) => {
+    r.results.forEach((result, i) => {
+      if (!result.observationIds.includes(result.currentObservationId)) ctx.addIssue({ code: 'custom', path: ['results', i, 'currentObservationId'], message: 'currentObservationId must be a member of observationIds' });
+    });
+    const claimIds = r.results.map((result) => result.claimId);
+    if (new Set(claimIds).size !== claimIds.length) ctx.addIssue({ code: 'custom', path: ['results'], message: 'duplicate result claimIds' });
+    const observationIds = r.results.flatMap((result) => result.observationIds);
+    if (new Set(observationIds).size !== observationIds.length) ctx.addIssue({ code: 'custom', path: ['results'], message: 'duplicate result observationIds' });
+    const evidenceIds = r.results.flatMap((result) => result.evidenceIds);
+    if (new Set(evidenceIds).size !== evidenceIds.length) ctx.addIssue({ code: 'custom', path: ['results'], message: 'duplicate result evidenceIds' });
+  });
+
+export const claimRetractionSetPayload = z
+  .strictObject({
+    curation: curationContext,
+    target: z.strictObject({ kind: z.enum(['claim', 'observation']), id: z.string() }),
+    previousStatus: retractionStatus,
+    newStatus: retractionStatus,
+    observationIds: z.array(z.string()).optional(),
+  })
+  .superRefine((r, ctx) => {
+    if (r.previousStatus === r.newStatus) ctx.addIssue({ code: 'custom', path: ['newStatus'], message: 'no-op status transition rejected' });
+  });
+
+export const curatedRelationSnapshot = z.strictObject({
+  id: z.string(),
+  fromClaimId: z.string(),
+  toClaimId: z.string(),
+  relation: z.enum(['same_claim', 'near_duplicate', 'supports', 'elaborates', 'qualifies', 'contradicts', 'background']),
+  strength: z.enum(['strong', 'weak']),
+  score: z.number(),
+  rationale: z.string().optional(),
+  runId: z.string(),
+});
+
+export const claimRelationCuratedPayload = z
+  .strictObject({
+    curation: curationContext,
+    relationId: z.string(),
+    before: curatedRelationSnapshot.nullable(),
+    after: curatedRelationSnapshot.nullable(),
+  })
+  .superRefine((r, ctx) => {
+    if (r.before === null && r.after === null) ctx.addIssue({ code: 'custom', path: ['after'], message: 'before and after must not both be null' });
+    if (r.after !== null && r.after.id !== r.relationId) ctx.addIssue({ code: 'custom', path: ['after'], message: 'after.id must equal relationId' });
+    if (r.before !== null && r.before.id !== r.relationId) ctx.addIssue({ code: 'custom', path: ['before'], message: 'before.id must equal relationId' });
+  });
+
+export const evidenceStanceOverriddenPayload = z.strictObject({
+  curation: curationContext,
+  evidenceId: z.string(),
+  claimId: z.string(),
+  previousStance: evidenceStance.nullable(),
+  newStance: evidenceStance,
 });

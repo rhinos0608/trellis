@@ -9,9 +9,12 @@
 
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { migration0001 } from './0001_event_store_foundation.js';
+import { migration0002 } from './0002_durable_knowledge_read_model.js';
+import { migration0003 } from './0003_event_actor_identity.js';
+import { migration0004 } from './0004_curation_lifecycle.js';
 import type { Migration } from './types.js';
 
-export const MIGRATIONS: readonly Migration[] = [migration0001];
+export const MIGRATIONS: readonly Migration[] = [migration0001, migration0002, migration0003, migration0004];
 
 /** Latest applied migration version — the authoritative schema version. */
 export const SCHEMA_VERSION: number = MIGRATIONS[MIGRATIONS.length - 1]!.version; // eslint-disable-line @typescript-eslint/no-non-null-assertion
@@ -28,6 +31,9 @@ function validateRegistry(): void {
 }
 
 export function initializeSchema(db: BetterSqliteDatabase): void {
+  // 0. Busy timeout — prevent SQLITE_BUSY when another process holds the lock
+  db.pragma('busy_timeout = 5000');
+
   // 1. Bootstrap schema_migrations table
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -63,8 +69,8 @@ export function initializeSchema(db: BetterSqliteDatabase): void {
   }
 
   // 4. Apply pending migrations
-  const maxApplied = applied.length > 0 ? applied[applied.length - 1]!.version : 0; // eslint-disable-line @typescript-eslint/no-non-null-assertion
-  const pending = MIGRATIONS.filter((m) => m.version > maxApplied);
+  const appliedVersions = new Set(applied.map((r) => r.version));
+  const pending = MIGRATIONS.filter((m) => !appliedVersions.has(m.version));
 
   for (const migration of pending) {
     const runMigration = db.transaction(() => {

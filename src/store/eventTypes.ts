@@ -1,3 +1,11 @@
+import type {
+  AuthorityClass,
+  ExtractionStatus,
+  SourceType,
+  ClaimRelationType,
+  ClaimRelationStrength,
+} from '../graph/types.js';
+
 /**
  * Trellis event vocabulary — extends search-mcp's existing KgEventType
  * union (src/knowledge/types.ts) rather than replacing it. The 26 legacy
@@ -64,14 +72,29 @@ export type NewTrellisEventType =
   | 'THREAD_CREATED'
   | 'THREAD_RESOLVED'
   | 'SOURCE_READ'
+  | 'SOURCE_OBSERVED'
   | 'CLAIM_ACCEPTED'
+  | 'CLAIM_OBSERVED'
   | 'EVIDENCE_LINKED'
   | 'CONTRADICTION_IDENTIFIED'
   | 'CONTRADICTION_RESOLVED'
   | 'GAP_OPENED'
   | 'GAP_RESOLVED'
   | 'SYNTHESIS_COMPLETED'
-  | 'RUN_CANCELLED';
+  | 'RUN_CANCELLED'
+  | 'RUN_QUEUED'
+  | 'RUN_STARTING'
+  | 'RUN_RUNNING'
+  | 'RUN_PROGRESS'
+  | 'RUN_HEARTBEAT'
+  | 'RUN_CANCELLATION_REQUESTED'
+  | 'RUN_INTERRUPTED'
+  // Phase 9 Stage 1 — operator curation lifecycle
+  | 'CLAIM_MERGED'
+  | 'CLAIM_SPLIT'
+  | 'CLAIM_RETRACTION_SET'
+  | 'CLAIM_RELATION_CURATED'
+  | 'EVIDENCE_STANCE_OVERRIDDEN';
 
 export type TrellisEventType = LegacyTrellisEventType | NewTrellisEventType;
 
@@ -112,7 +135,9 @@ export const ROLLBACK_CLASS: Record<TrellisEventType, RollbackClass> = {
   THREAD_CREATED: 'pure_run_local',
   THREAD_RESOLVED: 'pure_run_local',
   SOURCE_READ: 'pure_run_local',
+  SOURCE_OBSERVED: 'pure_run_local',
   CLAIM_ACCEPTED: 'pure_run_local',
+  CLAIM_OBSERVED: 'pure_run_local',
   EVIDENCE_LINKED: 'pure_run_local',
   CONTRADICTION_IDENTIFIED: 'pure_run_local',
   CONTRADICTION_RESOLVED: 'cross_run_mutation',
@@ -120,6 +145,21 @@ export const ROLLBACK_CLASS: Record<TrellisEventType, RollbackClass> = {
   GAP_RESOLVED: 'cross_run_mutation',
   SYNTHESIS_COMPLETED: 'audit_only',
   RUN_CANCELLED: 'audit_only',
+  RUN_QUEUED: 'audit_only',
+  RUN_STARTING: 'audit_only',
+  RUN_RUNNING: 'audit_only',
+  RUN_PROGRESS: 'audit_only',
+  RUN_HEARTBEAT: 'audit_only',
+  RUN_CANCELLATION_REQUESTED: 'audit_only',
+  RUN_INTERRUPTED: 'audit_only',
+  // curation — mutate durable claim state across runs (like ENTITY_MERGED);
+  // payloads embed before/after snapshots + curation context so the rollback
+  // executor can synthesize compensation in a later stage.
+  CLAIM_MERGED: 'cross_run_mutation',
+  CLAIM_SPLIT: 'cross_run_mutation',
+  CLAIM_RETRACTION_SET: 'cross_run_mutation',
+  CLAIM_RELATION_CURATED: 'cross_run_mutation',
+  EVIDENCE_STANCE_OVERRIDDEN: 'cross_run_mutation',
 };
 
 /** Note: CLAIM_EXTRACTED stays audit_only exactly as it is in search-mcp
@@ -200,6 +240,23 @@ export interface ValueRevisionPayload {
   newValue: unknown;
 }
 
+export interface SourceObservedPayload {
+  sourceId: string;
+  observedSourceId: string;
+  canonicalUrl: string;
+  url: string;
+  title?: string;
+  domain: string;
+  sourceType: SourceType;
+  authorityClass?: AuthorityClass;
+  qualityScore?: number;
+  isPrimary: boolean;
+  extractionStatus: ExtractionStatus;
+  contentHash?: string;
+  runId: string;
+  observedAt: string;
+}
+
 export interface SourceChangedPayload {
   sourceId: string;
   oldContentHash: string;
@@ -226,6 +283,80 @@ export interface GapResolutionPayload {
   resolution?: { answer: string; evidenceSummary: string };
 }
 
+// ── Curation events (Phase 9 Stage 1) ────────────────────────────────
+
+/** Shared context block for every curation event: identifies the idempotent
+ * operator command, who issued it (within the envelope's actor kind), why,
+ * and the append-time optimistic-concurrency expectation. */
+export interface CurationContext {
+  commandId: string;
+  reason: string;
+  expectedSeq: number;
+}
+
+export interface ClaimMergedPayload {
+  curation: CurationContext;
+  sourceClaimId: string;
+  survivorClaimId: string;
+  affectedObservationIds: string[];
+  affectedEvidenceIds: string[];
+  affectedRelationIds: string[];
+  affectedContradictionIds: string[];
+  affectedGapIds: string[];
+}
+
+export interface ClaimSplitResult {
+  claimId: string;
+  currentObservationId: string;
+  observationIds: string[];
+  evidenceIds: string[];
+}
+
+export interface ClaimSplitPayload {
+  curation: CurationContext;
+  sourceClaimId: string;
+  /** Minimum 2 results — a split that yields fewer than two claims is a no-op. */
+  results: ClaimSplitResult[];
+}
+
+export interface ClaimRetractionSetPayload {
+  curation: CurationContext;
+  target: { kind: 'claim'; id: string } | { kind: 'observation'; id: string };
+  previousStatus: 'active' | 'retracted';
+  newStatus: 'active' | 'retracted';
+  /** Observations explicitly affected; claim retraction defaults to all. */
+  observationIds?: string[];
+}
+
+/** Full pre/post state of a claim relation, mirroring ClaimRelation from
+ * graph/types.ts so curation is self-documenting and reversible. */
+export interface CuratedRelationSnapshot {
+  id: string;
+  fromClaimId: string;
+  toClaimId: string;
+  relation: ClaimRelationType;
+  strength: ClaimRelationStrength;
+  score: number;
+  rationale?: string;
+  runId: string;
+}
+
+export interface ClaimRelationCuratedPayload {
+  curation: CurationContext;
+  relationId: string;
+  /** null = no prior relation existed (creation) or none remains (removal); never both. */
+  before: CuratedRelationSnapshot | null;
+  after: CuratedRelationSnapshot | null;
+}
+
+export interface EvidenceStanceOverriddenPayload {
+  curation: CurationContext;
+  evidenceId: string;
+  claimId: string;
+  previousStance: EvidenceStance | null;
+  newStance: EvidenceStance;
+}
+
 export type RollbackOutcome =
   | { kind: 'executed'; inverseEventId: string }
   | { kind: 'blocked'; reason: string };
@@ -244,6 +375,12 @@ export type EventCursor = number;
  * string (matching search-mcp's KgEvent) — that raw-row <-> typed-envelope
  * mapping is store/'s internal concern (Worker 2), not exposed here.
  */
+export type EvidenceStance = 'supports' | 'opposes' | 'context';
+export interface EvidenceV2 {
+  id: string; claimId: string; sourceId: string; observationId: string; stance: EvidenceStance;
+  excerpt?: string; alignment?: unknown; runId: string;
+}
+
 export interface EventEnvelope<TPayload = unknown> {
   seq: EventCursor;
   id: string;
@@ -253,6 +390,9 @@ export interface EventEnvelope<TPayload = unknown> {
   runId: string;
   batchId: string | null;
   actor: 'system' | 'user' | 'classifier' | 'rollback';
+  /** Identity WITHIN the actor kind (e.g. actor:'user', actorId:'operator-jane').
+   * Nullable — legacy events predating migration 0003 have NULL. */
+  actorId: string | null;
   entityId: string | null;
   entityType: string | null;
   payload: TPayload;

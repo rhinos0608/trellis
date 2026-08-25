@@ -8,7 +8,6 @@
 import type { TrellisEventType } from './eventTypes.js';
 import type { ProjectionState } from './projectionState.js';
 import { EventReferenceInvalidError } from './eventErrors.js';
-import { ROLLBACK_CLASS } from './eventTypes.js';
 import { EVENT_CODECS } from './eventSchemas/registry.js';
 import {
   EventTypeUnknownError,
@@ -24,8 +23,8 @@ export interface DecodedPayload {
   payload: unknown;
 }
 
-/** All valid event type strings (from ROLLBACK_CLASS keys). */
-const VALID_EVENT_TYPES = new Set<string>(Object.keys(ROLLBACK_CLASS));
+/** All valid event type strings (from EVENT_CODECS keys — matches decodeEventPayload's lookup). */
+const VALID_EVENT_TYPES = new Set<string>(Object.keys(EVENT_CODECS));
 
 export function decodeEventPayload(
   eventType: string,
@@ -100,6 +99,7 @@ export function validateEventReferences(eventType: string, payload: any, state: 
   const entity = (id: string) => { if (!state.entities.has(id)) missing(`entity ${id}`); };
   const thread = (id: string, familyId?: string) => { const t = state.threads.get(id); if (!t) missing(`thread ${id}`); if (familyId && t?.familyId !== familyId) missing(`thread ${id} family`); };
   switch (eventType) {
+    case 'CLAIM_OBSERVED': family(payload.observation.familyId); if (payload.observation.threadId !== undefined) thread(payload.observation.threadId, payload.observation.familyId); if (payload.reconciliation.matchedClaimId !== undefined) claim(payload.reconciliation.matchedClaimId); break;
     case 'CLAIM_ACCEPTED': family(payload.familyId); if (payload.threadId !== undefined) thread(payload.threadId, payload.familyId); if (payload.subjectEntityId !== undefined) entity(payload.subjectEntityId); if (payload.objectEntityId !== undefined) entity(payload.objectEntityId); break;
     case 'EVIDENCE_LINKED': claim(payload.claimId); if (!state.sources.has(payload.sourceId)) missing(`source ${payload.sourceId}`); break;
     case 'EDGE_ADDED': claim(payload.fromClaimId); claim(payload.toClaimId); break;
@@ -108,6 +108,7 @@ export function validateEventReferences(eventType: string, payload: any, state: 
     case 'THREAD_CREATED': family(payload.familyId); { const t = state.threads.get(payload.threadId); if (t && t.familyId !== payload.familyId) missing(`thread ${payload.threadId} family`); } break;
     case 'THREAD_RESOLVED': thread(payload.threadId, payload.familyId); break;
     case 'RUN_STARTED': family(payload.familyId); if (payload.threadId !== undefined) thread(payload.threadId, payload.familyId); break;
+    case 'RUN_QUEUED': family(payload.familyId); if (payload.threadId !== undefined) thread(payload.threadId, payload.familyId); break;
     case 'NODE_RELABELED': case 'NODE_METADATA_UPDATED': case 'EXTRACTION_CONFIDENCE_REVISED': entity(payload.targetId); break;
     case 'RELATIONSHIP_STRENGTH_REVISED': entity(payload.targetId); break;
     case 'EDGE_REMOVED': if (!state.claimRelations.has(payload.edgeId)) missing(`edge ${payload.edgeId}`); break;
@@ -120,11 +121,19 @@ export function validateEventReferences(eventType: string, payload: any, state: 
     case 'FAMILY_MERGED': family(payload.survivorFamilyId); for (const id of payload.mergedFamilyIds) family(id); break;
     case 'ENTITY_MERGED': entity(payload.survivorId); for (const id of payload.mergedIds) entity(id); break;
     case 'ENTITY_SPLIT': entity(payload.originalId); break;
+    case 'CLAIM_MERGED': claim(payload.sourceClaimId); claim(payload.survivorClaimId); break;
+    case 'CLAIM_SPLIT': claim(payload.sourceClaimId); for (const result of payload.results) { for (const id of result.observationIds) if (!state.claimObservations.has(id)) missing(`observation ${id}`); for (const id of result.evidenceIds) if (!state.evidence.has(id)) missing(`evidence ${id}`); } break;
+    case 'CLAIM_RETRACTION_SET': if (payload.target.kind === 'claim') claim(payload.target.id); else if (!state.claimObservations.has(payload.target.id)) missing(`observation ${payload.target.id}`); break;
+    case 'CLAIM_RELATION_CURATED': if (payload.after) { claim(payload.after.fromClaimId); claim(payload.after.toClaimId); } break;
+    case 'EVIDENCE_STANCE_OVERRIDDEN': if (!state.evidence.has(payload.evidenceId)) missing(`evidence ${payload.evidenceId}`); claim(payload.claimId); break;
   }
 }
 
 export function validateProjectionReferences(state: ProjectionState): void {
-  for (const claim of state.claims.values()) if (!state.families.has(claim.familyId)) throw new EventReferenceInvalidError('PROJECTION', `claim family ${claim.familyId}`);
+  for (const claim of state.claims.values()) {
+    if (!state.families.has(claim.familyId)) throw new EventReferenceInvalidError('PROJECTION', `claim family ${claim.familyId}`);
+    if (claim.threadId !== undefined && state.threads.get(claim.threadId)?.familyId !== claim.familyId) throw new EventReferenceInvalidError('PROJECTION', `claim thread ${claim.threadId} family`);
+  }
   for (const evidence of state.evidence.values()) if (!state.claims.has(evidence.claimId)) throw new EventReferenceInvalidError('PROJECTION', `evidence claim ${evidence.claimId}`);
   for (const relation of state.claimRelations.values()) if (!state.claims.has(relation.fromClaimId) || !state.claims.has(relation.toClaimId)) throw new EventReferenceInvalidError('PROJECTION', `relation ${relation.id}`);
   for (const thread of state.threads.values()) if (!state.families.has(thread.familyId)) throw new EventReferenceInvalidError('PROJECTION', `thread family ${thread.familyId}`);

@@ -19,6 +19,8 @@
 import type {
   CanonicalEntity,
   Claim,
+  ClaimObservation,
+  ClaimReconciliation,
   ClaimRelation,
   Contradiction,
   Evidence,
@@ -55,6 +57,10 @@ export interface ProjectionState {
   lastAppliedSeq: EventCursor;
   entities: Map<string, CanonicalEntity>;
   claims: Map<string, Claim>;
+  claimObservations: Map<string, ClaimObservation>;
+  claimReconciliations: Map<string, ClaimReconciliation>;
+  observationToClaimId: Map<string, string>;
+  observationsByClaimId: Map<string, Set<string>>;
   claimRelations: Map<string, ClaimRelation>;
   contradictions: Map<string, Contradiction>;
   evidence: Map<string, Evidence>;
@@ -88,6 +94,10 @@ export function serializeProjectionState(state: ProjectionState): string {
     lastAppliedSeq: state.lastAppliedSeq,
     entities: [...state.entities],
     claims: [...state.claims],
+    claimObservations: [...state.claimObservations],
+    claimReconciliations: [...state.claimReconciliations],
+    observationToClaimId: [...state.observationToClaimId],
+    observationsByClaimId: [...state.observationsByClaimId].map(([k, v]) => [k, [...v]]),
     claimRelations: [...state.claimRelations],
     contradictions: [...state.contradictions],
     evidence: [...state.evidence],
@@ -116,6 +126,10 @@ export function deserializeProjectionState(json: string): ProjectionState {
     lastAppliedSeq: (raw.lastAppliedSeq as number | undefined) ?? 0,
     entities: new Map(raw.entities as [string, CanonicalEntity][]),
     claims: new Map(raw.claims as [string, Claim][]),
+    claimObservations: new Map((raw.claimObservations ?? []) as [string, ClaimObservation][]),
+    claimReconciliations: new Map((raw.claimReconciliations ?? []) as [string, ClaimReconciliation][]),
+    observationToClaimId: new Map((raw.observationToClaimId ?? []) as [string, string][]),
+    observationsByClaimId: new Map(((raw.observationsByClaimId ?? []) as [string, string[]][]).map(([k, v]) => [k, new Set(v)])),
     claimRelations: new Map(raw.claimRelations as [string, ClaimRelation][]),
     contradictions: new Map(raw.contradictions as [string, Contradiction][]),
     evidence: new Map(raw.evidence as [string, Evidence][]),
@@ -142,6 +156,10 @@ export function createEmptyProjectionState(): ProjectionState {
     lastAppliedSeq: 0,
     entities: new Map(),
     claims: new Map(),
+    claimObservations: new Map(),
+    claimReconciliations: new Map(),
+    observationToClaimId: new Map(),
+    observationsByClaimId: new Map(),
     claimRelations: new Map(),
     contradictions: new Map(),
     evidence: new Map(),
@@ -220,22 +238,35 @@ function sortKeysDeep(value: unknown, path: string): unknown {
  * - entityFamilyMemberships → sorted by `${entityId}|${familyId}`
  * - All nested objects → recursively sorted by key
  */
+const codeUnitCompare = (a: string, b: string): number => {
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const d = a.charCodeAt(i) - b.charCodeAt(i);
+    if (d !== 0) return d;
+  }
+  return a.length - b.length;
+};
+
 export function canonicalSerializeProjectionState(state: ProjectionState): string {
   const s = (v: unknown, p: string) => sortKeysDeep(v, p);
   const mapToSorted = <V>(m: Map<string, V>, path: string) =>
-    [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, s(v, `${path}.${k}`)]);
+    [...m.entries()].sort(([a], [b]) => codeUnitCompare(a, b)).map(([k, v]) => [k, s(v, `${path}.${k}`)]);
   const setToSorted = (set: Set<string>, path: string) => {
     const arr = [...set];
     arr.forEach((v, i) => { assertJsonSafe(v, `${path}[${String(i)}]`); });
-    return arr.sort();
+    return arr.sort(codeUnitCompare);
   };
   const reverseIndexToSorted = (m: Map<string, Set<string>>, path: string) =>
-    [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, setToSorted(v, `${path}.${k}`)]);
+    [...m.entries()].sort(([a], [b]) => codeUnitCompare(a, b)).map(([k, v]) => [k, setToSorted(v, `${path}.${k}`)]);
 
   const canonical = {
     lastAppliedSeq: state.lastAppliedSeq,
     entities: mapToSorted(state.entities, 'entities'),
     claims: mapToSorted(state.claims, 'claims'),
+    claimObservations: mapToSorted(state.claimObservations, 'claimObservations'),
+    claimReconciliations: mapToSorted(state.claimReconciliations, 'claimReconciliations'),
+    observationToClaimId: mapToSorted(state.observationToClaimId, 'observationToClaimId'),
+    observationsByClaimId: reverseIndexToSorted(state.observationsByClaimId, 'observationsByClaimId'),
     claimRelations: mapToSorted(state.claimRelations, 'claimRelations'),
     contradictions: mapToSorted(state.contradictions, 'contradictions'),
     evidence: mapToSorted(state.evidence, 'evidence'),
@@ -250,7 +281,7 @@ export function canonicalSerializeProjectionState(state: ProjectionState): strin
     claimsByFamilyId: reverseIndexToSorted(state.claimsByFamilyId, 'claimsByFamilyId'),
     threadsByFamilyId: reverseIndexToSorted(state.threadsByFamilyId, 'threadsByFamilyId'),
     entityFamilyMemberships: [...state.entityFamilyMemberships]
-      .sort((a, b) => `${a.entityId}|${a.familyId}`.localeCompare(`${b.entityId}|${b.familyId}`))
+      .sort((a, b) => codeUnitCompare(`${a.entityId}|${a.familyId}`, `${b.entityId}|${b.familyId}`))
       .map((m, i) => s(m, `entityFamilyMemberships[${String(i)}]`) as Record<string, unknown>),
     entityFamilyKeys: setToSorted(state.entityFamilyKeys, 'entityFamilyKeys'),
     rolledBackRuns: setToSorted(state.rolledBackRuns, 'rolledBackRuns'),

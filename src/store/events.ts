@@ -12,6 +12,7 @@ import { serializeProjectionState, deserializeProjectionState } from './projecti
 import { EVENT_CODECS } from './eventSchemas/registry.js';
 import { decodeEventPayload, validateEventReferences, validateProjectionReferences } from './eventValidation.js';
 import { EventTypeUnknownError, EventVersionUnsupportedError, StaleProjectionError } from './eventErrors.js';
+import { syncKnowledgeReadModelBatch } from './readModel/writer.js';
 
 // ── ULID generation ─────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ export interface EventRow {
   run_id: string;
   batch_id: string | null;
   actor: string;
+  actor_id: string | null;
   entity_id: string | null;
   entity_type: string | null;
   payload: string;
@@ -68,6 +70,7 @@ export function rowToEnvelope(row: EventRow): EventEnvelope {
     runId: row.run_id,
     batchId: row.batch_id,
     actor: row.actor as EventEnvelope['actor'],
+    actorId: row.actor_id,
     entityId: row.entity_id,
     entityType: row.entity_type,
     payload: JSON.parse(row.payload) as unknown,
@@ -77,14 +80,14 @@ export function rowToEnvelope(row: EventRow): EventEnvelope {
 
 // ── Append ──────────────────────────────────────────────────────────
 
-export type NewEventInput = Omit<EventEnvelope, 'seq' | 'id' | 'payloadHash'>;
+export type NewEventInput = Omit<EventEnvelope, 'seq' | 'id' | 'payloadHash' | 'actorId'> & { actorId?: string | null };
 export interface AppendContext { projection: ProjectionState; handlers: EventHandlerRegistry; }
 
 const INSERT_SQL = `
   INSERT INTO events (id, timestamp, event_type, event_version, run_id, batch_id,
-    actor, entity_id, entity_type, payload, payload_hash)
+    actor, actor_id, entity_id, entity_type, payload, payload_hash)
   VALUES (@id, @timestamp, @eventType, @eventVersion, @runId, @batchId,
-    @actor, @entityId, @entityType, @payload, @payloadHash)
+    @actor, @actorId, @entityId, @entityType, @payload, @payloadHash)
 `;
 
 /** Append multiple events in a single transaction. Returns fully-populated envelopes. */
@@ -104,12 +107,17 @@ export function appendEvents(events: readonly NewEventInput[], context: AppendCo
       const latest = getLatestEventCursor();
       const expected = context.projection.lastAppliedSeq;
       if ((latest ?? 0) !== expected) throw new StaleProjectionError(expected, latest);
+      const readModel = db.prepare("SELECT last_applied_seq, status FROM rm_state WHERE model_name='knowledge'").get() as { last_applied_seq: number; status: string } | undefined;
+      const readModelHasBacklog = readModel !== undefined && readModel.last_applied_seq < expected;
+      if (readModelHasBacklog) {
+        db.prepare("UPDATE rm_state SET status='dirty', updated_at=? WHERE model_name='knowledge'").run(new Date().toISOString());
+      }
 
       for (const ev of events) {
         const codec = EVENT_CODECS[ev.eventType];
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (!codec) throw new EventTypeUnknownError(ev.eventType);
-        if (ev.eventVersion !== codec.latestVersion) throw new EventVersionUnsupportedError(ev.eventType, ev.eventVersion, codec.latestVersion);
+        if (!(ev.eventVersion in codec.versions)) throw new EventVersionUnsupportedError(ev.eventType, ev.eventVersion, codec.latestVersion);
         const decoded = decodeEventPayload(ev.eventType, ev.eventVersion, ev.payload);
         validateEventReferences(ev.eventType, decoded.payload, working);
         const id = generateUlid();
@@ -120,10 +128,12 @@ export function appendEvents(events: readonly NewEventInput[], context: AppendCo
           id,
           timestamp: ev.timestamp,
           eventType: ev.eventType,
-          eventVersion: ev.eventVersion,
+          eventVersion: decoded.latestVersion,
           runId: ev.runId,
           batchId: ev.batchId,
           actor: ev.actor,
+          // Legacy callers predating actor identity append NULL.
+          actorId: ev.actorId ?? null,
           entityId: ev.entityId,
           entityType: ev.entityType,
           payload: payloadStr,
@@ -137,10 +147,11 @@ export function appendEvents(events: readonly NewEventInput[], context: AppendCo
           id,
           timestamp: ev.timestamp,
           eventType: ev.eventType,
-          eventVersion: ev.eventVersion,
+          eventVersion: decoded.latestVersion,
           runId: ev.runId,
           batchId: ev.batchId,
           actor: ev.actor,
+          actorId: ev.actorId ?? null,
           entityId: ev.entityId,
           entityType: ev.entityType,
           payload: decoded.payload,
@@ -152,10 +163,11 @@ export function appendEvents(events: readonly NewEventInput[], context: AppendCo
         working.lastAppliedSeq = seq;
       }
       validateProjectionReferences(working);
+      if (!readModelHasBacklog) syncKnowledgeReadModelBatch(db, result, working);
     });
 
     txn.immediate();
-    Object.assign(context.projection, deserializeProjectionState(serializeProjectionState(working)));
+    Object.assign(context.projection, working);
     return result;
   } catch (err) {
     logger.error({ err, count: events.length }, 'store: appendEvents failed');
@@ -191,7 +203,7 @@ const QUERY_ORDER = 'ORDER BY seq ASC';
  * `afterSeq` filters to events appended after the given seq.
  * `since` is a timestamp filter only — it does not affect ordering.
  */
-export function queryStoredRows(opts: QueryEventsOpts = {}): EventRow[] {
+export function queryStoredRows(opts: { afterSeq?: EventCursor } = {}): EventRow[] {
   const db = getDb();
   if (db === null) return [];
   const where = opts.afterSeq !== undefined ? ' WHERE seq > @afterSeq' : '';
@@ -199,7 +211,7 @@ export function queryStoredRows(opts: QueryEventsOpts = {}): EventRow[] {
   return rows;
 }
 
-export function queryStoredEvents(opts: QueryEventsOpts = {}): { envelope: EventEnvelope; rawPayload: string }[] {
+export function queryStoredEvents(opts: { afterSeq?: EventCursor } = {}): { envelope: EventEnvelope; rawPayload: string }[] {
   return queryStoredRows(opts).map((row) => ({ envelope: rowToEnvelope(row), rawPayload: row.payload }));
 }
 

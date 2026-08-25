@@ -7,8 +7,9 @@
  * Handles both fresh databases and legacy pre-Phase-0 databases (old schema
  * with TEXT PRIMARY KEY id, TEXT payload_hash allowing nulls, old indexes).
  *
- * Checksum is a hash of the final DDL text — any edit to the migration's
- * actual behavior changes this hash and is detected on re-open.
+ * Checksum is a hash of FINAL_EVENTS_DDL and CHECKPOINTS_DDL only — edits to
+ * the migration logic (up()) are NOT reflected in the checksum unless the DDL
+ * strings themselves change.
  */
 
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
@@ -92,8 +93,13 @@ function up(db: BetterSqliteDatabase): void {
   const columns = db.prepare('PRAGMA table_info(events)').all() as { name: string }[];
   const hasSeq = columns.some((c) => c.name === 'seq');
   if (hasSeq) {
-    // Already on new schema — nothing to do
-    db.exec(CHECKPOINTS_DDL);
+    // Already on new schema — create checkpoints table idempotently
+    const hasCheckpoints = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projection_checkpoints'")
+      .get();
+    if (hasCheckpoints === undefined) {
+      db.exec(CHECKPOINTS_DDL);
+    }
     return;
   }
 
@@ -114,6 +120,8 @@ function up(db: BetterSqliteDatabase): void {
       @actor, @entity_id, @entity_type, @payload, @payload_hash)
   `);
 
+  const VALID_ACTORS = new Set(['system', 'user', 'classifier', 'rollback']);
+
   for (const row of oldRows) {
     insertNew.run({
       id: row.id,
@@ -122,7 +130,7 @@ function up(db: BetterSqliteDatabase): void {
       event_version: row.event_version,
       run_id: row.run_id,
       batch_id: row.batch_id,
-      actor: row.actor,
+      actor: VALID_ACTORS.has(row.actor) ? row.actor : 'system',
       entity_id: row.entity_id,
       entity_type: row.entity_type,
       payload: row.payload,

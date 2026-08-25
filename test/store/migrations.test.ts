@@ -67,12 +67,21 @@ describe('migration 0001: fresh DB', () => {
     const db = initDb(dbPath);
     expect(db).not.toBeNull();
 
-    // schema_migrations has exactly one row
-    const rows = db!.prepare('SELECT * FROM schema_migrations').all() as { version: number; name: string; checksum: string }[];
-    expect(rows).toHaveLength(1);
+    // schema_migrations has both numbered migrations
+    const rows = db!.prepare('SELECT * FROM schema_migrations ORDER BY version').all() as { version: number; name: string; checksum: string }[];
+    expect(rows).toHaveLength(4);
     expect(rows[0]!.version).toBe(1);
     expect(rows[0]!.name).toBe('event_store_foundation');
     expect(rows[0]!.checksum).toMatch(/^sha256:/);
+    expect(rows[1]!.version).toBe(2);
+    expect(rows[1]!.name).toBe('durable_knowledge_read_model');
+    expect(rows[1]!.checksum).toMatch(/^sha256:/);
+    expect(rows[2]!.version).toBe(3);
+    expect(rows[2]!.name).toBe('event_actor_identity');
+    expect(rows[2]!.checksum).toMatch(/^sha256:/);
+    expect(rows[3]!.version).toBe(4);
+    expect(rows[3]!.name).toBe('curation_lifecycle');
+    expect(rows[3]!.checksum).toMatch(/^sha256:/);
 
     // events table has seq column
     const columns = db!.prepare('PRAGMA table_info(events)').all() as { name: string }[];
@@ -158,10 +167,17 @@ describe('migration 0001: legacy DB migration', () => {
     // All rows survived
     expect(countEvents()).toBe(3);
 
-    // schema_migrations has version 1
-    const migrations = db!.prepare('SELECT version FROM schema_migrations').all() as { version: number }[];
-    expect(migrations).toHaveLength(1);
+    // All migrations apply to legacy databases in one initialization.
+    const migrations = db!.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as { version: number; name: string }[];
+    expect(migrations).toHaveLength(4);
     expect(migrations[0]!.version).toBe(1);
+    expect(migrations[0]!.name).toBe('event_store_foundation');
+    expect(migrations[1]!.version).toBe(2);
+    expect(migrations[1]!.name).toBe('durable_knowledge_read_model');
+    expect(migrations[2]!.version).toBe(3);
+    expect(migrations[2]!.name).toBe('event_actor_identity');
+    expect(migrations[3]!.version).toBe(4);
+    expect(migrations[3]!.name).toBe('curation_lifecycle');
 
     // Seq values are ascending 1..3 in timestamp order: id-a (t1), id-b (t2), id-c (t3)
     const all = queryEvents({});
@@ -275,13 +291,9 @@ describe('query: pagination via afterSeq', () => {
 // ── Test 6: Migration atomicity ─────────────────────────────────────
 
 describe('migration 0001: atomicity', () => {
-  it('rolls back on failure inside the REAL migration 0001.up(), leaving original table intact', () => {
-    // Legacy DB with a row whose `actor` value is legal under the OLD schema
-    // (plain TEXT, no CHECK) but violates the NEW schema's
-    // `CHECK (actor IN ('system','user','classifier','rollback'))` constraint.
-    // This forces migration0001's real INSERT INTO events_new to throw partway
-    // through the copy loop, inside the runner's real db.transaction() wrapper —
-    // not a synthetic stand-in transaction.
+  it('maps unknown actor values to system and migrates successfully', () => {
+    // Legacy DB with a row whose `actor` value violates the NEW schema's
+    // CHECK constraint. The migration maps unknown actors to 'system'.
     const dbPath2 = path.join(tmpDir, 'atomic-test.db');
     const legacyDb = new Database(dbPath2);
     legacyDb.exec(`
@@ -310,36 +322,83 @@ describe('migration 0001: atomicity', () => {
     expect(countBefore).toBe(2);
     legacyDb.close();
 
-    // Run the REAL migration runner against this fixture — expect it to throw
     const testDb = new Database(dbPath2);
-    expect(() => initializeSchema(testDb)).toThrow();
+    try {
+      // Migration succeeds — unknown actor is remapped to 'system'
+      expect(() => initializeSchema(testDb)).not.toThrow();
 
-    // Original `events` table is untouched: still old schema (no `seq` column), same row count
-    const columns = testDb.prepare('PRAGMA table_info(events)').all() as { name: string }[];
-    expect(columns.map((c) => c.name)).not.toContain('seq');
-    const countAfter = (testDb.prepare('SELECT COUNT(*) as cnt FROM events').get() as { cnt: number }).cnt;
-    expect(countAfter).toBe(countBefore);
+      const countAfter = (testDb.prepare('SELECT COUNT(*) as cnt FROM events').get() as { cnt: number }).cnt;
+      expect(countAfter).toBe(countBefore);
 
-    // events_new must not exist (rolled back by the runner's transaction)
-    const hasNew = testDb
-      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events_new'")
-      .get();
-    expect(hasNew).toBeUndefined();
-
-    // Migration must NOT be recorded as applied
-    const migrationsTable = testDb
-      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'")
-      .get();
-    if (migrationsTable !== undefined) {
+      // Migration IS recorded as applied
       const appliedRow = testDb.prepare('SELECT 1 FROM schema_migrations WHERE version = 1').get();
-      expect(appliedRow).toBeUndefined();
+      expect(appliedRow).toBeDefined();
+    } finally {
+      testDb.close();
     }
-
-    testDb.close();
   });
 });
 
-// ── Test 7: Restart/idempotency ─────────────────────────────────────
+// ── Test 7: hasSeq path (already-migrated schema) ──────────────────
+
+describe('migration 0001: hasSeq path', () => {
+  it('succeeds when events table already has seq and projection_checkpoints exists', () => {
+    // Create a fresh DB and manually create the new-schema tables
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE events (
+        seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+        id            TEXT NOT NULL UNIQUE,
+        timestamp     TEXT NOT NULL,
+        event_type    TEXT NOT NULL,
+        event_version INTEGER NOT NULL CHECK (event_version >= 1),
+        run_id        TEXT NOT NULL,
+        batch_id      TEXT,
+        actor         TEXT NOT NULL DEFAULT 'system'
+                      CHECK (actor IN ('system', 'user', 'classifier', 'rollback')),
+        entity_id     TEXT,
+        entity_type   TEXT,
+        payload       TEXT NOT NULL,
+        payload_hash  TEXT NOT NULL CHECK (length(payload_hash) = 64)
+      );
+      CREATE TABLE projection_checkpoints (
+        id                 TEXT PRIMARY KEY,
+        created_at         TEXT NOT NULL,
+        event_cursor       INTEGER NOT NULL CHECK(event_cursor > 0),
+        projection_version INTEGER NOT NULL,
+        schema_version     INTEGER NOT NULL,
+        event_count        INTEGER NOT NULL,
+        checksum           TEXT NOT NULL,
+        compatible         INTEGER NOT NULL DEFAULT 1,
+        snapshot_json      TEXT,
+        rolled_back_run_ids TEXT
+      );
+    `);
+    legacyDb.close();
+
+    // Open via initDb — migration should be a no-op (no duplicate or error)
+    const db = initDb(dbPath);
+    expect(db).not.toBeNull();
+
+    // All migrations are recorded after migrating an already-seq DB.
+    const migrations = db!.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as { version: number; name: string }[];
+    expect(migrations).toHaveLength(4);
+    expect(migrations[0]!.version).toBe(1);
+    expect(migrations[0]!.name).toBe('event_store_foundation');
+    expect(migrations[1]!.version).toBe(2);
+    expect(migrations[1]!.name).toBe('durable_knowledge_read_model');
+    expect(migrations[2]!.version).toBe(3);
+    expect(migrations[2]!.name).toBe('event_actor_identity');
+    expect(migrations[3]!.version).toBe(4);
+    expect(migrations[3]!.name).toBe('curation_lifecycle');
+
+    // projection_checkpoints table still exists
+    const cpExists = db!.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projection_checkpoints'").get();
+    expect(cpExists).toBeDefined();
+  });
+});
+
+// ── Test 8: Restart/idempotency ─────────────────────────────────────
 
 describe('migration 0001: restart idempotency', () => {
   it('calling initializeSchema twice does not error or duplicate', () => {
@@ -354,10 +413,17 @@ describe('migration 0001: restart idempotency', () => {
     const db = initDb(dbPath);
     expect(db).not.toBeNull();
 
-    // Exactly one migration row
-    const migrations = db!.prepare('SELECT * FROM schema_migrations').all() as { version: number }[];
-    expect(migrations).toHaveLength(1);
+    // All migration rows remain after restart, without duplicates.
+    const migrations = db!.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as { version: number; name: string }[];
+    expect(migrations).toHaveLength(4);
     expect(migrations[0]!.version).toBe(1);
+    expect(migrations[0]!.name).toBe('event_store_foundation');
+    expect(migrations[1]!.version).toBe(2);
+    expect(migrations[1]!.name).toBe('durable_knowledge_read_model');
+    expect(migrations[2]!.version).toBe(3);
+    expect(migrations[2]!.name).toBe('event_actor_identity');
+    expect(migrations[3]!.version).toBe(4);
+    expect(migrations[3]!.name).toBe('curation_lifecycle');
 
     // Existing events untouched
     expect(countEvents()).toBe(1);

@@ -12,7 +12,11 @@ import type { EventCursor } from './eventTypes.js';
 import type { ProjectionState } from './projectionState.js';
 import { canonicalSerializeProjectionState } from './projectionState.js';
 
-export const CURRENT_PROJECTION_VERSION = 2;
+// v5: Phase 9 Stage 1 — Claim/ClaimObservation gain optional curation lifecycle
+// fields (curationStatus, mergedIntoClaimId, splitIntoClaimIds, lastCuration);
+// five curation event types added. Conventions: v3 Phase 2 (claim codecs),
+// v4 Phase 3.
+export const CURRENT_PROJECTION_VERSION = 5;
 
 export interface ProjectionCheckpoint {
   id: string;

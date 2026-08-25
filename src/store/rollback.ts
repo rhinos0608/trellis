@@ -26,6 +26,9 @@
 
 import { logger } from '../logger.js';
 import { appendEvent, queryEvents } from './events.js';
+import { getKnowledgeReadModelStatus } from './readModel/integrity.js';
+import { rebuildKnowledgeReadModel } from './readModel/rebuild.js';
+import { rebuildProjection } from './projectionBuilder.js';
 import { ROLLBACK_CLASS } from './eventTypes.js';
 import type {
   EventEnvelope,
@@ -363,6 +366,9 @@ function synthesizeCompensation(
       if (hasLaterInterference(p.family_a, original.seq, original.runId)) {
         return null;
       }
+      if (hasLaterInterference(p.family_b, original.seq, original.runId)) {
+        return null;
+      }
       const compensatingPayload = {
         relation_id: p.relation_id ?? `rollback-${original.id}`,
         family_a: p.family_a,
@@ -492,11 +498,11 @@ export function rollbackRun(
   runId: string,
   state: ProjectionState,
   context: AppendContext,
-): { skipped: number; executed: number; blocked: { eventId: string; reason: string }[] } {
+): { skipped: number; executed: number; blocked: { eventId: string; reason: string }[]; readModelRebuilt: boolean; readModelError?: string } {
   // Idempotency: if already rolled back, skip.
   if (state.rolledBackRuns.has(runId)) {
     logger.info({ runId }, 'store: run already rolled back — skipping');
-    return { skipped: 0, executed: 0, blocked: [] };
+    return { skipped: 0, executed: 0, blocked: [], readModelRebuilt: getKnowledgeReadModelStatus().status === 'ready' };
   }
 
   // Persist the rollback as a RUN_ROLLED_BACK event so the projection
@@ -537,10 +543,24 @@ export function rollbackRun(
 
   skipped = runEvents.length - crossRunEvents.length;
 
+  // Event-log rollback is already committed. Rebuild is best effort so a
+  // read-model failure cannot report successful rollback as failed.
+  let readModelRebuilt = true;
+  let readModelError: string | undefined;
+  try {
+    rebuildKnowledgeReadModel(context.handlers);
+    // Keep caller's hot projection aligned with rebuilt read model.
+    Object.assign(state, rebuildProjection(context.handlers, { forceGenesis: true }));
+  } catch (err) {
+    readModelRebuilt = false;
+    readModelError = err instanceof Error ? err.message : String(err);
+    logger.error({ err, runId, readModelRebuilt, readModelError }, 'store: rollback committed but read-model rebuild failed');
+  }
+
   logger.info(
-    { runId, skipped, executed, blocked: blocked.length },
+    { runId, skipped, executed, blocked: blocked.length, readModelRebuilt, ...(readModelError === undefined ? {} : { readModelError }) },
     'store: run rollback complete',
   );
 
-  return { skipped, executed, blocked };
+  return { skipped, executed, blocked, readModelRebuilt, ...(readModelError === undefined ? {} : { readModelError }) };
 }

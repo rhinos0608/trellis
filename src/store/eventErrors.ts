@@ -13,7 +13,7 @@ export type EventErrorCode =
   | 'STALE_PROJECTION';
 
 export class StaleProjectionError extends Error {
-  readonly code: EventErrorCode = 'STALE_PROJECTION';
+  readonly code = 'STALE_PROJECTION' satisfies EventErrorCode;
   constructor(readonly expected: number, readonly actual: number | null) {
     super(`Stale projection: expected seq ${String(expected)}, actual ${String(actual ?? 0)}`);
     this.name = 'StaleProjectionError';
@@ -21,7 +21,7 @@ export class StaleProjectionError extends Error {
 }
 
 export class EventReferenceInvalidError extends Error {
-  readonly code: EventErrorCode = 'EVENT_REFERENCE_INVALID';
+  readonly code = 'EVENT_REFERENCE_INVALID' satisfies EventErrorCode;
   constructor(readonly eventType: string, readonly reference: string) {
     super(`Invalid reference for ${eventType}: ${reference}`);
     this.name = 'EventReferenceInvalidError';
@@ -29,7 +29,7 @@ export class EventReferenceInvalidError extends Error {
 }
 
 export class EventTypeUnknownError extends Error {
-  readonly code: EventErrorCode = 'EVENT_TYPE_UNKNOWN';
+  readonly code = 'EVENT_TYPE_UNKNOWN' satisfies EventErrorCode;
   readonly eventType: string;
 
   constructor(eventType: string) {
@@ -40,7 +40,7 @@ export class EventTypeUnknownError extends Error {
 }
 
 export class EventVersionUnsupportedError extends Error {
-  readonly code: EventErrorCode = 'EVENT_VERSION_UNSUPPORTED';
+  readonly code = 'EVENT_VERSION_UNSUPPORTED' satisfies EventErrorCode;
   readonly eventType: string;
   readonly storedVersion: number;
   readonly latestVersion: number;
@@ -62,7 +62,7 @@ export interface ZodIssueSummary {
 }
 
 export class EventPayloadInvalidError extends Error {
-  readonly code: EventErrorCode = 'EVENT_PAYLOAD_INVALID';
+  readonly code = 'EVENT_PAYLOAD_INVALID' satisfies EventErrorCode;
   readonly eventType: string;
   readonly storedVersion: number;
   readonly zodIssues: ZodIssueSummary[];

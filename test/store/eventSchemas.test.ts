@@ -39,9 +39,13 @@ describe('EVENT_CODECS registry integrity', () => {
       'SOURCE_READ', 'CLAIM_ACCEPTED', 'EVIDENCE_LINKED',
       'CONTRADICTION_IDENTIFIED', 'CONTRADICTION_RESOLVED',
       'GAP_OPENED', 'GAP_RESOLVED', 'SYNTHESIS_COMPLETED', 'RUN_CANCELLED',
+      'RUN_QUEUED', 'RUN_STARTING', 'RUN_RUNNING', 'RUN_PROGRESS',
+      'RUN_HEARTBEAT', 'RUN_CANCELLATION_REQUESTED', 'RUN_INTERRUPTED',
+      'CLAIM_MERGED', 'CLAIM_SPLIT', 'CLAIM_RETRACTION_SET',
+      'CLAIM_RELATION_CURATED', 'EVIDENCE_STANCE_OVERRIDDEN',
     ];
     const all = [...legacyTypes, ...newTypes];
-    expect(all.length).toBe(38);
+    expect(all.length).toBe(50);
     for (const t of all) {
       expect(EVENT_CODECS, `Missing: ${t}`).toHaveProperty(t);
     }
@@ -211,6 +215,25 @@ describe('decodeEventPayload — valid payloads', () => {
   });
 
   // 8. RUN_STARTED (research — from runService.ts call site)
+  it('accepts legacy RUN_QUEUED payload without follow-up metadata', () => {
+    const result = decodeEventPayload('RUN_QUEUED', 1, {
+      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'pipeline', depth: 'standard',
+      providerName: 'provider', requestHash: 'hash', retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1, maxBackoffMs: 2 },
+      deadlineAt: '2024-01-01T00:00:00Z', attempt: 1, queuedAt: '2024-01-01T00:00:00Z',
+    });
+    expect(result.eventType).toBe('RUN_QUEUED');
+  });
+
+  it('accepts RUN_QUEUED follow-up metadata', () => {
+    const result = decodeEventPayload('RUN_QUEUED', 1, {
+      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'pipeline', depth: 'standard',
+      providerName: 'provider', requestHash: 'hash', retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1, maxBackoffMs: 2 },
+      deadlineAt: '2024-01-01T00:00:00Z', attempt: 1, queuedAt: '2024-01-01T00:00:00Z',
+      followUp: { kind: 'information_gain_v1', targetType: 'gap', targetId: 'g1', sourceRunId: 'source' },
+    });
+    expect(result.eventType).toBe('RUN_QUEUED');
+  });
+
   it('accepts a valid RUN_STARTED payload', () => {
     const result = decodeEventPayload('RUN_STARTED', 1, {
       runId: 'run_abc123',
@@ -323,6 +346,15 @@ describe('decodeEventPayload — valid payloads', () => {
 // ── Invalid payloads — 5+ event types ────────────────────────────────
 
 describe('decodeEventPayload — invalid payloads', () => {
+  it('rejects malformed RUN_QUEUED follow-up metadata', () => {
+    expect(() => decodeEventPayload('RUN_QUEUED', 1, {
+      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'pipeline', depth: 'standard',
+      providerName: 'provider', requestHash: 'hash', retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1, maxBackoffMs: 2 },
+      deadlineAt: '2024-01-01T00:00:00Z', attempt: 1, queuedAt: '2024-01-01T00:00:00Z',
+      followUp: { kind: 'wrong', targetType: 'gap', targetId: 'g1', sourceRunId: 'source' },
+    })).toThrow(EventPayloadInvalidError);
+  });
+
   it('rejects NODE_ADDED with wrong type for id', () => {
     expect(() =>
       decodeEventPayload('NODE_ADDED', 1, {
@@ -596,6 +628,44 @@ describe('Fix 3: tightened enum fields reject bogus strings', () => {
         contentHash: 'abc', retrievedAt: '2024-01-01T00:00:00Z', firstSeenRunId: 'r1',
       }),
     ).toThrow(EventPayloadInvalidError);
+  });
+});
+
+// ── Upcast success path ─────────────────────────────────────────────
+
+describe('decodeEventPayload — upcast success', () => {
+  it('applies upcast chain and returns transformed payload', () => {
+    const fakeType = 'NODE_ADDED' as const;
+    const originalCodec = EVENT_CODECS[fakeType];
+
+    const baseSchema = originalCodec.versions[1]!.schema;
+    const fakeCodec = {
+      latestVersion: 2,
+      versions: {
+        1: {
+          schema: baseSchema,
+          upcast: (payload: unknown) => {
+            const p = payload as Record<string, unknown>;
+            return { ...p, label: (p.label as string).toUpperCase() };
+          },
+        },
+        2: { schema: baseSchema },
+      },
+    };
+    (EVENT_CODECS as Record<string, unknown>)[fakeType] = fakeCodec;
+
+    try {
+      const result = decodeEventPayload(fakeType, 1, {
+        id: 'e1', label: 'react', canonicalLabel: null, entityType: 'pkg',
+        aliases: [], extractionConfidence: 0.5, firstSeenRunId: 'r1',
+        lastUpdatedRunId: 'r1', metadata: {},
+      });
+      expect(result.storedVersion).toBe(1);
+      expect(result.latestVersion).toBe(2);
+      expect((result.payload as { label: string }).label).toBe('REACT');
+    } finally {
+      (EVENT_CODECS as Record<string, unknown>)[fakeType] = originalCodec;
+    }
   });
 });
 

@@ -24,8 +24,23 @@ function ensureDir(filePath: string): boolean {
   }
 }
 
-function openDb(databasePath: string): BetterSqliteDatabase | null {
+function openDb(
+  databasePath: string,
+  options: { readonly?: boolean } = {},
+): BetterSqliteDatabase | null {
   try {
+    // Read-only open: no directory creation, no pragmas that write, no
+    // schema initialization — used by `doctor`/`verify` so inspection can
+    // never mutate the store.
+    if (options.readonly === true) {
+      _dbPath = databasePath;
+      const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+      db.pragma('busy_timeout = 5000');
+      _db = db;
+      logger.info({ databasePath }, 'store: database opened (read-only)');
+      return db;
+    }
+
     if (!ensureDir(databasePath)) return null;
 
     _dbPath = databasePath;
@@ -45,14 +60,21 @@ function openDb(databasePath: string): BetterSqliteDatabase | null {
 /**
  * Open DB at the path from config().storage.dbPath.
  * Call once at server startup.
+ *
+ * `options.readonly` opens the file with better-sqlite3's `readonly: true`
+ * constructor option and skips initializeSchema — any write attempt then
+ * fails at the SQLite layer instead of silently mutating the store.
  */
-export function initDb(databasePath?: string): BetterSqliteDatabase | null {
+export function initDb(
+  databasePath?: string,
+  options: { readonly?: boolean } = {},
+): BetterSqliteDatabase | null {
   if (_db !== null) {
     _db.close();
     _db = null;
   }
   const dbPath = databasePath ?? loadConfig().storage.dbPath;
-  return openDb(dbPath);
+  return openDb(dbPath, options);
 }
 
 /** Get singleton handle, lazy-init from config on first call. */

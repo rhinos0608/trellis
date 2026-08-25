@@ -36,8 +36,17 @@ export function handleRunStarted(event: EventEnvelope, state: ProjectionState): 
     familyId: p.familyId,
     status: 'running',
     query: p.query,
-    strategy: p.strategy as 'agent' | 'pipeline' | 'tree',
+    strategy: p.strategy as 'agent' | 'pipeline',
+    rootRunId: p.runId,
+    attempt: 1,
+    depth: 'standard',
+    providerName: 'legacy',
+    requestHash: '',
+    retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1000, maxBackoffMs: 30000 },
+    createdAt: event.timestamp,
+    queuedAt: event.timestamp,
     startedAt: event.timestamp,
+    deadlineAt: '9999-12-31T23:59:59.999Z',
     progress: { phase: 'started' },
   };
   if (p.threadId !== undefined) run.threadId = p.threadId;

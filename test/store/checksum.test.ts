@@ -97,6 +97,134 @@ describe('checksum: all-collections coverage', () => {
     state2.entityMergeHistory.set('e1', { fromId: 'e1', intoId: 'e2', fromLabel: 'X', mergedEventId: 'ev1' });
     expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
   });
+
+  it('extra claims entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.claims.set('c1', {
+      id: 'c1', familyId: 'f1', subjectText: 'test', predicate: 'test', polarity: 'asserted',
+      hedge: 'certain', evidenceType: 'study', confidence: 0.9,
+      canonicalKey: { subject: 'a', predicate: 'b' }, contradictionState: 'none',
+      firstSeenRunId: 'r1', lastSeenRunId: 'r1',
+    });
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra claimRelations entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.claimRelations.set('rel1', {
+      id: 'rel1', fromClaimId: 'c1', toClaimId: 'c2', relation: 'supports',
+      strength: 'strong', score: 0.9, runId: 'r1',
+    });
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra contradictions entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.contradictions.set('con1', {
+      id: 'con1', familyId: 'f1', claimIdA: 'c1', claimIdB: 'c2',
+      contradictionType: 'factual_disagreement', resolutionStatus: 'unresolved',
+      likelyExplanation: null, firstSeenRunId: 'r1',
+    });
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra sources entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.sources.set('s1', {
+      id: 's1', url: 'https://example.com', title: 'Ex', domain: 'example.com',
+      sourceType: 'web', isPrimary: true, extractionStatus: 'pending',
+      contentHash: 'abc', retrievedAt: '2024-01-01T00:00:00Z', firstSeenRunId: 'r1',
+    });
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra threads entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.threads.set('t1', {
+      id: 't1', familyId: 'f1', label: 'Thread', createdAt: '2024-01-01T00:00:00Z', status: 'open',
+    });
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra researchRuns entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.researchRuns.set('rr1', {
+      runId: 'rr1', familyId: 'f1', query: 'test', status: 'completed',
+      startedAt: '2024-01-01T00:00:00Z',
+    });
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra claimRelationsByFromClaimId entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.claimRelationsByFromClaimId.set('c1', new Set(['rel1']));
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra claimRelationsByToClaimId entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.claimRelationsByToClaimId.set('c2', new Set(['rel1']));
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra claimsByFamilyId entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.claimsByFamilyId.set('f1', new Set(['c1']));
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra threadsByFamilyId entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.threadsByFamilyId.set('f1', new Set(['t1']));
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra entityFamilyKeys entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.entityFamilyKeys.add('e1|f1');
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+
+  it('extra familyMergeHistory entry changes checksum', () => {
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.familyMergeHistory.set('f1', { fromId: 'f1', intoId: 'f2', fromLabel: 'F1', mergedEventId: 'ev1' });
+    expect(computeProjectionChecksum(state1)).not.toBe(computeProjectionChecksum(state2));
+  });
+});
+
+// ── Test 7: Canonical string order (code-unit) ─────────────────────
+
+describe('checksum: canonical string order', () => {
+  it('sorts keys by UTF-16 code units, not locale', () => {
+    const state = makeState();
+    state.entities.set('B', {
+      id: 'B', label: 'B', canonicalLabel: null, entityType: 't',
+      aliases: [], extractionConfidence: null, firstSeenRunId: 'r',
+      lastUpdatedRunId: 'r', metadata: {},
+    });
+    state.entities.set('a', {
+      id: 'a', label: 'a', canonicalLabel: null, entityType: 't',
+      aliases: [], extractionConfidence: null, firstSeenRunId: 'r',
+      lastUpdatedRunId: 'r', metadata: {},
+    });
+    const serialized = canonicalSerializeProjectionState(state);
+    const bIdx = serialized.indexOf('"B"');
+    const aIdx = serialized.indexOf('"a"');
+    // 'B' (0x42) < 'a' (0x61) in code-unit order
+    expect(bIdx).toBeLessThan(aIdx);
+  });
 });
 
 // ── Test 3: Order-independence (true canonicalization) ──────────────

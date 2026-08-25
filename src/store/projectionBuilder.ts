@@ -133,12 +133,15 @@ function replayEvents(
 ): void {
   for (const event of events) {
     const decoded = decodeEventPayload(event.eventType, event.eventVersion, event.payload);
-    const decodedEvent = { ...event, payload: decoded.payload };
+    // Handlers mutate domain objects. Give validation and materialized replay
+    // independent payload graphs so one pass cannot mutate the other pass.
+    const validationEvent = { ...event, payload: structuredClone(decoded.payload) };
+    const decodedEvent = { ...event, payload: structuredClone(decoded.payload) };
 
     // Validate against complete historical state, including events later skipped by rollback.
-    validateEventReferences(event.eventType, decoded.payload, validationState);
+    validateEventReferences(event.eventType, validationEvent.payload, validationState);
     const validationHandler = handlers[event.eventType];
-    if (validationHandler !== undefined) validationHandler(decodedEvent, validationState);
+    if (validationHandler !== undefined) validationHandler(validationEvent, validationState);
     validationState.lastAppliedSeq = event.seq;
 
     // Materialized projection preserves existing rollback skip semantics.
@@ -165,6 +168,9 @@ function replayEvents(
  */
 export function rebuildProjection(
   handlers: EventHandlerRegistry,
+  // writeCheckpoint: false = checkpoint-free replay for read-only consumers
+  // (verify/doctor) — the replay result is compared in memory, never persisted.
+  options: { forceGenesis?: boolean; writeCheckpoint?: boolean } = {},
 ): ProjectionState {
   const startTime = Date.now();
 
@@ -172,7 +178,7 @@ export function rebuildProjection(
   const fullRolledBackRuns = collectRolledBackRuns();
 
   // Step 2: try to find a compatible checkpoint
-  const checkpoint = getLatestCompatibleCheckpoint(CURRENT_PROJECTION_VERSION);
+  const checkpoint = options.forceGenesis ? null : getLatestCompatibleCheckpoint(CURRENT_PROJECTION_VERSION);
 
   let state: ProjectionState;
   let validationState: ProjectionState;
@@ -191,7 +197,12 @@ export function rebuildProjection(
     validationState.rolledBackRuns = fullRolledBackRuns;
 
     const storedDelta = queryStoredRows({ afterSeq: checkpoint.eventCursor });
-    for (const row of storedDelta) if (hashPayload(row.payload) !== row.payload_hash) throw new Error(`Payload hash mismatch at seq ${String(row.seq)}`);
+    for (const [i, row] of storedDelta.entries()) {
+      if (hashPayload(row.payload) !== row.payload_hash) throw new Error(`Payload hash mismatch at seq ${String(row.seq)}`);
+      if (i > 0 && i % 10_000 === 0) logger.info({ checked: i, total: storedDelta.length }, 'store: hash validation progress (incremental)');
+    }
+    state.lastAppliedSeq = checkpoint.eventCursor;
+    validationState.lastAppliedSeq = checkpoint.eventCursor;
     const deltaEvents = storedDelta.map(rowToEnvelope);
     replayEvents(deltaEvents, handlers, validationState, state);
     eventsProcessed = deltaEvents.length;
@@ -213,7 +224,10 @@ export function rebuildProjection(
     validationState.rolledBackRuns = fullRolledBackRuns;
 
     const stored = queryStoredRows();
-    for (const row of stored) if (hashPayload(row.payload) !== row.payload_hash) throw new Error(`Payload hash mismatch at seq ${String(row.seq)}`);
+    for (const [i, row] of stored.entries()) {
+      if (hashPayload(row.payload) !== row.payload_hash) throw new Error(`Payload hash mismatch at seq ${String(row.seq)}`);
+      if (i > 0 && i % 10_000 === 0) logger.info({ checked: i, total: stored.length }, 'store: hash validation progress (genesis)');
+    }
     const allEvents = stored.map(rowToEnvelope);
     replayEvents(allEvents, handlers, validationState, state);
     eventsProcessed = allEvents.length;
@@ -229,7 +243,6 @@ export function rebuildProjection(
   }
 
   validateProjectionReferences(state);
-  state.lastAppliedSeq = getLatestEventCursor() ?? 0;
   const durationMs = Date.now() - startTime;
 
   logger.info(
@@ -243,13 +256,16 @@ export function rebuildProjection(
     'store: projection rebuild complete',
   );
 
-  // Write checkpoint (best-effort)
-  const lastCursor = getLatestEventCursor();
-  if (lastCursor !== null) {
-    const checksum = computeProjectionChecksum(state);
-    const snapshotJson = serializeProjectionState(state);
-    const rolledBackRunIds = [...fullRolledBackRuns];
-    createCheckpoint(lastCursor, countEvents(), checksum, snapshotJson, rolledBackRunIds);
+  // Write checkpoint (best-effort) — skipped when writeCheckpoint is false
+  // so read-only verification never persists a snapshot.
+  if (options.writeCheckpoint !== false) {
+    const lastCursor = getLatestEventCursor();
+    if (lastCursor !== null) {
+      const checksum = computeProjectionChecksum(state);
+      const snapshotJson = serializeProjectionState(state);
+      const rolledBackRunIds = [...fullRolledBackRuns];
+      createCheckpoint(lastCursor, countEvents(), checksum, snapshotJson, rolledBackRunIds);
+    }
   }
 
   return state;
