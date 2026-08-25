@@ -21,7 +21,8 @@ import { resolveBudgetProfile } from './budget.js';
 import { ResearchStateEngine } from './state.js';
 import { BudgetTracker } from './budget.js';
 import { resolveFamily } from '../workspace/familyResolver.js';
-import { appendEvents, queryEvents } from '../store/events.js';
+import { appendEvents, queryEvents, type NewEventInput, type AppendContext } from '../store/events.js';
+import { StaleProjectionError } from '../store/eventErrors.js';
 import { rebuildProjection } from '../store/projectionBuilder.js';
 import { rollbackRun } from '../store/rollback.js';
 import { graphEventHandlers } from '../graph/index.js';
@@ -127,10 +128,9 @@ function makeEnvelope(
   eventType: EventEnvelope['eventType'],
   runId: string,
   payload: unknown,
-  overrides?: Partial<EventEnvelope>,
-): EventEnvelope {
+  overrides?: Partial<NewEventInput>,
+): NewEventInput {
   return {
-    id: '',
     timestamp: new Date().toISOString(),
     eventType,
     eventVersion: 1,
@@ -140,7 +140,6 @@ function makeEnvelope(
     entityId: null,
     entityType: null,
     payload,
-    payloadHash: null,
     ...overrides,
   };
 }
@@ -151,7 +150,7 @@ function mapFindingToClaimEvents(
   finding: Finding,
   familyId: string,
   runId: string,
-): EventEnvelope[] {
+): NewEventInput[] {
   const claimId = `clm_${finding.id}`;
   const claim = {
     id: claimId,
@@ -177,7 +176,7 @@ function mapFindingToClaimEvents(
     lastSeenRunId: runId,
   };
 
-  const events: EventEnvelope[] = [
+  const events: NewEventInput[] = [
     makeEnvelope('CLAIM_ACCEPTED', runId, claim, { entityId: claimId, entityType: 'claim' }),
   ];
 
@@ -205,7 +204,7 @@ function mapClusterEdgeToClaimRelationEvents(
   clusterRepresentativeClaimId: Map<string, string>,
   persistedClaimIds: Set<string>,
   runId: string,
-): EventEnvelope[] {
+): NewEventInput[] {
   const fromClaimId = clusterRepresentativeClaimId.get(edge.fromClusterId);
   const toClaimId = clusterRepresentativeClaimId.get(edge.toClusterId);
   if (
@@ -241,7 +240,7 @@ function mapContradictionToEvents(
   familyId: string,
   runId: string,
   claimTextToId: Map<string, string>,
-): EventEnvelope[] {
+): NewEventInput[] {
   const claimIdA = claimTextToId.get(ic.claimA);
   const claimIdB = claimTextToId.get(ic.claimB);
   if (claimIdA === undefined || claimIdB === undefined) {
@@ -272,7 +271,7 @@ function mapGapToEvents(
   gap: GapRecord,
   familyId: string,
   runId: string,
-): EventEnvelope[] {
+): NewEventInput[] {
   const gapEvent = {
     id: `gap_${gap.id}`,
     familyId,
@@ -292,7 +291,7 @@ function mapGapToEvents(
 function mapSourceToEvents(
   src: { id: string; title: string; url: string; sourceType: string; domain: string; isPrimary: boolean; extractionStatus: string; contentHash?: string; accessDate: string; publishedDate?: string; qualityScore?: number; authorityClass?: string; discardReason?: string; usageStatus?: string },
   runId: string,
-): EventEnvelope[] {
+): NewEventInput[] {
   const source = {
     id: src.id,
     url: src.url,
@@ -308,7 +307,7 @@ function mapSourceToEvents(
     authorityClass: src.authorityClass as AuthorityClass | undefined,
     firstSeenRunId: runId,
   };
-  const events: EventEnvelope[] = [
+  const events: NewEventInput[] = [
     makeEnvelope('SOURCE_ADDED', runId, source, { entityId: src.id, entityType: 'source' }),
   ];
   if (src.extractionStatus === 'extracted') {
@@ -329,8 +328,8 @@ function buildCompletionEvents(
   result: ResearchResult,
   familyId: string,
   runId: string,
-): EventEnvelope[] {
-  const events: EventEnvelope[] = [];
+): NewEventInput[] {
+  const events: NewEventInput[] = [];
   const report = result.report;
 
   // Canonical findings → CLAIM_ACCEPTED + EVIDENCE_LINKED
@@ -387,8 +386,8 @@ function buildStateOutputEvents(
   state: ResearchStateEngine,
   familyId: string,
   runId: string,
-): EventEnvelope[] {
-  const events: EventEnvelope[] = [];
+): NewEventInput[] {
+  const events: NewEventInput[] = [];
   const s = state.getState();
 
   // Gaps → GAP_OPENED
@@ -414,9 +413,20 @@ export function createRunService(): RunService {
   // Closure-local, not module-level — each RunService instance owns its
   // own in-flight-run bookkeeping so separate instances never contaminate.
   const activeRuns = new Map<string, RunAbort>();
+  const runContexts = new Map<string, AppendContext>();
 
   function getProjection(): ProjectionState {
     return rebuildProjection(handlers);
+  }
+
+  function appendWithRetry(events: readonly NewEventInput[], context: AppendContext): void {
+    try {
+      appendEvents(events, context);
+    } catch (error) {
+      if (!(error instanceof StaleProjectionError)) throw error;
+      context.projection = getProjection();
+      appendEvents(events, context);
+    }
   }
 
   function startRun(input: StartRunInput): Promise<{ runId: string; familyId: string }> {
@@ -433,7 +443,7 @@ export function createRunService(): RunService {
     const { familyId, familyCreated, familyLabel, familyDescription, score: familyScore } = resolveFamilyForRun(input, projection);
 
     // 2. Append RUN_STARTED event immediately (durable from the start)
-    const familyEvents: EventEnvelope[] = [];
+    const familyEvents: NewEventInput[] = [];
     if (familyCreated) {
       familyEvents.push(
         makeEnvelope('FAMILY_CREATED', runId, {
@@ -463,11 +473,13 @@ export function createRunService(): RunService {
       threadId: input.threadId,
     };
 
-    const allStartEvents: EventEnvelope[] = [
+    const allStartEvents: NewEventInput[] = [
       ...familyEvents,
       makeEnvelope('RUN_STARTED', runId, runPayload, { entityId: runId, entityType: 'run' }),
     ];
-    appendEvents(allStartEvents);
+    const appendContext: AppendContext = { projection, handlers };
+    runContexts.set(runId, appendContext);
+    appendWithRetry(allStartEvents, appendContext);
 
     // 3. Setup abort controller
     const controller = new AbortController();
@@ -520,6 +532,8 @@ export function createRunService(): RunService {
     abortSignal: AbortSignal,
     query: string,
   ): Promise<void> {
+    const context = runContexts.get(runId);
+    if (!context) throw new Error(`Missing append context for run ${runId}`);
     try {
       // Import strategy dynamically to avoid circular deps
       const { StrategyRegistry } = await import('./strategies/registry.js');
@@ -546,17 +560,18 @@ export function createRunService(): RunService {
 
       if (abortSignal.aborted) {
         // Cancellation
-        appendEvents([
+        appendWithRetry([
           makeEnvelope('RUN_CANCELLED', runId, { runId }, { entityId: runId, entityType: 'run' }),
-        ]);
+        ], context);
         activeRuns.delete(runId);
         return;
       }
 
       // Build completion events: report-based + state-based
       const completionEvents = [
-        ...buildCompletionEvents(result, familyId, runId),
+        // Sources must precede EVIDENCE_LINKED in same append batch.
         ...buildStateOutputEvents(stateEngine, familyId, runId),
+        ...buildCompletionEvents(result, familyId, runId),
       ];
 
       // Run-completed envelope
@@ -571,16 +586,16 @@ export function createRunService(): RunService {
         }, { entityId: runId, entityType: 'run' }),
       );
 
-      appendEvents(completionEvents);
+      appendWithRetry(completionEvents, context);
       activeRuns.delete(runId);
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      appendEvents([
+      appendWithRetry([
         makeEnvelope('RUN_FAILED', runId, {
           runId,
           error: errorMsg,
         }, { entityId: runId, entityType: 'run' }),
-      ]);
+      ], context);
       activeRuns.delete(runId);
     }
   }
@@ -647,7 +662,7 @@ export function rollbackRunById(
   runId: string,
 ): { skipped: number; executed: number; blocked: { eventId: string; reason: string }[] } {
   const projection = rebuildProjection({ ...ALL_HANDLERS });
-  return rollbackRun(runId, projection);
+  return rollbackRun(runId, projection, { projection, handlers: { ...ALL_HANDLERS } });
 }
 
 // Re-export for tests

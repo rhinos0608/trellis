@@ -17,6 +17,7 @@ import { initDb, closeDb, appendEvents, queryEvents, rebuildProjection } from '.
 import type { NewEventInput } from '../src/store/index.js';
 import { graphEventHandlers } from '../src/graph/projectionHandlers.js';
 import { workspaceEventHandlers } from '../src/workspace/projectionHandlers.js';
+import { createEmptyProjectionState } from '../src/store/projectionState.js';
 import type { EventHandlerRegistry } from '../src/store/projectionState.js';
 
 // ── CLI flags ──────────────────────────────────────────────────────
@@ -52,14 +53,18 @@ const EVENT_WEIGHTS: WeightedType[] = [
 ];
 
 const TOTAL_WEIGHT = EVENT_WEIGHTS.reduce((s, w) => s + w.weight, 0);
+const SECONDARY_WEIGHTS = EVENT_WEIGHTS.filter(({ type }) =>
+  !['NODE_ADDED', 'CLAIM_ACCEPTED', 'SOURCE_ADDED', 'FAMILY_CREATED'].includes(type),
+);
+const SECONDARY_TOTAL_WEIGHT = SECONDARY_WEIGHTS.reduce((s, w) => s + w.weight, 0);
 
-function pickWeighted(rand: number): string {
+function pickWeighted(rand: number, weights = EVENT_WEIGHTS, totalWeight = TOTAL_WEIGHT): string {
   let acc = 0;
-  for (const w of EVENT_WEIGHTS) {
+  for (const w of weights) {
     acc += w.weight;
-    if (rand < acc / TOTAL_WEIGHT) return w.type;
+    if (rand < acc / totalWeight) return w.type;
   }
-  return EVENT_WEIGHTS[0]!.type;
+  return weights[0]!.type;
 }
 
 // Simple seeded PRNG (xorshift32) for deterministic-ish IDs without crypto overhead
@@ -89,12 +94,23 @@ function generateEvents(count: number, offset: number): NewEventInput[] {
   const familyCount = Math.ceil(count * 0.05);
 
   const runId = `run-bench-${offset}`;
+  const prerequisiteTypes = [
+    ...Array.from({ length: familyCount }, () => 'FAMILY_CREATED'),
+    ...Array.from({ length: entityCount }, () => 'NODE_ADDED'),
+    ...Array.from({ length: sourceCount }, () => 'SOURCE_ADDED'),
+    ...Array.from({ length: claimCount }, () => 'CLAIM_ACCEPTED'),
+  ];
+  const remainingCount = count - prerequisiteTypes.length;
+  const eventTypes = [
+    ...prerequisiteTypes,
+    ...Array.from({ length: remainingCount }, () => pickWeighted(rand(), SECONDARY_WEIGHTS, SECONDARY_TOTAL_WEIGHT)),
+  ];
 
   const events: NewEventInput[] = [];
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < eventTypes.length; i++) {
     const idx = offset + i;
     const ts = new Date(Date.now() + idx).toISOString();
-    const evType = pickWeighted(rand());
+    const evType = eventTypes[i]!;
 
     let payload: unknown;
     let entityId: string | null = null;
@@ -288,9 +304,10 @@ async function main(): Promise<void> {
     try {
       // ── (a) Insert ──
       const allEvents = generateEvents(scale, 0);
+      const appendContext = { projection: createEmptyProjectionState(), handlers };
       const insertStart = performance.now();
       for (let i = 0; i < allEvents.length; i += BATCH_SIZE) {
-        appendEvents(allEvents.slice(i, i + BATCH_SIZE));
+        appendEvents(allEvents.slice(i, i + BATCH_SIZE), appendContext);
       }
       const insertMs = Math.round(performance.now() - insertStart);
       console.log(`  Insert: ${insertMs}ms`);
@@ -309,7 +326,7 @@ async function main(): Promise<void> {
       // ── (c) Append delta, then incremental rebuild ──
       const deltaEvents = generateEvents(DELTA_COUNT, scale);
       const deltaStart = performance.now();
-      appendEvents(deltaEvents);
+      appendEvents(deltaEvents, appendContext);
       const deltaInsertMs = Math.round(performance.now() - deltaStart);
       console.log(`  Delta insert (${DELTA_COUNT} events): ${deltaInsertMs}ms`);
 
