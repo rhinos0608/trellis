@@ -12,15 +12,21 @@
 import { randomUUID } from 'node:crypto';
 import type { StrategyContext } from './strategies/types.js';
 import type { ResearchResult, Finding, InternalContradiction, GapRecord, ResearchDepth } from './internalTypes.js';
-import type { ResearchStrategy as StrategyName } from './types.js';
+import type { ResearchStrategy as StrategyName, RunProgressUpdate } from './types.js'
 import type { BudgetProfile } from './internalTypes.js';
-import type { ResearchProvider } from '../providers/types.js';
+import type { ProviderCallContext, ResearchProvider } from '../providers/types.js';
 import type { TrellisConfig } from '../config/index.js';
-import type { AuthorityClass } from '../graph/types.js';
+import type { AuthorityClass, ClaimObservation } from '../graph/types.js';
+import { canonicalizeSourceUrl } from '../graph/sourceIdentity.js';
+import { planClaimObservation } from '../graph/claimReconciler.js';
+import { createEmptyProjectionState, serializeProjectionState, deserializeProjectionState } from '../store/projectionState.js';
+import type { EventHandlerRegistry } from '../store/projectionState.js';
 import { resolveBudgetProfile } from './budget.js';
 import { ResearchStateEngine } from './state.js';
 import { BudgetTracker } from './budget.js';
+import { LlmClient } from './llm/client.js';
 import { resolveFamily } from '../workspace/familyResolver.js';
+import { resolveThread } from '../workspace/threadResolver.js';
 import { appendEvents, queryEvents, type NewEventInput, type AppendContext } from '../store/events.js';
 import { StaleProjectionError } from '../store/eventErrors.js';
 import { rebuildProjection } from '../store/projectionBuilder.js';
@@ -30,6 +36,17 @@ import { workspaceEventHandlers } from '../workspace/index.js';
 import type { EventEnvelope } from '../store/eventTypes.js';
 import type { ProjectionState } from '../store/projectionState.js';
 import { logger } from '../logger.js';
+import { classifyError } from './retry.js';
+import { hashPayload } from '../store/events.js';
+import { JobScheduler } from './scheduler.js'
+import { foldRunLedger } from './runLedger.js';
+import { selectFollowUpTarget } from './followUpPlanner.js';
+import type { RunFollowUp } from './types.js';
+
+function deserializeScratch(state: ProjectionState): ProjectionState { return deserializeProjectionState(serializeProjectionState(state)); }
+function applyScratchEvents(events: readonly NewEventInput[], state: ProjectionState, handlers: EventHandlerRegistry): void {
+  for (const [index, event] of events.entries()) handlers[event.eventType]?.({ ...event, id: `scratch_${String(index)}`, seq: state.lastAppliedSeq, payloadHash: '', actorId: event.actorId ?? null }, state);
+}
 
 // ── Run state (in-process ephemeral — NOT authoritative) ─────────────
 
@@ -39,6 +56,20 @@ interface RunAbort {
 
 // ── Public API ────────────────────────────────────────────────────────
 
+/**
+ * Thrown by startRun() when strategy:'agent' is requested but LLM config
+ * (baseUrl + model) is missing. Permanent precondition — not retryable.
+ */
+export class MissingLlmConfigError extends Error {
+  readonly classification = 'permanent' as const;
+  constructor() {
+    super(
+      'Agent strategy requires LLM configuration: set TRELLIS_LLM_BASE_URL (or OPENAI_BASE_URL) and TRELLIS_LLM_MODEL (or OPENAI_MODEL)',
+    );
+    this.name = 'MissingLlmConfigError';
+  }
+}
+
 export interface StartRunInput {
   query: string;
   strategy?: StrategyName;
@@ -46,11 +77,32 @@ export interface StartRunInput {
   topic?: string;
   sessionId?: string;
   threadId?: string;
-  provider: ResearchProvider;
+  /** Provider object retained for compatibility; scheduler prefers providerName. */
+  provider?: ResearchProvider;
+  providerName?: string;
   config: TrellisConfig;
+  idempotencyKey?: string;
+  deadlineMs?: number;
   /** If provided, skip family resolution and use this familyId. */
   explicitFamilyId?: string;
 }
+
+export interface RetryRunInput {
+  runId: string;
+  idempotencyKey?: string;
+  deadlineMs?: number;
+}
+
+export interface ContinueResearchInput {
+  familyId: string;
+  depth?: 'quick' | 'standard';
+  idempotencyKey?: string;
+  config?: TrellisConfig;
+}
+
+export type ContinueResearchResult =
+  | { status: 'queued'; runId: string; familyId: string; target: { type: 'gap' | 'contradiction'; id: string }; query: string; followUpsUsed: number; followUpCap: 3 }
+  | { status: 'no_work' | 'cap_reached'; familyId: string; followUpsUsed: number; followUpCap: 3 };
 
 export interface RunStatus {
   runId: string;
@@ -73,8 +125,12 @@ export interface RunService {
   startRun(input: StartRunInput): Promise<{ runId: string; familyId: string }>;
   getStatus(runId: string): RunStatus | null;
   cancelRun(runId: string): boolean;
+  retryRun(input: RetryRunInput): Promise<{ runId: string; familyId: string; deduplicated: boolean }>;
+  continueResearch(input: ContinueResearchInput): Promise<ContinueResearchResult>;
   /** Rebuild projection and return it for querying. */
   getProjection(): ProjectionState;
+  startScheduler(): void;
+  shutdownScheduler(): Promise<void>;
 }
 
 // ── Handlers registry (merged domain handlers for projection rebuild) ─
@@ -150,34 +206,21 @@ function mapFindingToClaimEvents(
   finding: Finding,
   familyId: string,
   runId: string,
+  threadId?: string,
 ): NewEventInput[] {
-  const claimId = `clm_${finding.id}`;
-  const claim = {
-    id: claimId,
-    familyId,
-    subjectText: finding.claim,
-    predicate: finding.normalizedClaim || finding.claim,
-    polarity: 'asserted' as const,
-    hedge: finding.confidence !== undefined
-      ? (finding.confidence > 0.8 ? 'certain' as const
-        : finding.confidence > 0.5 ? 'likely' as const
-        : 'possible' as const)
-      : 'possible' as const,
-    evidenceType: finding.claimType === 'primary' ? 'study' as const
-      : finding.claimType === 'secondary' ? 'claim' as const
-      : 'anecdote' as const,
-    confidence: finding.confidence ?? 0.5,
-    canonicalKey: {
-      subject: finding.claim.slice(0, 200),
-      predicate: finding.normalizedClaim.slice(0, 200),
-    },
-    contradictionState: 'none' as const,
-    firstSeenRunId: runId,
-    lastSeenRunId: runId,
+  const observation: ClaimObservation = {
+    id: `obs_${runId}_${finding.id}`, familyId, ...(threadId !== undefined ? { threadId } : {}), runId, observedAt: finding.lastUpdated || finding.createdAt,
+    subjectText: finding.claim, predicate: finding.normalizedClaim || finding.claim, polarity: 'asserted',
+    hedge: (finding.confidence ?? 0.5) > 0.8 ? 'certain' : (finding.confidence ?? 0.5) > 0.5 ? 'likely' : 'possible',
+    evidenceType: finding.claimType === 'primary' ? 'study' : finding.claimType === 'secondary' ? 'claim' : 'anecdote',
+    confidence: finding.confidence ?? 0.5, sourceIds: finding.sourceIds, extractionVersion: 'finding-v2',
+    canonicalKey: { subject: finding.claim.slice(0, 200), predicate: (finding.normalizedClaim || finding.claim).slice(0, 200) },
   };
+  const planned = planClaimObservation(observation, createEmptyProjectionState());
+  const claimId = planned.reconciliation.canonicalClaimId;
 
   const events: NewEventInput[] = [
-    makeEnvelope('CLAIM_ACCEPTED', runId, claim, { entityId: claimId, entityType: 'claim' }),
+    makeEnvelope('CLAIM_OBSERVED', runId, planned, { entityId: claimId, entityType: 'claim' }),
   ];
 
   // Evidence per sourceId
@@ -187,10 +230,12 @@ function mapFindingToClaimEvents(
       claimId,
       sourceId,
       excerpt: finding.evidenceExcerpt,
+      observationId: observation.id,
+      stance: 'supports',
       runId,
     };
     events.push(
-      makeEnvelope('EVIDENCE_LINKED', runId, evidence, { entityId: evidence.id, entityType: 'evidence' }),
+      makeEnvelope('EVIDENCE_LINKED', runId, evidence, { entityId: evidence.id, entityType: 'evidence', eventVersion: 2 }),
     );
   }
 
@@ -271,10 +316,12 @@ function mapGapToEvents(
   gap: GapRecord,
   familyId: string,
   runId: string,
+  threadId?: string,
 ): NewEventInput[] {
   const gapEvent = {
     id: `gap_${gap.id}`,
     familyId,
+    ...(threadId !== undefined ? { threadId } : {}),
     question: gap.description,
     category: gap.category,
     status: gap.status,
@@ -292,27 +339,30 @@ function mapSourceToEvents(
   src: { id: string; title: string; url: string; sourceType: string; domain: string; isPrimary: boolean; extractionStatus: string; contentHash?: string; accessDate: string; publishedDate?: string; qualityScore?: number; authorityClass?: string; discardReason?: string; usageStatus?: string },
   runId: string,
 ): NewEventInput[] {
-  const source = {
-    id: src.id,
+  const canonicalUrl = canonicalizeSourceUrl(src.url);
+  const sourceId = canonicalUrl;
+  const observed = {
+    sourceId,
+    observedSourceId: src.id,
+    canonicalUrl,
     url: src.url,
     title: src.title,
     domain: src.domain,
     sourceType: src.sourceType,
     isPrimary: src.isPrimary,
     extractionStatus: src.extractionStatus,
-    contentHash: src.contentHash ?? `hash_${src.id}`,
-    retrievedAt: src.accessDate,
-    publishedAt: src.publishedDate,
+    ...(src.contentHash !== undefined ? { contentHash: src.contentHash } : {}),
+    runId,
+    observedAt: src.accessDate,
     qualityScore: src.qualityScore,
     authorityClass: src.authorityClass as AuthorityClass | undefined,
-    firstSeenRunId: runId,
   };
   const events: NewEventInput[] = [
-    makeEnvelope('SOURCE_ADDED', runId, source, { entityId: src.id, entityType: 'source' }),
+    makeEnvelope('SOURCE_OBSERVED', runId, observed, { entityId: sourceId, entityType: 'source' }),
   ];
   if (src.extractionStatus === 'extracted') {
     events.push(
-      makeEnvelope('SOURCE_READ', runId, { sourceId: src.id }, { entityId: src.id, entityType: 'source' }),
+      makeEnvelope('SOURCE_READ', runId, { sourceId }, { entityId: sourceId, entityType: 'source' }),
     );
   }
   return events;
@@ -328,6 +378,7 @@ function buildCompletionEvents(
   result: ResearchResult,
   familyId: string,
   runId: string,
+  threadId?: string,
 ): NewEventInput[] {
   const events: NewEventInput[] = [];
   const report = result.report;
@@ -336,11 +387,19 @@ function buildCompletionEvents(
   const findings = result.canonicalFindings ?? [];
   const claimTextToId = new Map<string, string>();
   const persistedClaimIds = new Set<string>();
+  const scratch = createEmptyProjectionState();
+  const findingToClaim = new Map<string, string>();
   for (const f of findings) {
-    const claimId = `clm_${f.id}`;
+    const first = mapFindingToClaimEvents(f, familyId, runId, threadId)[0];
+    if (!first) continue;
+    const planned = first.payload as { observation: ClaimObservation; reconciliation: { canonicalClaimId: string } };
+    const claimId = planned.reconciliation.canonicalClaimId;
     claimTextToId.set(f.claim, claimId);
     persistedClaimIds.add(claimId);
-    events.push(...mapFindingToClaimEvents(f, familyId, runId));
+    findingToClaim.set(f.id, claimId);
+    events.push(first);
+    graphEventHandlers.CLAIM_OBSERVED({ ...first, id: `scratch_${f.id}`, seq: scratch.lastAppliedSeq, payloadHash: '', actorId: first.actorId ?? null }, scratch);
+    events.push(...mapFindingToClaimEvents(f, familyId, runId, threadId).slice(1));
   }
 
   // FindingClusters → representative claim per cluster (first finding in the cluster).
@@ -351,7 +410,8 @@ function buildCompletionEvents(
     for (const cluster of report.findingClusters) {
       const representativeFindingId = cluster.findingIds[0];
       if (representativeFindingId !== undefined) {
-        clusterRepresentativeClaimId.set(cluster.id, `clm_${representativeFindingId}`);
+        const claimId = findingToClaim.get(representativeFindingId);
+        if (claimId) clusterRepresentativeClaimId.set(cluster.id, claimId);
       }
     }
   }
@@ -386,19 +446,28 @@ function buildStateOutputEvents(
   state: ResearchStateEngine,
   familyId: string,
   runId: string,
+  threadId?: string,
 ): NewEventInput[] {
   const events: NewEventInput[] = [];
   const s = state.getState();
 
   // Gaps → GAP_OPENED
   for (const gap of s.gaps) {
-    events.push(...mapGapToEvents(gap, familyId, runId));
+    events.push(...mapGapToEvents(gap, familyId, runId, threadId));
   }
 
-  // Sources → SOURCE_ADDED (+ SOURCE_READ if extracted)
+  // Provider results can overlap; one canonical URL must count once per run.
+  const sourcesByCanonicalUrl = new Map<string, (typeof s.sources)[number]>();
   for (const src of s.sources) {
-    events.push(...mapSourceToEvents(src, runId));
+    const canonicalUrl = canonicalizeSourceUrl(src.url);
+    const current = sourcesByCanonicalUrl.get(canonicalUrl);
+    if (
+      current === undefined ||
+      (src.extractionStatus === 'extracted' && current.extractionStatus !== 'extracted') ||
+      (src.contentHash !== undefined && current.contentHash === undefined)
+    ) sourcesByCanonicalUrl.set(canonicalUrl, src);
   }
+  for (const src of sourcesByCanonicalUrl.values()) events.push(...mapSourceToEvents(src, runId));
 
   return events;
 }
@@ -414,35 +483,112 @@ export function createRunService(): RunService {
   // own in-flight-run bookkeeping so separate instances never contaminate.
   const activeRuns = new Map<string, RunAbort>();
   const runContexts = new Map<string, AppendContext>();
+  const runInputs = new Map<string, StartRunInput>();
+  const providerByName = new Map<string, ResearchProvider | undefined>();
+  const familyLocks = new Map<string, Promise<void>>();
+  const MAX_FOLLOW_UP_RUNS_PER_FAMILY = 3;
 
   function getProjection(): ProjectionState {
     return rebuildProjection(handlers);
   }
 
+  const MAX_STALE_RETRIES = 10;
+
   function appendWithRetry(events: readonly NewEventInput[], context: AppendContext): void {
-    try {
-      appendEvents(events, context);
-    } catch (error) {
-      if (!(error instanceof StaleProjectionError)) throw error;
-      context.projection = getProjection();
-      appendEvents(events, context);
+    for (let attempt = 0; attempt <= MAX_STALE_RETRIES; attempt++) {
+      try {
+        appendEvents(events, context);
+        return;
+      } catch (error) {
+        if (!(error instanceof StaleProjectionError) || attempt >= MAX_STALE_RETRIES) throw error;
+        context.projection = getProjection();
+      }
     }
   }
 
-  function startRun(input: StartRunInput): Promise<{ runId: string; familyId: string }> {
+  function buildAndPersistCompletion(result: ResearchResult, stateEngine: ResearchStateEngine, familyId: string, runId: string, context: AppendContext, threadId?: string): void {
+    for (let attempt = 0; attempt <= MAX_STALE_RETRIES; attempt++) {
+      const projection = attempt === 0 ? context.projection : getProjection();
+      const scratch = deserializeScratch(projection);
+      const stateEvents = buildStateOutputEvents(stateEngine, familyId, runId, threadId);
+      const sourceEvents = stateEvents.filter((event) => event.eventType === 'SOURCE_OBSERVED' || event.eventType === 'SOURCE_READ');
+      const oldContentHashes = new Map(
+        sourceEvents
+          .filter((event) => event.eventType === 'SOURCE_OBSERVED')
+          .map((event) => {
+            const sourceId = (event.payload as { sourceId: string }).sourceId;
+            return [sourceId, scratch.sources.get(sourceId)?.contentHash] as const;
+          }),
+      );
+      applyScratchEvents(sourceEvents, scratch, handlers);
+      // Map every raw observation, including sources dropped by canonical-URL dedup.
+      const sourceIdByObservedId = new Map(
+        stateEngine.getState().sources.map((src) => [src.id, canonicalizeSourceUrl(src.url)] as const),
+      );
+      const events: NewEventInput[] = [...stateEvents];
+      for (const event of sourceEvents) {
+        if (event.eventType !== 'SOURCE_OBSERVED') continue;
+        const payload = event.payload as { sourceId: string; contentHash?: string };
+        const oldContentHash = oldContentHashes.get(payload.sourceId);
+        if (oldContentHash !== undefined && payload.contentHash !== undefined && oldContentHash !== payload.contentHash) {
+          events.push(makeEnvelope('SOURCE_CHANGED', runId, {
+            sourceId: payload.sourceId,
+            oldContentHash,
+            newContentHash: payload.contentHash,
+          }, { entityId: payload.sourceId, entityType: 'source' }));
+        }
+      }
+      const findingClaims = new Map<string, string>();
+      const claimTextToId = new Map<string, string>();
+      for (const finding of result.canonicalFindings ?? []) {
+        const observation: ClaimObservation = { id: `obs_${runId}_${finding.id}`, familyId, ...(threadId !== undefined ? { threadId } : {}), runId, observedAt: finding.lastUpdated || finding.createdAt, subjectText: finding.claim, predicate: finding.normalizedClaim || finding.claim, polarity: 'asserted', hedge: (finding.confidence ?? 0.5) > 0.8 ? 'certain' : (finding.confidence ?? 0.5) > 0.5 ? 'likely' : 'possible', evidenceType: finding.claimType === 'primary' ? 'study' : finding.claimType === 'secondary' ? 'claim' : 'anecdote', confidence: finding.confidence ?? 0.5, sourceIds: finding.sourceIds.map((sourceId) => sourceIdByObservedId.get(sourceId) ?? sourceId), extractionVersion: 'finding-v2', canonicalKey: { subject: finding.claim.slice(0, 200), predicate: (finding.normalizedClaim || finding.claim).slice(0, 200) } };
+        const planned = planClaimObservation(observation, scratch);
+        const claimId = planned.reconciliation.canonicalClaimId;
+        findingClaims.set(finding.id, claimId); claimTextToId.set(finding.claim, claimId);
+        const claimEvent = makeEnvelope('CLAIM_OBSERVED', runId, planned, { entityId: claimId, entityType: 'claim' });
+        events.push(claimEvent); applyScratchEvents([claimEvent], scratch, handlers);
+        for (const observedSourceId of finding.sourceIds) { const sourceId = sourceIdByObservedId.get(observedSourceId) ?? observedSourceId; const isContradiction = planned.reconciliation.classification === 'contradiction' && planned.reconciliation.matchedClaimId; if (isContradiction && planned.reconciliation.matchedClaimId) { events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: `evd_${finding.id}_${sourceId}_opposes`, claimId: planned.reconciliation.matchedClaimId, sourceId, observationId: observation.id, stance: 'opposes', excerpt: finding.evidenceExcerpt, runId }, { entityType: 'evidence', eventVersion: 2 })); events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: `evd_${finding.id}_${sourceId}_supports`, claimId, sourceId, observationId: observation.id, stance: 'supports', excerpt: finding.evidenceExcerpt, runId }, { entityType: 'evidence', eventVersion: 2 })); } else { events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: `evd_${finding.id}_${sourceId}`, claimId, sourceId, observationId: observation.id, stance: 'supports', excerpt: finding.evidenceExcerpt, runId }, { entityType: 'evidence', eventVersion: 2 })); } }
+      }
+      const clusters = new Map<string, string>();
+      for (const cluster of result.report.findingClusters ?? []) { const findingId = cluster.findingIds[0]; const claimId = findingId ? findingClaims.get(findingId) : undefined; if (claimId) clusters.set(cluster.id, claimId); }
+      const persisted = new Set(findingClaims.values());
+      for (const edge of result.report.findingClusterEdges ?? []) events.push(...mapClusterEdgeToClaimRelationEvents(edge, clusters, persisted, runId));
+      for (const contradiction of result.report.contradictions) events.push(...mapContradictionToEvents(contradiction, familyId, runId, claimTextToId));
+      events.push(makeEnvelope('RUN_COMPLETED', runId, { runId, claimCount: result.canonicalFindings?.length ?? 0, sourceCount: stateEngine.getState().sources.length, evidenceCount: (result.canonicalFindings ?? []).reduce((sum, f) => sum + f.sourceIds.length, 0) }, { entityId: runId, entityType: 'run' }));
+      try { appendEvents(events, { projection, handlers }); context.projection = projection; return; } catch (error) { if (!(error instanceof StaleProjectionError) || attempt >= MAX_STALE_RETRIES) throw error; }
+    }
+  }
+
+  async function startRun(input: StartRunInput, followUp?: RunFollowUp): Promise<{ runId: string; familyId: string }> {
     const runId = `run_${randomUUID().slice(0, 12)}`;
+
+    // Permanent precondition: explicit agent strategy requires LLM config.
+    // Reject before any events are appended — never fail deep in execution.
+    if ((input.strategy ?? 'pipeline') === 'agent') {
+      const llmCfg = input.config.llm;
+      if (!llmCfg.baseUrl || !llmCfg.model) throw new MissingLlmConfigError();
+    }
 
     // 1. Resolve family from current projection BEFORE starting research
     let projection: ProjectionState;
     try {
       projection = getProjection();
     } catch {
-      projection = { families: new Map() } as ProjectionState;
+      projection = createEmptyProjectionState();
     }
 
     const { familyId, familyCreated, familyLabel, familyDescription, score: familyScore } = resolveFamilyForRun(input, projection);
+    const effectiveThread = input.threadId !== undefined
+      ? (() => {
+        const thread = projection.threads.get(input.threadId);
+        if (!thread) throw new Error(`Thread not found: ${input.threadId}`);
+        if (thread.familyId !== familyId) throw new Error(`Thread ${input.threadId} does not belong to family ${familyId}`);
+        return { thread, isNew: false };
+      })()
+      : resolveThread(input.query, familyId, [...projection.threads.values()], { now: new Date().toISOString() });
+    const threadId = effectiveThread.thread.id;
 
-    // 2. Append RUN_STARTED event immediately (durable from the start)
+    // 2. Append family/thread events before RUN_QUEUED
     const familyEvents: NewEventInput[] = [];
     if (familyCreated) {
       familyEvents.push(
@@ -463,34 +609,39 @@ export function createRunService(): RunService {
       }, { entityId: familyId, entityType: 'family' }),
     );
 
-    const runPayload = {
-      runId,
-      familyId,
-      query: input.query,
-      strategy: input.strategy ?? 'pipeline',
-      topic: input.topic,
-      sessionId: input.sessionId,
-      threadId: input.threadId,
-    };
+    if (effectiveThread.isNew) {
+      familyEvents.push(makeEnvelope('THREAD_CREATED', runId, {
+        threadId,
+        familyId,
+        label: effectiveThread.thread.label,
+        ...(effectiveThread.thread.description !== undefined ? { description: effectiveThread.thread.description } : {}),
+      }, { entityId: threadId, entityType: 'thread' }));
+    }
+
+    const queuedAt = new Date().toISOString();
+    const deadlineAt = new Date(Date.now() + (input.deadlineMs ?? 600_000)).toISOString();
+    const providerName = input.providerName ?? input.provider?.name ?? 'search-mcp';
+    const retryPolicy = { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1_000, maxBackoffMs: 30_000 };
+    const requestHash = hashPayload(JSON.stringify({ query: input.query, strategy: input.strategy ?? 'pipeline', depth: input.depth ?? 'standard', topic: input.topic, familyId, threadId, sessionId: input.sessionId, providerName, deadlineAt, retryPolicy }));
+    const runPayload = { runId, rootRunId: runId, attempt: 1, familyId, query: input.query, strategy: input.strategy ?? 'pipeline', depth: input.depth ?? 'standard', topic: input.topic, sessionId: input.sessionId, threadId, providerName, idempotencyKey: input.idempotencyKey, requestHash, retryPolicy, deadlineAt, queuedAt, ...(followUp ? { followUp } : {}) };
 
     const allStartEvents: NewEventInput[] = [
       ...familyEvents,
-      makeEnvelope('RUN_STARTED', runId, runPayload, { entityId: runId, entityType: 'run' }),
+      makeEnvelope('RUN_QUEUED', runId, runPayload, { entityId: runId, entityType: 'run' }),
     ];
     const appendContext: AppendContext = { projection, handlers };
     runContexts.set(runId, appendContext);
-    appendWithRetry(allStartEvents, appendContext);
+    try {
+      appendWithRetry(allStartEvents, appendContext);
+    } catch (err) {
+      runContexts.delete(runId);
+      throw err;
+    }
 
-    // 3. Setup abort controller
-    const controller = new AbortController();
-    activeRuns.set(runId, { controller });
-
-    // 4. Execute research in background, then persist results
-    executeResearch(runId, familyId, input, controller.signal).catch((err: unknown) => {
-      logger.error({ runId, err }, 'runService: background execution failed');
-    });
-
-    return Promise.resolve({ runId, familyId });
+    providerByName.set(providerName, input.provider);
+    runInputs.set(runId, { ...input, threadId });
+    await scheduler.enqueue({ ...runPayload, appendContext, input });
+    return { runId, familyId };
   }
 
   function executeResearch(
@@ -498,6 +649,8 @@ export function createRunService(): RunService {
     familyId: string,
     input: StartRunInput,
     abortSignal: AbortSignal,
+    providerCtx: ProviderCallContext,
+    reportProgress: (update: RunProgressUpdate) => Promise<void>,
   ): Promise<void> {
     // Resolve strategy
     const depth: ResearchDepth = (input.depth ?? 'standard') as ResearchDepth;
@@ -509,18 +662,35 @@ export function createRunService(): RunService {
     const stateEngine = new ResearchStateEngine(budget);
     stateEngine.initialize(input.query, budget);
 
-    // Build strategy context
+    // Build strategy context — construct LlmClient when baseUrl+model are
+    // configured (apiToken optional: local OpenAI-compatible servers). Token
+    // spend flows into the run's BudgetTracker via the client's TokenBudget.
+    const llmCfg = input.config.llm;
     const strategyCtx: StrategyContext = {
       state: stateEngine,
       budget,
-      provider: input.provider,
+      provider: input.provider ?? (() => { throw new Error('Provider is required'); })(),
+      ...((llmCfg.baseUrl && llmCfg.model)
+        ? {
+            llm: new LlmClient(
+              {
+                baseUrl: llmCfg.baseUrl,
+                model: llmCfg.model,
+                ...(llmCfg.apiKey ? { apiToken: llmCfg.apiKey } : {}),
+              },
+              budget,
+            ),
+          }
+        : {}),
       config: input.config,
       runContext: { familyId, researchRunId: runId, ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}), ...(input.threadId !== undefined ? { threadId: input.threadId } : {}) },
       abortSignal,
+      providerCtx,
+      reportProgress,
       depth,
     };
 
-    return executeStrategyAndPersist(runId, familyId, strategyName, strategyCtx, stateEngine, abortSignal, input.query);
+    return executeStrategyAndPersist(runId, familyId, strategyName, strategyCtx, stateEngine, abortSignal, input.query, reportProgress);
   }
 
   async function executeStrategyAndPersist(
@@ -531,6 +701,7 @@ export function createRunService(): RunService {
     stateEngine: ResearchStateEngine,
     abortSignal: AbortSignal,
     query: string,
+    reportProgress: (update: RunProgressUpdate) => Promise<void>,
   ): Promise<void> {
     const context = runContexts.get(runId);
     if (!context) throw new Error(`Missing append context for run ${runId}`);
@@ -560,6 +731,7 @@ export function createRunService(): RunService {
 
       if (abortSignal.aborted) {
         // Cancellation
+        await reportProgress({ phase: 'cancelled', message: 'Research cancelled' });
         appendWithRetry([
           makeEnvelope('RUN_CANCELLED', runId, { runId }, { entityId: runId, entityType: 'run' }),
         ], context);
@@ -567,38 +739,42 @@ export function createRunService(): RunService {
         return;
       }
 
-      // Build completion events: report-based + state-based
-      const completionEvents = [
-        // Sources must precede EVIDENCE_LINKED in same append batch.
-        ...buildStateOutputEvents(stateEngine, familyId, runId),
-        ...buildCompletionEvents(result, familyId, runId),
-      ];
-
-      // Run-completed envelope
-      completionEvents.push(
-        makeEnvelope('RUN_COMPLETED', runId, {
-          runId,
-          claimCount: result.canonicalFindings?.length ?? 0,
-          sourceCount: stateEngine.getState().sources.length,
-          evidenceCount: (result.canonicalFindings ?? []).reduce(
-            (sum, f) => sum + f.sourceIds.length, 0,
-          ),
-        }, { entityId: runId, entityType: 'run' }),
-      );
-
-      appendWithRetry(completionEvents, context);
+      await reportProgress({ phase: 'complete', percent: 100, message: 'Research complete' });
+      buildAndPersistCompletion(result, stateEngine, familyId, runId, context, strategyCtx.runContext.threadId);
       activeRuns.delete(runId);
     } catch (err: unknown) {
+      if (abortSignal.aborted) {
+        await reportProgress({ phase: 'cancelled', message: 'Research cancelled' });
+        if (!queryEvents({ runId, eventType: 'RUN_CANCELLED' }).length) appendWithRetry([makeEnvelope('RUN_CANCELLED', runId, { runId }, { entityId: runId, entityType: 'run' })], context);
+        return;
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
+      await reportProgress({ phase: 'failed', message: errorMsg });
       appendWithRetry([
         makeEnvelope('RUN_FAILED', runId, {
           runId,
-          error: errorMsg,
-        }, { entityId: runId, entityType: 'run' }),
+          error: {
+            code: classifyError(err) === 'TRANSIENT' ? 'transient' : 'permanent',
+            classification: classifyError(err) === 'TRANSIENT' ? 'transient' : 'permanent',
+            message: errorMsg.slice(0, 500),
+            retryable: classifyError(err) === 'TRANSIENT', occurredAt: new Date().toISOString(),
+          },
+        }, { entityId: runId, entityType: 'run', eventVersion: 2 }),
       ], context);
       activeRuns.delete(runId);
+    } finally {
+      runContexts.delete(runId);
     }
   }
+
+  const scheduler = new JobScheduler({}, {
+    getProvider: async (name) => providerByName.get(name) ?? (() => { throw new Error(`Provider not registered: ${name}`); })(),
+    appendWithRetry,
+    rebuildProjection: getProjection,
+    executeResearch: (runId, familyId, input, signal, provider, providerCtx, reportProgress) => executeResearch(runId, familyId, { ...input, provider }, signal, providerCtx, reportProgress),
+  });
+
+  scheduler.start();
 
   function getStatus(runId: string): RunStatus | null {
     // Query events directly — RUN_STARTED/RUN_COMPLETED are audit_only
@@ -607,8 +783,11 @@ export function createRunService(): RunService {
     if (events.length === 0) return null;
 
     const startEvt = events.find((e) => e.eventType === 'RUN_STARTED');
-    if (!startEvt) return null;
-    const sp = startEvt.payload as Record<string, unknown>;
+    const queuedEvt = events.find((e) => e.eventType === 'RUN_QUEUED');
+    if (!startEvt && !queuedEvt) return null;
+    const baseEvt = startEvt ?? queuedEvt;
+    if (!baseEvt) return null;
+    const sp = baseEvt.payload as Record<string, unknown>;
 
     let status = 'running';
     const completedEvt = events.find((e) => e.eventType === 'RUN_COMPLETED');
@@ -624,7 +803,7 @@ export function createRunService(): RunService {
       status,
       query: sp.query as string,
       progress: { phase: status },
-      startedAt: startEvt.timestamp,
+      startedAt: baseEvt.timestamp,
     };
     if (completedEvt) {
       const cp = completedEvt.payload as Record<string, unknown>;
@@ -645,13 +824,76 @@ export function createRunService(): RunService {
   }
 
   function cancelRun(runId: string): boolean {
-    const abort = activeRuns.get(runId);
-    if (!abort) return false;
-    abort.controller.abort();
-    return true;
+    return scheduler.cancel(runId);
   }
 
-  return { startRun, getStatus, cancelRun, getProjection };
+  async function retryRun(input: RetryRunInput): Promise<{ runId: string; familyId: string; deduplicated: boolean }> {
+    const original = foldRunLedger(queryEvents({})).get(input.runId);
+    if (!original) throw new Error(`Run not found: ${input.runId}`);
+    if (original.status !== 'failed' && original.status !== 'interrupted') {
+      throw new Error(`Cannot retry run in status: ${original.status}`);
+    }
+    if (original.error && !original.error.retryable) {
+      throw new Error(`Run error is not retryable: ${original.error.classification}`);
+    }
+    const runId = `run_${randomUUID().slice(0, 12)}`;
+    const retryInput = runInputs.get(input.runId);
+    const effectiveRetryInput = retryInput
+      ? original.threadId !== undefined ? { ...retryInput, threadId: original.threadId } : retryInput
+      : undefined;
+    const appendContext: AppendContext = { projection: getProjection(), handlers };
+    const queuedAt = new Date().toISOString();
+    const deadlineAt = new Date(Date.now() + (input.deadlineMs ?? 600_000)).toISOString();
+    const runPayload = {
+      runId, rootRunId: original.rootRunId, attempt: original.attempt + 1,
+      familyId: original.familyId, threadId: original.threadId, sessionId: original.sessionId,
+      query: original.query, topic: original.topic, strategy: original.strategy, depth: original.depth,
+      providerName: original.providerName, idempotencyKey: input.idempotencyKey,
+      requestHash: original.requestHash, retryPolicy: original.retryPolicy, deadlineAt, queuedAt,
+      retryOf: input.runId,
+      ...(original.followUp ? { followUp: original.followUp } : {}),
+    };
+    runContexts.set(runId, appendContext);
+    appendWithRetry([makeEnvelope('RUN_QUEUED', runId, runPayload, { entityId: runId, entityType: 'run' })], appendContext);
+    return scheduler.enqueue({ ...runPayload, appendContext, ...(effectiveRetryInput ? { input: effectiveRetryInput } : {}) });
+  }
+
+  async function continueResearch(input: ContinueResearchInput): Promise<ContinueResearchResult> {
+    const previous = familyLocks.get(input.familyId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const lock = previous.then(() => current);
+    familyLocks.set(input.familyId, lock);
+    await previous;
+    try {
+      const familyRuns = [...foldRunLedger(queryEvents({})).values()].filter((run) => run.familyId === input.familyId);
+      const runs = familyRuns.filter((run) => run.followUp !== undefined);
+      const followUpsUsed = runs.length;
+      if (followUpsUsed >= MAX_FOLLOW_UP_RUNS_PER_FAMILY) return { status: 'cap_reached', familyId: input.familyId, followUpsUsed, followUpCap: MAX_FOLLOW_UP_RUNS_PER_FAMILY };
+      const triedTargetIds = new Set(runs.map((run) => run.followUp?.targetId).filter((id): id is string => id !== undefined));
+      const target = selectFollowUpTarget(input.familyId, getProjection(), triedTargetIds);
+      if (!target) return { status: 'no_work', familyId: input.familyId, followUpsUsed, followUpCap: MAX_FOLLOW_UP_RUNS_PER_FAMILY };
+      const runId = `run_${randomUUID().slice(0, 12)}`;
+      const followUp: RunFollowUp = { kind: 'information_gain_v1', targetType: target.type, targetId: target.id, sourceRunId: familyRuns.at(-1)?.runId ?? runId };
+      const priorInput = familyRuns.map((run) => runInputs.get(run.runId)).find((candidate) => candidate !== undefined);
+      const result = await startRun({
+        query: target.query,
+        explicitFamilyId: input.familyId,
+        ...(target.threadId ? { threadId: target.threadId } : {}),
+        depth: input.depth ?? 'quick',
+        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+        ...(priorInput?.provider ? { provider: priorInput.provider } : {}),
+        ...(priorInput?.providerName ? { providerName: priorInput.providerName } : {}),
+        config: input.config ?? priorInput?.config ?? {} as TrellisConfig,
+      }, followUp);
+      return { status: 'queued', runId: result.runId, familyId: result.familyId, target: { type: target.type, id: target.id }, query: target.query, followUpsUsed: followUpsUsed + 1, followUpCap: MAX_FOLLOW_UP_RUNS_PER_FAMILY };
+    } finally {
+      release();
+      if (familyLocks.get(input.familyId) === lock) familyLocks.delete(input.familyId);
+    }
+  }
+
+  return { startRun, getStatus, cancelRun, retryRun, continueResearch, getProjection, startScheduler: () => { scheduler.start(); }, shutdownScheduler: () => { return scheduler.shutdown(); } };
 }
 
 /**
@@ -660,10 +902,10 @@ export function createRunService(): RunService {
  */
 export function rollbackRunById(
   runId: string,
-): { skipped: number; executed: number; blocked: { eventId: string; reason: string }[] } {
+): { skipped: number; executed: number; blocked: { eventId: string; reason: string }[]; readModelRebuilt: boolean; readModelError?: string } {
   const projection = rebuildProjection({ ...ALL_HANDLERS });
   return rollbackRun(runId, projection, { projection, handlers: { ...ALL_HANDLERS } });
 }
 
 // Re-export for tests
-export { mapFindingToClaimEvents, mapSourceToEvents, mapGapToEvents, buildCompletionEvents };
+export { mapFindingToClaimEvents, mapSourceToEvents, mapGapToEvents, buildCompletionEvents, buildStateOutputEvents };

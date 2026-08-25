@@ -82,6 +82,51 @@ describe('classifyError', () => {
     const err = new Error('generic error');
     expect(classifyError(err)).toBe('TRANSIENT');
   });
+
+  it('returns PERMANENT for MCP JSON-RPC Invalid params (-32602)', () => {
+    const err = new Error('Invalid request parameters');
+    (err as unknown as Record<string, unknown>).code = -32602;
+    expect(classifyError(err)).toBe('PERMANENT');
+  });
+
+  it('returns PERMANENT for MCP JSON-RPC Invalid Request (-32600)', () => {
+    const err = new Error('Invalid Request');
+    (err as unknown as Record<string, unknown>).code = -32600;
+    expect(classifyError(err)).toBe('PERMANENT');
+  });
+
+  it('returns PERMANENT for MCP JSON-RPC Parse error (-32700)', () => {
+    const err = new Error('Parse error');
+    (err as unknown as Record<string, unknown>).code = -32700;
+    expect(classifyError(err)).toBe('PERMANENT');
+  });
+
+  it('JSON-RPC validation errors are not retried by withRetry', async () => {
+    let attempts = 0;
+    await expect(
+      withRetry(
+        async () => {
+          attempts++;
+          const err = new Error('Invalid params');
+          (err as unknown as Record<string, unknown>).code = -32602;
+          throw err;
+        },
+        { maxRetries: 3, baseDelayMs: 1 },
+      ),
+    ).rejects.toThrow('Invalid params');
+    expect(attempts).toBe(1);
+  });
+
+  it('circuit breaker ignores JSON-RPC validation errors', async () => {
+    const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5, minimumSamples: 1 });
+    await expect(cb.execute(async () => {
+      const err = new Error('Invalid params');
+      (err as unknown as Record<string, unknown>).code = -32602;
+      throw err;
+    })).rejects.toThrow('Invalid params');
+    expect((cb as unknown as { window: unknown[] }).window).toHaveLength(0);
+    expect(cb.isOpen()).toBe(false);
+  });
 });
 
 describe('withRetry', () => {
@@ -177,7 +222,7 @@ describe('CircuitBreaker', () => {
   });
 
   it('opens when failure threshold exceeded', () => {
-    const cb = new CircuitBreaker({ windowSize: 4, failureThreshold: 0.5 });
+    const cb = new CircuitBreaker({ windowSize: 4, failureThreshold: 0.5, minimumSamples: 1 });
     cb.recordFailure();
     cb.recordFailure();
     cb.recordFailure();
@@ -195,7 +240,7 @@ describe('CircuitBreaker', () => {
   });
 
   it('execute rejects with CircuitBreakerOpenError when open', async () => {
-    const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5 });
+    const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5, minimumSamples: 1 });
     cb.recordFailure();
     cb.recordFailure();
     cb.recordFailure();
@@ -222,7 +267,7 @@ describe('CircuitBreaker', () => {
   });
 
   it('reset clears window', () => {
-    const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5 });
+    const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5, minimumSamples: 1 });
     cb.recordFailure();
     cb.recordFailure();
     cb.recordFailure();
@@ -236,6 +281,7 @@ describe('CircuitBreaker', () => {
       windowSize: 3,
       failureThreshold: 0.5,
       cooldownMs: 1, // 1ms cooldown
+      minimumSamples: 1,
     });
     cb.recordFailure();
     cb.recordFailure();
@@ -245,5 +291,47 @@ describe('CircuitBreaker', () => {
     const start = Date.now();
     while (Date.now() - start < 5) { /* busy wait */ }
     expect(cb.isOpen()).toBe(false);
+  });
+
+  it('does not open on a single failure below the minimum sample count', async () => {
+    const cb = new CircuitBreaker({ windowSize: 10, failureThreshold: 0.8 }); // default minimumSamples 5
+    await expect(cb.execute(async () => { throw new Error('transient'); })).rejects.toThrow('transient');
+    expect(cb.isOpen()).toBe(false); // 100% of a 1-entry window must NOT trip it
+    await expect(cb.execute(async () => 'ok')).resolves.toBe('ok');
+  });
+
+  it('opens once the failure rate exceeds threshold after minimum samples', async () => {
+    const cb = new CircuitBreaker({ windowSize: 5, failureThreshold: 0.5, minimumSamples: 4 });
+    cb.recordSuccess();
+    cb.recordFailure();
+    cb.recordFailure();
+    cb.recordFailure(); // 3/4 > 0.5 and window.length === minimumSamples
+    expect(cb.isOpen()).toBe(true);
+  });
+
+  it('execute ignores permanent errors in the window', async () => {
+    const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5, minimumSamples: 1 });
+    const permanent = new Error('bad request');
+    (permanent as unknown as Record<string, unknown>).response = { status: 400 };
+    await expect(cb.execute(async () => { throw permanent; })).rejects.toThrow('bad request');
+    expect((cb as unknown as { window: unknown[] }).window).toHaveLength(0);
+    expect(cb.isOpen()).toBe(false);
+  });
+
+  it('execute ignores abort/cancellation errors in the window', async () => {
+    const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5, minimumSamples: 1 });
+    const abort = new Error('aborted');
+    abort.name = 'AbortError';
+    await expect(cb.execute(async () => { throw abort; })).rejects.toThrow();
+    expect((cb as unknown as { window: unknown[] }).window).toHaveLength(0);
+    expect(cb.isOpen()).toBe(false);
+  });
+
+  it('window never exceeds windowSize entries', () => {
+    const cb = new CircuitBreaker({ windowSize: 4, failureThreshold: 0.9, minimumSamples: 1 });
+    for (let i = 0; i < 20; i++) {
+      i % 2 === 0 ? cb.recordSuccess() : cb.recordFailure();
+    }
+    expect((cb as unknown as { window: unknown[] }).window).toHaveLength(4);
   });
 });

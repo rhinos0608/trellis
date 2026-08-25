@@ -8,7 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { logger } from '../../logger.js';
-import type { ResearchStrategy, StrategyContext } from './types.js';
+import { providerCallContext, type ResearchStrategy, type StrategyContext } from './types.js';
 import type { ResearchResult, SubQuestion, Finding, SourceEntry } from '../internalTypes.js';
 import { GapAnalyzer, GapFiller } from '../gapAnalysis.js';
 import { PruningEngine } from '../pruning.js';
@@ -174,10 +174,11 @@ export class PipelineStrategy implements ResearchStrategy {
       if (ctx.abortSignal?.aborted) break;
 
       try {
-        const hits = await ctx.provider.search(q, { limit: 10 });
+        // One logical call per search, regardless of hit count (failures included).
+        ctx.budget.recordToolCall();
+        const hits = await ctx.provider.search(providerCallContext(ctx, { phase: 'discovery' }), q, { limit: 10 });
         for (const hit of hits) {
           if (ctx.budget.isExhausted()) break;
-          ctx.budget.recordToolCall();
 
           const domain = (() => {
             try {
@@ -213,10 +214,11 @@ export class PipelineStrategy implements ResearchStrategy {
       // Also try academic search if available
       if (ctx.provider.capabilities.academic) {
         try {
-          const academicHits = await ctx.provider.academic(q, { limit: 5 });
+          // One logical call per academic search, regardless of hit count.
+          ctx.budget.recordToolCall();
+          const academicHits = await ctx.provider.academic(providerCallContext(ctx, { phase: 'discovery' }), q, { limit: 5 });
           for (const hit of academicHits) {
             if (ctx.budget.isExhausted()) break;
-            ctx.budget.recordToolCall();
 
             const domain = (() => {
               try {
@@ -264,8 +266,9 @@ export class PipelineStrategy implements ResearchStrategy {
       if (!ctx.budget.recordExtraction()) break;
 
       try {
-        const result = await ctx.provider.read(source.url);
+        // Count the read even if it fails — it consumed a call slot.
         ctx.budget.recordToolCall();
+        const result = await ctx.provider.read(providerCallContext(ctx, { phase: 'extraction' }), source.url);
         ctx.state.markSourceExtracted(source.id);
 
         // Simple extraction: create one finding per source
@@ -333,10 +336,15 @@ export class PipelineStrategy implements ResearchStrategy {
     if (message !== undefined) entry.message = message;
     this.progress.push(entry);
     try {
-      await ctx.onProgress?.(clamped, message, phase, {
-        sourceCount: ctx.state.sourceCount(),
-        findingCount: ctx.state.findingCount(),
-        subQuestionCount: ctx.state.getSubQuestions().length,
+      await ctx.reportProgress({
+        phase: phase ?? 'unknown',
+        ...(clamped > 0 ? { percent: clamped } : {}),
+        ...(message !== undefined ? { message } : {}),
+        counts: {
+          sourcesDiscovered: ctx.state.sourceCount(),
+          findings: ctx.state.findingCount(),
+          subquestionsTotal: ctx.state.getSubQuestions().length,
+        },
       });
     } catch {
       // non-fatal

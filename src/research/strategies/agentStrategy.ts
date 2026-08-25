@@ -4,7 +4,7 @@
  */
 
 import { logger } from '../../logger.js';
-import type { ResearchStrategy, StrategyContext } from './types.js';
+import { providerCallContext, type ResearchStrategy, type StrategyContext } from './types.js';
 import type { ResearchResult } from '../internalTypes.js';
 
 // ── Agent response parsing ────────────────────────────────────────────────
@@ -81,7 +81,7 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
     execute: async (args) => {
       const q = args.query;
       if (typeof q !== 'string') return { content: 'query must be a string', error: 'invalid_args' };
-      const hits = await ctx.provider.search(q, { limit: 10 });
+      const hits = await ctx.provider.search(providerCallContext(ctx, { phase: 'agent_search' }), q, { limit: 10 });
       ctx.budget.recordToolCall();
       return {
         content: hits
@@ -98,7 +98,7 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
     execute: async (args) => {
       const url = args.url;
       if (typeof url !== 'string') return { content: 'url must be a string', error: 'invalid_args' };
-      const result = await ctx.provider.read(url);
+      const result = await ctx.provider.read(providerCallContext(ctx, { phase: 'agent_read' }), url);
       ctx.budget.recordToolCall();
       return { content: result.content.slice(0, 8000) };
     },
@@ -112,7 +112,7 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
       execute: async (args) => {
         const q = args.query;
         if (typeof q !== 'string') return { content: 'query must be a string', error: 'invalid_args' };
-        const hits = await ctx.provider.academic(q, { limit: 5 });
+        const hits = await ctx.provider.academic(providerCallContext(ctx, { phase: 'agent_academic' }), q, { limit: 5 });
         ctx.budget.recordToolCall();
         return {
           content: hits
@@ -132,7 +132,7 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
       execute: async (args) => {
         const q = args.query;
         if (typeof q !== 'string') return { content: 'query must be a string', error: 'invalid_args' };
-        const hits = await redditSearch(q, { limit: 5 });
+        const hits = await redditSearch(providerCallContext(ctx, { phase: 'agent_reddit' }), q, { limit: 5 });
         ctx.budget.recordToolCall();
         return {
           content: hits
@@ -151,7 +151,7 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
       execute: async (args) => {
         const q = args.query;
         if (typeof q !== 'string') return { content: 'query must be a string', error: 'invalid_args' };
-        const hits = await hackernewsSearch(q, { limit: 5 });
+        const hits = await hackernewsSearch(providerCallContext(ctx, { phase: 'agent_hackernews' }), q, { limit: 5 });
         ctx.budget.recordToolCall();
         return {
           content: hits.map((h, i) => `[${String(i + 1)}] ${h.title} — ${h.url}`).join('\n'),
@@ -187,9 +187,9 @@ export class AgentStrategy implements ResearchStrategy {
   }[] = [];
 
   constructor(ctx: StrategyContext) {
-    this.maxIterations = ctx.config.llm.apiKey
-      ? 30
-      : 0; // No LLM = no agent
+    // LLM availability is enforced upstream (startRun precondition + ctx.llm);
+    // no API-key gate here — local OpenAI-compatible servers run without auth.
+    this.maxIterations = 30;
     this.tools = buildAgentTools(ctx);
   }
 
@@ -257,15 +257,17 @@ export class AgentStrategy implements ResearchStrategy {
 
         const progress = 5 + Math.round((iteration / this.maxIterations) * 85);
         try {
-          await ctx.onProgress?.(
-            progress,
-            `Agent step ${String(iteration)}/${String(this.maxIterations)}: ${parsed.tool}`,
-            'agent_step',
-            {
-              sourceCount: ctx.state.sourceCount(),
-              findingCount: ctx.state.findingCount(),
+          await ctx.reportProgress({
+            phase: 'agent_step',
+            percent: progress,
+            message: `Agent step ${String(iteration)}/${String(this.maxIterations)}: ${parsed.tool}`,
+            counts: {
+              sourcesDiscovered: ctx.state.sourceCount(),
+              findings: ctx.state.findingCount(),
+              providerCalls: ctx.budget.snapshot().toolCallsUsed,
+              tokensUsed: ctx.budget.snapshot().tokensUsed,
             },
-          );
+          });
         } catch {
           // non-fatal
         }
@@ -296,7 +298,15 @@ export class AgentStrategy implements ResearchStrategy {
     });
 
     try {
-      await ctx.onProgress?.(95, 'Agent research complete', 'agent_complete');
+      await ctx.reportProgress({
+        phase: 'agent_complete',
+        percent: 95,
+        message: 'Agent research complete',
+        counts: {
+          providerCalls: ctx.budget.snapshot().toolCallsUsed,
+          tokensUsed: ctx.budget.snapshot().tokensUsed,
+        },
+      });
     } catch {
       // non-fatal
     }
@@ -387,7 +397,14 @@ ${toolDesc}`;
       temperature: 0.7,
       maxTokens: 4000,
       ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      ...(ctx.providerCtx
+        ? { runId: ctx.providerCtx.runId, traceId: ctx.providerCtx.trace.traceId }
+        : { runId: ctx.runContext.researchRunId }),
     });
+
+    // One logical LLM call = one call slot, success or failure (same counter
+    // as search-provider calls).
+    ctx.budget.recordToolCall();
 
     return resp.success ? resp.content : null;
   }
@@ -431,7 +448,11 @@ ${toolDesc}`;
       ],
       temperature: 0.5,
       maxTokens: 4000,
+      ...(ctx.providerCtx
+        ? { runId: ctx.providerCtx.runId, traceId: ctx.providerCtx.trace.traceId }
+        : { runId: ctx.runContext.researchRunId }),
     });
+    ctx.budget.recordToolCall();
 
     return resp.success ? resp.content : 'Research incomplete.';
   }

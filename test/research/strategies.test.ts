@@ -90,6 +90,7 @@ function makeStrategyCtx(overrides?: {
     provider: overrides?.provider ?? createMockProvider(),
     config: makeConfig(),
     runContext: makeRunContext(),
+    reportProgress: async () => {},
     depth: 'standard',
   };
 }

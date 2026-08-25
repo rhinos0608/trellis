@@ -22,6 +22,7 @@ import {
   mapSourceToEvents,
   mapGapToEvents,
   buildCompletionEvents,
+  buildStateOutputEvents,
 } from '../../src/research/runService.js';
 import type {
   Finding,
@@ -30,6 +31,8 @@ import type {
   ResearchResult,
 } from '../../src/research/internalTypes.js';
 import type { ResearchProvider } from '../../src/providers/types.js';
+import { ResearchStateEngine } from '../../src/research/state.js';
+import { BudgetTracker } from '../../src/research/budget.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 
 // ── Mock provider ────────────────────────────────────────────────────
@@ -42,7 +45,7 @@ const mockProvider: ResearchProvider = {
     media: false, reference: false, browser: false,
   },
   search: async () => [{ url: 'https://example.com', title: 'Test', snippet: 'test snippet' }],
-  read: async (url) => ({ url, title: 'Test', content: 'test content', contentHash: 'hash1' }),
+  read: async (_ctx, url) => ({ url, title: 'Test', content: 'test content', contentHash: 'hash1' }),
   crawl: async () => [],
   academic: async () => [],
 };
@@ -173,26 +176,26 @@ afterEach(() => {
 // ── Mapping unit tests ───────────────────────────────────────────────
 
 describe('mapping: Finding → Claim + Evidence events', () => {
-  it('produces CLAIM_ACCEPTED and one EVIDENCE_LINKED per sourceId', () => {
+  it('produces CLAIM_OBSERVED and one EVIDENCE_LINKED per sourceId', () => {
     const finding = makeFinding('f1', 'TypeScript is better than JavaScript', ['src1', 'src2']);
     const events = mapFindingToClaimEvents(finding, 'fam1', 'run1');
 
-    const claims = events.filter((e) => e.eventType === 'CLAIM_ACCEPTED');
+    const claims = events.filter((e) => e.eventType === 'CLAIM_OBSERVED');
     expect(claims).toHaveLength(1);
 
     const evidence = events.filter((e) => e.eventType === 'EVIDENCE_LINKED');
     expect(evidence).toHaveLength(2);
 
-    const claimPayload = claims[0]!.payload as Record<string, unknown>;
-    expect(claimPayload.id).toBe('clm_f1');
-    expect(claimPayload.familyId).toBe('fam1');
-    expect(claimPayload.subjectText).toBe('TypeScript is better than JavaScript');
+    const claimPayload = claims[0]!.payload as { observation: Record<string, unknown>; reconciliation: { canonicalClaimId: string } };
+    expect(claimPayload.reconciliation.canonicalClaimId).toBe('claim_obs_run1_f1');
+    expect(claimPayload.observation.familyId).toBe('fam1');
+    expect(claimPayload.observation.subjectText).toBe('TypeScript is better than JavaScript');
     // confidence 0.9 > 0.8 → certain
-    expect(claimPayload.hedge).toBe('certain');
+    expect(claimPayload.observation.hedge).toBe('certain');
 
     for (const ev of evidence) {
       const p = ev.payload as Record<string, unknown>;
-      expect(p.claimId).toBe('clm_f1');
+      expect(p.claimId).toBe('claim_obs_run1_f1');
       expect(typeof p.sourceId).toBe('string');
     }
   });
@@ -204,26 +207,38 @@ describe('mapping: Finding → Claim + Evidence events', () => {
       confidence: 0.3,
     };
     const events = mapFindingToClaimEvents(finding, 'fam1', 'run1');
-    const claimPayload = events[0]!.payload as Record<string, unknown>;
-    expect(claimPayload.evidenceType).toBe('anecdote');
-    expect(claimPayload.hedge).toBe('possible'); // confidence 0.3 < 0.5
+    const claimPayload = events[0]!.payload as { observation: Record<string, unknown> };
+    expect(claimPayload.observation.evidenceType).toBe('anecdote');
+    expect(claimPayload.observation.hedge).toBe('possible'); // confidence 0.3 < 0.5
   });
 });
 
-describe('mapping: SourceEntry → SOURCE_ADDED + SOURCE_READ events', () => {
-  it('emits SOURCE_ADDED + SOURCE_READ for extracted sources', () => {
+describe('mapping: SourceEntry → SOURCE_OBSERVED + SOURCE_READ events', () => {
+  it('emits SOURCE_OBSERVED + SOURCE_READ for extracted sources', () => {
     const src = makeSourceEntry('s1');
     const events = mapSourceToEvents(src, 'run1');
     expect(events).toHaveLength(2);
-    expect(events[0]!.eventType).toBe('SOURCE_ADDED');
+    expect(events[0]!.eventType).toBe('SOURCE_OBSERVED');
     expect(events[1]!.eventType).toBe('SOURCE_READ');
   });
 
-  it('emits only SOURCE_ADDED when extractionStatus is pending', () => {
+  it('emits only SOURCE_OBSERVED when extractionStatus is pending', () => {
     const src = { ...makeSourceEntry('s2'), extractionStatus: 'pending' as const };
     const events = mapSourceToEvents(src, 'run1');
     expect(events).toHaveLength(1);
-    expect(events[0]!.eventType).toBe('SOURCE_ADDED');
+    expect(events[0]!.eventType).toBe('SOURCE_OBSERVED');
+  });
+
+  it('collapses duplicate canonical URLs to one observation per run', () => {
+    const state = new ResearchStateEngine(new BudgetTracker({ maxStateEntries: 20 }));
+    state.initialize('query', state.getBudget());
+    state.addSource({ ...makeSourceEntry('first'), url: 'https://example.com/page#one', contentHash: undefined });
+    state.addSource({ ...makeSourceEntry('second'), url: 'https://example.com/page#two', extractionStatus: 'extracted', contentHash: 'hash-rich' });
+
+    const events = buildStateOutputEvents(state, 'fam1', 'run1');
+    expect(events.filter((event) => event.eventType === 'SOURCE_OBSERVED')).toHaveLength(1);
+    expect(events.filter((event) => event.eventType === 'SOURCE_READ')).toHaveLength(1);
+    expect((events.find((event) => event.eventType === 'SOURCE_OBSERVED')!.payload as { contentHash?: string }).contentHash).toBe('hash-rich');
   });
 });
 
@@ -262,14 +277,14 @@ describe('mapping: buildCompletionEvents', () => {
 
     const events = buildCompletionEvents(result, 'fam1', 'run1');
 
-    expect(events.filter((e) => e.eventType === 'CLAIM_ACCEPTED')).toHaveLength(2);
+    expect(events.filter((e) => e.eventType === 'CLAIM_OBSERVED')).toHaveLength(2);
     expect(events.filter((e) => e.eventType === 'EVIDENCE_LINKED')).toHaveLength(2);
     expect(events.filter((e) => e.eventType === 'CONTRADICTION_IDENTIFIED')).toHaveLength(1);
   });
 });
 
 describe('mapping: buildCompletionEvents — claim id referential integrity', () => {
-  it('resolves contradiction claimIdA/claimIdB to the actual persisted CLAIM_ACCEPTED entity ids', () => {
+  it('resolves contradiction claimIdA/claimIdB to actual persisted canonical claim ids', () => {
     const findings = [
       makeFinding('f1', 'Claim A', ['s1']),
       makeFinding('f2', 'Claim B', ['s2']),
@@ -286,7 +301,7 @@ describe('mapping: buildCompletionEvents — claim id referential integrity', ()
     });
 
     const events = buildCompletionEvents(result, 'fam1', 'run1');
-    const claimEvents = events.filter((e) => e.eventType === 'CLAIM_ACCEPTED');
+    const claimEvents = events.filter((e) => e.eventType === 'CLAIM_OBSERVED');
     const contradictionEvents = events.filter((e) => e.eventType === 'CONTRADICTION_IDENTIFIED');
 
     expect(contradictionEvents).toHaveLength(1);
@@ -313,7 +328,7 @@ describe('mapping: buildCompletionEvents — claim id referential integrity', ()
     expect(events.filter((e) => e.eventType === 'CONTRADICTION_IDENTIFIED')).toHaveLength(0);
   });
 
-  it('resolves cluster edge fromClaimId/toClaimId to a representative finding actually persisted as a claim', () => {
+  it('resolves cluster edge fromClaimId/toClaimId to representative canonical claim ids', () => {
     const findings = [
       makeFinding('f1', 'Claim A', ['s1']),
       makeFinding('f2', 'Claim B', ['s2']),
@@ -328,7 +343,7 @@ describe('mapping: buildCompletionEvents — claim id referential integrity', ()
     ];
 
     const events = buildCompletionEvents(result, 'fam1', 'run1');
-    const claimEvents = events.filter((e) => e.eventType === 'CLAIM_ACCEPTED');
+    const claimEvents = events.filter((e) => e.eventType === 'CLAIM_OBSERVED');
     const edgeEvents = events.filter((e) => e.eventType === 'EDGE_ADDED');
 
     expect(edgeEvents).toHaveLength(1);

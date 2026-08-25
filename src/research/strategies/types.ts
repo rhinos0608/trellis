@@ -6,26 +6,33 @@
 import type { ResearchStateEngine } from '../state.js';
 import type { BudgetTracker } from '../budget.js';
 import type { LlmClient } from '../llm/client.js';
-import type { ResearchProvider } from '../../providers/types.js';
+import { randomUUID } from 'node:crypto';
+import type { ProviderCallContext, ResearchProvider } from '../../providers/types.js';
 import type { ResearchResult, ResearchDepth } from '../internalTypes.js';
-import type { RunContext } from '../types.js';
+import type { RunContext, RunProgressUpdate } from '../types.js';
 import type { TrellisConfig } from '../../config/index.js';
 
-// ── Progress callback ──────────────────────────────────────────────────────
-
-export type ProgressCallback = (
-  progress: number,
-  message?: string,
-  phase?: string,
-  partials?: {
-    sourceCount?: number;
-    findingCount?: number;
-    subQuestionCount?: number;
-    classification?: string;
-  },
-) => void | Promise<void>;
-
 // ── StrategyContext ───────────────────────────────────────────────────────
+
+export function providerCallContext(
+  ctx: StrategyContext,
+  fields?: { phase?: string; subquestionId?: string },
+): ProviderCallContext {
+  // Prefer the scheduler-provided call context: real run deadline, real trace
+  // root. Each strategy phase gets a fresh spanId under the same trace.
+  const root = ctx.providerCtx;
+  return {
+    signal: root?.signal ?? ctx.abortSignal ?? new AbortController().signal,
+    runId: root?.runId ?? ctx.runContext.researchRunId,
+    deadlineAt: root?.deadlineAt ?? Date.now() + 5 * 60_000,
+    trace: {
+      traceId: root?.trace.traceId ?? `${ctx.runContext.researchRunId}-${randomUUID().slice(0, 12)}`,
+      spanId: randomUUID().slice(0, 12),
+      ...(root !== undefined ? { parentSpanId: root.trace.spanId } : {}),
+      ...fields,
+    },
+  };
+}
 
 export interface StrategyContext {
   state: ResearchStateEngine;
@@ -35,7 +42,9 @@ export interface StrategyContext {
   config: TrellisConfig;
   runContext: RunContext;
   abortSignal?: AbortSignal | undefined;
-  onProgress?: ProgressCallback | undefined;
+  /** Scheduler-provided ProviderCallContext (real deadlineAt/trace). Set for scheduled runs. */
+  providerCtx?: ProviderCallContext | undefined;
+  reportProgress: (update: RunProgressUpdate) => Promise<void>;
   depth: ResearchDepth;
   deterministic?: boolean;
 }

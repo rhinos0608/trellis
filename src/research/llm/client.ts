@@ -25,12 +25,20 @@ export interface LlmCallOptions {
   responseFormat?: 'text' | 'json_object';
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Telemetry correlation only — never logged with message content. */
+  runId?: string;
+  traceId?: string;
 }
 
 export interface LlmResponse {
   content: string;
   model: string;
   tokensUsed: number;
+  /** Where tokensUsed came from: real provider usage data or the estimate heuristic. */
+  tokensSource: 'provider_usage' | 'estimated';
+  promptTokens?: number;
+  completionTokens?: number;
+  attempts: number;
   durationMs: number;
   success: boolean;
   error?: string;
@@ -68,6 +76,14 @@ function normalizeBaseUrl(value: string): string {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+function errorClassOf(error: string): string {
+  if (/timed out/i.test(error)) return 'timeout';
+  if (/abort/i.test(error)) return 'aborted';
+  const http = /^HTTP (\d{3})/.exec(error);
+  if (http) return `http_${http[1] ?? '?'}`;
+  return 'request_error';
 }
 
 function normalizeMessageContent(content: unknown): string {
@@ -200,11 +216,40 @@ export class LlmClient {
     temperature: number,
     baseUrl?: string,
   ): Promise<LlmResponse> {
+    const response = await this.callModelWithRetries(model, options, temperature, baseUrl);
+    // One structured telemetry record per logical LLM call.
+    // Metadata only — NEVER log prompt/response content or credentials here.
+    logger.info(
+      {
+        provider: 'llm',
+        model: response.model,
+        operation: 'chat',
+        durationMs: response.durationMs,
+        attempts: response.attempts,
+        outcome: response.success ? 'success' : 'failure',
+        ...(response.success ? {} : { errorClass: errorClassOf(response.error ?? '') }),
+        ...(options.runId !== undefined ? { runId: options.runId } : {}),
+        ...(options.traceId !== undefined ? { traceId: options.traceId } : {}),
+        ...(response.promptTokens !== undefined ? { promptTokens: response.promptTokens } : {}),
+        ...(response.completionTokens !== undefined ? { completionTokens: response.completionTokens } : {}),
+        totalTokens: response.tokensUsed,
+      },
+      'LLM call telemetry',
+    );
+    return response;
+  }
+
+  private async callModelWithRetries(
+    model: string,
+    options: LlmCallOptions,
+    temperature: number,
+    baseUrl?: string,
+  ): Promise<LlmResponse> {
     const startTime = Date.now();
     const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
     const deadline = startTime + timeoutMs;
     const endpoint = `${baseUrl ?? this.baseUrl}/v1/chat/completions`;
-    const promptTokens = options.messages.reduce(
+    const promptTokensEstimate = options.messages.reduce(
       (sum, msg) => sum + estimateTokens(msg.content),
       0,
     );
@@ -220,17 +265,21 @@ export class LlmClient {
     }
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const fail = (error: string): LlmResponse => ({
+        content: '',
+        model,
+        tokensUsed: 0,
+        tokensSource: 'estimated',
+        promptTokens: promptTokensEstimate,
+        attempts: attempt + 1,
+        durationMs: Date.now() - startTime,
+        success: false,
+        error,
+      });
       try {
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) {
-          return {
-            content: '',
-            model,
-            tokensUsed: 0,
-            durationMs: Date.now() - startTime,
-            success: false,
-            error: `LLM request timed out after ${String(timeoutMs)}ms`,
-          };
+          return fail(`LLM request timed out after ${String(timeoutMs)}ms`);
         }
 
         const controller = new AbortController();
@@ -287,53 +336,59 @@ export class LlmClient {
             try {
               await sleep(delay, options.signal);
             } catch (err) {
-              return {
-                content: '',
-                model,
-                tokensUsed: 0,
-                durationMs: Date.now() - startTime,
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-              };
+              return fail(err instanceof Error ? err.message : String(err));
             }
             continue;
           }
-          return {
-            content: '',
-            model,
-            tokensUsed: 0,
-            durationMs: Date.now() - startTime,
-            success: false,
-            error: `HTTP ${String(status)}: ${errorText.slice(0, 500)}`,
-          };
+          return fail(`HTTP ${String(status)}: ${errorText.slice(0, 500)}`);
         }
 
         const data = (await response.json()) as {
           choices?: [{ message?: { content?: unknown } }];
+          usage?: unknown;
         };
         const rawContent = normalizeMessageContent(
           data.choices?.[0]?.message?.content,
         );
-        const totalTokens = promptTokens + estimateTokens(rawContent);
+
+        // Prefer real usage data from the provider (OpenAI-compatible APIs);
+        // fall back to the estimate heuristic when the endpoint omits it.
+        const usage = isRecord(data.usage) ? data.usage : undefined;
+        const usagePrompt = typeof usage?.prompt_tokens === 'number' ? usage.prompt_tokens : undefined;
+        const usageCompletion = typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : undefined;
+        let promptTokens: number;
+        let completionTokens: number;
+        let totalTokens: number;
+        let tokensSource: LlmResponse['tokensSource'];
+        if (usagePrompt !== undefined && usageCompletion !== undefined) {
+          promptTokens = usagePrompt;
+          completionTokens = usageCompletion;
+          totalTokens = typeof usage?.total_tokens === 'number'
+            ? usage.total_tokens
+            : usagePrompt + usageCompletion;
+          tokensSource = 'provider_usage';
+        } else {
+          completionTokens = estimateTokens(rawContent);
+          totalTokens = promptTokensEstimate + completionTokens;
+          promptTokens = promptTokensEstimate;
+          tokensSource = 'estimated';
+        }
         this.budget?.recordTokens(totalTokens);
 
         return {
           content: rawContent,
           model,
           tokensUsed: totalTokens,
+          tokensSource,
+          promptTokens,
+          completionTokens,
+          attempts: attempt + 1,
           durationMs: Date.now() - startTime,
           success: true,
         };
       } catch (err) {
         if (attempt >= MAX_RETRIES || options.signal?.aborted) {
-          return {
-            content: '',
-            model,
-            tokensUsed: 0,
-            durationMs: Date.now() - startTime,
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          };
+          return fail(err instanceof Error ? err.message : String(err));
         }
         const delay = Math.min(
           backoffDelay(attempt),
@@ -343,15 +398,7 @@ export class LlmClient {
         try {
           await sleep(delay, options.signal);
         } catch (sleepErr) {
-          return {
-            content: '',
-            model,
-            tokensUsed: 0,
-            durationMs: Date.now() - startTime,
-            success: false,
-            error:
-              sleepErr instanceof Error ? sleepErr.message : String(sleepErr),
-          };
+          return fail(sleepErr instanceof Error ? sleepErr.message : String(sleepErr));
         }
       }
     }
@@ -360,6 +407,9 @@ export class LlmClient {
       content: '',
       model,
       tokensUsed: 0,
+      tokensSource: 'estimated',
+      promptTokens: promptTokensEstimate,
+      attempts: MAX_RETRIES + 1,
       durationMs: Date.now() - startTime,
       success: false,
       error: 'Unexpected exit from retry loop',

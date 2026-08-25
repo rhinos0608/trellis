@@ -37,12 +37,21 @@ export class CircuitBreakerOpenError extends Error {
 const TRANSIENT_STATUS_CODES = new Set([429, 503]);
 const PERMANENT_STATUS_CODES = new Set([400, 401, 403, 404]);
 const TRANSIENT_NODE_CODES = new Set(['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED']);
+// JSON-RPC protocol errors carried by MCP McpError.code: parse/invalid
+// request/invalid params are client-side validation failures — permanent.
+const PERMANENT_JSONRPC_CODES = new Set([-32700, -32600, -32602]);
 
 export function classifyError(err: unknown): ErrorClass {
   if (!(err instanceof Error)) return 'PERMANENT';
   if (err.name === 'AbortError') return 'PERMANENT';
 
   const errRecord = err as unknown as Record<string, unknown>;
+  // MCP JSON-RPC validation errors (e.g. malformed tool arguments arrive as
+  // McpError with code -32602) must never be retried or fed to the breaker.
+  const rpcCode = errRecord.code;
+  if (typeof rpcCode === 'number' && PERMANENT_JSONRPC_CODES.has(rpcCode)) {
+    return 'PERMANENT';
+  }
   if (
     errRecord.response !== null &&
     errRecord.response !== undefined &&
@@ -96,6 +105,7 @@ export async function withRetry<T>(
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (signal?.aborted) throw signal.reason ?? new Error('Aborted');
     try {
       return await fn();
     } catch (err) {
@@ -114,7 +124,7 @@ export async function withRetry<T>(
         'Retrying after transient error',
       );
       await sleepWithSignal(delay, signal);
-      if (signal?.aborted) throw err;
+      if (signal?.aborted) throw signal.reason ?? err;
     }
   }
   throw lastError;
@@ -126,9 +136,13 @@ function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
       resolve();
       return;
     }
-    const timer = setTimeout(resolve, ms);
+    let onAbort: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
     if (signal) {
-      const onAbort = () => {
+      onAbort = () => {
         clearTimeout(timer);
         resolve();
       };
@@ -143,6 +157,9 @@ interface CircuitBreakerOptions {
   windowSize?: number;
   failureThreshold?: number;
   cooldownMs?: number;
+  /** Minimum window entries before the failure rate may trip the breaker.
+   *  Prevents a single failed call from opening it (100% of a 1-entry window). */
+  minimumSamples?: number;
 }
 
 interface WindowEntry {
@@ -154,6 +171,7 @@ export class CircuitBreaker {
   private readonly windowSize: number;
   private readonly failureThreshold: number;
   private readonly cooldownMs: number;
+  private readonly minimumSamples: number;
   private window: WindowEntry[] = [];
   private lastOpenAt: number | null = null;
 
@@ -161,21 +179,22 @@ export class CircuitBreaker {
     this.windowSize = options?.windowSize ?? 10;
     this.failureThreshold = options?.failureThreshold ?? 0.8;
     this.cooldownMs = options?.cooldownMs ?? 60000;
+    this.minimumSamples = Math.min(options?.minimumSamples ?? 5, this.windowSize);
   }
 
   recordSuccess(): void {
-    this.trimWindow();
     this.window.push({ success: true, timestamp: Date.now() });
+    this.trimWindow();
   }
 
   recordFailure(): void {
-    this.trimWindow();
     this.window.push({ success: false, timestamp: Date.now() });
+    this.trimWindow();
   }
 
   isOpen(): boolean {
     this.trimWindow();
-    if (this.window.length === 0) {
+    if (this.window.length < this.minimumSamples) {
       this.lastOpenAt = null;
       return false;
     }
@@ -200,7 +219,9 @@ export class CircuitBreaker {
       this.recordSuccess();
       return result;
     } catch (err) {
-      this.recordFailure();
+      // Only transient dependency failures feed the window — permanent,
+      // validation, and cancellation errors propagate untouched.
+      if (classifyError(err) === 'TRANSIENT') this.recordFailure();
       throw err;
     }
   }
