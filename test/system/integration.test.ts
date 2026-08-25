@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { initDb, closeDb } from '../../src/store/index.js';
+import { initDb, closeDb, appendEvents } from '../../src/store/index.js';
 import { createRunService } from '../../src/research/runService.js';
 import { rebuildProjection } from '../../src/store/projectionBuilder.js';
 import { graphEventHandlers } from '../../src/graph/index.js';
@@ -557,9 +557,22 @@ describe('Property 5: threadId round-trip', () => {
     const svc = createRunService();
     const deps = { runService: svc, config, getProvider: async () => mockProvider };
     const THREAD_ID = 'thread_roundtrip_test';
+    const familyState = rebuildProjection(ALL_HANDLERS);
+    appendEvents([
+      {
+        timestamp: new Date().toISOString(), eventType: 'FAMILY_CREATED', eventVersion: 1,
+        runId: 'thread-fixture', batchId: null, actor: 'system', entityId: 'family_thread_fixture', entityType: 'family',
+        payload: { family_id: 'family_thread_fixture', label: 'Thread fixture' },
+      },
+      {
+        timestamp: new Date().toISOString(), eventType: 'THREAD_CREATED', eventVersion: 1,
+        runId: 'thread-fixture', batchId: null, actor: 'system', entityId: THREAD_ID, entityType: 'thread',
+        payload: { threadId: THREAD_ID, familyId: 'family_thread_fixture', label: 'Thread fixture' },
+      },
+    ], { projection: familyState, handlers: ALL_HANDLERS });
 
     const startResult = await handleResearchTool(
-      { action: 'start', query: 'ThreadId roundtrip test', strategy: 'pipeline', threadId: THREAD_ID },
+      { action: 'start', query: 'ThreadId roundtrip test', strategy: 'pipeline', familyId: 'family_thread_fixture', threadId: THREAD_ID },
       deps,
     );
     const runId = startResult.runId as string;

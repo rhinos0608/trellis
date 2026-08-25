@@ -363,8 +363,11 @@ describe('Failure mode: cancellation mid-read', () => {
       strategy: 'pipeline',
     });
 
-    // Let pipeline reach the first provider.search() call before cancelling
-    await new Promise((r) => setTimeout(r, 50));
+    // Let pipeline reach the first provider.search() call before cancelling.
+    // Margin widened from 50ms: real append-time decode/validation work
+    // (Phase 0 event-store hardening) adds synchronous CPU time per event,
+    // which can delay startRun's background task under load.
+    await new Promise((r) => setTimeout(r, 150));
 
     // Cancel while the provider call is in-flight
     const cancelled = svc.cancelRun(runId);
@@ -604,7 +607,6 @@ describe('Failure mode: restart mid-run', () => {
         entityId: 'fam_partial',
         entityType: 'family',
         payload: { family_id: 'fam_partial', label: 'Partial', description: 'partial run' },
-        payloadHash: null,
       },
       {
         eventType: 'FAMILY_RESOLVED',
@@ -616,7 +618,6 @@ describe('Failure mode: restart mid-run', () => {
         entityId: 'fam_partial',
         entityType: 'family',
         payload: { familyId: 'fam_partial', query: 'partial query', isNew: true, score: 0, method: 'lexical_manifest_overlap' },
-        payloadHash: null,
       },
       {
         eventType: 'RUN_STARTED',
@@ -628,10 +629,9 @@ describe('Failure mode: restart mid-run', () => {
         entityId: runId,
         entityType: 'run',
         payload: { runId, familyId: 'fam_partial', query: 'partial query', strategy: 'pipeline' },
-        payloadHash: null,
       },
       // No RUN_COMPLETED — simulating crash before completion
-    ]);
+    ], { projection: rebuildProjection(ALL_HANDLERS), handlers: ALL_HANDLERS });
 
     // Simulate crash + restart
     closeDb();

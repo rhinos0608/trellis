@@ -3,16 +3,16 @@ import { graphEventHandlers } from '../../src/graph/projectionHandlers.js';
 import { createEmptyProjectionState } from '../../src/store/projectionState.js';
 import type { ProjectionState } from '../../src/store/projectionState.js';
 import type { EventEnvelope } from '../../src/store/eventTypes.js';
+import type { NewEventInput } from '../../src/store/events.js';
 
 function makeEvent<T>(
   eventType: string,
   payload: T,
-  overrides?: Partial<EventEnvelope>,
-): EventEnvelope {
+  overrides?: Partial<NewEventInput>,
+): NewEventInput {
   return {
-    id: `evt-${String(Math.random()).slice(2, 8)}`,
     timestamp: new Date().toISOString(),
-    eventType: eventType as EventEnvelope['eventType'],
+    eventType: eventType as NewEventInput['eventType'],
     eventVersion: 1,
     runId: 'run-1',
     batchId: null,
@@ -20,7 +20,6 @@ function makeEvent<T>(
     entityId: null,
     entityType: null,
     payload,
-    payloadHash: null,
     ...overrides,
   };
 }
@@ -45,7 +44,7 @@ describe('projectionHandlers', () => {
           firstSeenRunId: 'run-1',
           lastUpdatedRunId: 'run-1',
           metadata: {},
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.entities.size).toBe(1);
@@ -97,7 +96,7 @@ describe('projectionHandlers', () => {
           field: 'description',
           oldValue: undefined,
           newValue: 'A package',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.entities.get('e1')!.metadata['description']).toBe('A package');
@@ -144,7 +143,7 @@ describe('projectionHandlers', () => {
               evidenceIds: [],
             },
           ],
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.entities.has('e2')).toBe(false);
@@ -174,7 +173,7 @@ describe('projectionHandlers', () => {
           originalId: 'e1',
           originalSnapshot: { label: 'Merged', aliases: [], metadata: {} },
           resultingIds: ['e2', 'e3'],
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.entities.has('e1')).toBe(false);
@@ -200,7 +199,7 @@ describe('projectionHandlers', () => {
           contradictionState: 'none',
           firstSeenRunId: 'run-1',
           lastSeenRunId: 'run-1',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.claims.size).toBe(1);
@@ -218,7 +217,7 @@ describe('projectionHandlers', () => {
           claimId: 'c1',
           sourceId: 'src-1',
           runId: 'run-1',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.evidence.size).toBe(1);
@@ -239,7 +238,7 @@ describe('projectionHandlers', () => {
           contradictionType: 'factual_disagreement',
           resolutionStatus: 'unresolved',
           firstSeenRunId: 'run-1',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.contradictions.size).toBe(1);
@@ -265,7 +264,7 @@ describe('projectionHandlers', () => {
           contradictionId: 'cn1',
           previousStatus: 'unresolved',
           newStatus: 'resolved',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.contradictions.get('cn1')!.resolutionStatus).toBe('resolved');
@@ -285,7 +284,7 @@ describe('projectionHandlers', () => {
           status: 'open',
           priority: 1,
           firstSeenRunId: 'run-1',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.gaps.size).toBe(1);
@@ -312,7 +311,7 @@ describe('projectionHandlers', () => {
           previousStatus: 'open',
           newStatus: 'resolved',
           resolution: { answer: 'Answer', evidenceSummary: 'Evidence' },
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.gaps.get('g1')!.status).toBe('resolved');
@@ -335,7 +334,7 @@ describe('projectionHandlers', () => {
           contentHash: 'abc',
           retrievedAt: new Date().toISOString(),
           firstSeenRunId: 'run-1',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.sources.size).toBe(1);
@@ -386,7 +385,7 @@ describe('projectionHandlers', () => {
           sourceId: 'src-1',
           oldContentHash: 'old-hash',
           newContentHash: 'new-hash',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.sources.get('src-1')!.contentHash).toBe('new-hash');
@@ -412,7 +411,7 @@ describe('projectionHandlers', () => {
         makeEvent('SOURCE_RETRACTED', {
           sourceId: 'src-1',
           reasonType: 'low_relevance',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.sources.get('src-1')!.usageStatus).toBe('discarded');
@@ -433,7 +432,7 @@ describe('projectionHandlers', () => {
           strength: 'strong',
           score: 0.9,
           runId: 'run-1',
-        }),
+        }) as EventEnvelope,
         state,
       );
       expect(state.claimRelations.size).toBe(1);

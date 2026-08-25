@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import crypto from 'node:crypto';
 import { resolveFamily } from '../../src/workspace/familyResolver.js';
 import { createEmptyProjectionState } from '../../src/store/projectionState.js';
 import { workspaceEventHandlers } from '../../src/workspace/projectionHandlers.js';
@@ -31,7 +32,8 @@ function makeEvent(
   overrides?: Partial<EventEnvelope>,
 ): EventEnvelope {
   return {
-    id: overrides?.id ?? `evt-${++idCounter}`,
+    seq: overrides?.seq ?? ++idCounter,
+    id: overrides?.id ?? `evt-${idCounter}`,
     timestamp: overrides?.timestamp ?? FIXED_TIME,
     eventType: eventType as EventEnvelope['eventType'],
     eventVersion: 1,
@@ -41,7 +43,7 @@ function makeEvent(
     entityId: null,
     entityType: null,
     payload,
-    payloadHash: null,
+    payloadHash: crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
   };
 }
 

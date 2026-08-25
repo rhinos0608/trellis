@@ -5,12 +5,15 @@ import os from 'node:os';
 import {
   initDb,
   closeDb,
-  appendEvents,
+  appendEvents as appendEventsStore,
   queryEvents,
   rebuildProjection,
   rollbackRun,
 } from '../../src/store/index.js';
 import type { EventEnvelope, TrellisEventType } from '../../src/store/eventTypes.js';
+import type { NewEventInput } from '../../src/store/events.js';
+import type { EventHandlerRegistry } from '../../src/store/projectionState.js';
+import { createEmptyProjectionState } from '../../src/store/projectionState.js';
 import { graphEventHandlers } from '../../src/graph/index.js';
 import { workspaceEventHandlers } from '../../src/workspace/index.js';
 import {
@@ -129,11 +132,21 @@ function makeResearchResult(findings: Finding[], sources: SourceEntry[]): Resear
   };
 }
 
+const TEST_HANDLERS: EventHandlerRegistry = { ...graphEventHandlers, ...workspaceEventHandlers };
+function appendEvents(events: readonly NewEventInput[]) {
+  const projection = createEmptyProjectionState();
+  projection.lastAppliedSeq = queryEvents({}).at(-1)?.seq ?? 0;
+  for (const event of events) {
+    const p = event.payload as Record<string, unknown>;
+    if (typeof p.familyId === 'string') projection.families.set(p.familyId, { id: p.familyId, label: p.familyId, manifest: { scopeQuery: p.familyId }, createdAt: new Date().toISOString(), lastActivity: new Date().toISOString(), relatedFamilies: [] } as never);
+  }
+  return appendEventsStore(events, { projection, handlers: TEST_HANDLERS });
+}
+
 function makeEvent(
-  overrides: Partial<EventEnvelope> & { eventType: TrellisEventType; runId: string },
-): EventEnvelope {
+  overrides: Partial<NewEventInput> & { eventType: TrellisEventType; runId: string },
+): NewEventInput {
   return {
-    id: '',
     timestamp: new Date().toISOString(),
     eventVersion: 1,
     batchId: null,
@@ -141,7 +154,6 @@ function makeEvent(
     entityId: null,
     entityType: null,
     payload: {},
-    payloadHash: null,
     ...overrides,
   };
 }
@@ -392,6 +404,7 @@ describe('run lifecycle: cancellation', () => {
 describe('run lifecycle: rollback after persistence', () => {
   it('roll back a run — its pure_run_local claims disappear from projection on rebuild', () => {
     appendEvents([
+      makeEvent({ eventType: 'FAMILY_CREATED', runId: 'run-good', payload: { family_id: 'fam1', label: 'Family 1' } }),
       makeEvent({
         eventType: 'RUN_STARTED',
         runId: 'run-good',
@@ -437,7 +450,7 @@ describe('run lifecycle: rollback after persistence', () => {
     expect(state1.claims.has('clm_bad1')).toBe(true);
 
     // Roll back run-bad
-    rollbackRun('run-bad', state1);
+    rollbackRun('run-bad', state1, { projection: state1, handlers: TEST_HANDLERS });
 
     // Rebuild — run-bad claims gone
     const state2 = rebuildProjection(ALL_HANDLERS);
@@ -453,6 +466,7 @@ describe('run lifecycle: concurrent runs do not cross-contaminate', () => {
   it('two runs with different familyId produce isolated claims in projection', () => {
     // Run A → family A, claim A, source A
     appendEvents([
+      makeEvent({ eventType: 'FAMILY_CREATED', runId: 'runA', payload: { family_id: 'famA', label: 'Family A' } }),
       makeEvent({
         eventType: 'RUN_STARTED', runId: 'runA',
         payload: { runId: 'runA', familyId: 'famA', query: 'query A', strategy: 'pipeline' },
@@ -478,6 +492,7 @@ describe('run lifecycle: concurrent runs do not cross-contaminate', () => {
 
     // Run B → family B, claim B, source B
     appendEvents([
+      makeEvent({ eventType: 'FAMILY_CREATED', runId: 'runB', payload: { family_id: 'famB', label: 'Family B' } }),
       makeEvent({
         eventType: 'RUN_STARTED', runId: 'runB',
         payload: { runId: 'runB', familyId: 'famB', query: 'query B', strategy: 'pipeline' },
@@ -515,7 +530,7 @@ describe('run lifecycle: concurrent runs do not cross-contaminate', () => {
     expect(projection.sources.get('srcB1')!.firstSeenRunId).toBe('runB');
 
     // Rolling back runA removes only its claims
-    rollbackRun('runA', projection);
+    rollbackRun('runA', projection, { projection, handlers: TEST_HANDLERS });
     const projection2 = rebuildProjection(ALL_HANDLERS);
     expect(projection2.claims.has('clmA1')).toBe(false);
     expect(projection2.claims.has('clmB1')).toBe(true);

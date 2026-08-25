@@ -5,7 +5,7 @@ import os from 'node:os';
 import {
   initDb,
   closeDb,
-  appendEvents,
+  appendEvents as appendEventsStore,
   queryEvents,
   rebuildProjection,
   rollbackRun,
@@ -18,16 +18,42 @@ import {
 import type { EventHandlerRegistry } from '../src/store/projectionState.js';
 import type { EventEnvelope, TrellisEventType } from '../src/store/eventTypes.js';
 import type { EntityMergedPayload } from '../src/store/eventTypes.js';
+import type { NewEventInput } from '../src/store/events.js';
+import { graphEventHandlers } from '../src/graph/projectionHandlers.js';
+import { workspaceEventHandlers } from '../src/workspace/projectionHandlers.js';
 
 // ── Test helpers ────────────────────────────────────────────────────
 
 let tmpDir: string;
 
+const ALL_HANDLERS: EventHandlerRegistry = { ...graphEventHandlers, ...workspaceEventHandlers, RUN_STARTED: handleRunStarted, RUN_COMPLETED: handleRunCompleted };
+function appendEvents(events: readonly NewEventInput[]): ReturnType<typeof appendEventsStore> {
+  const projection = rebuildProjection(ALL_HANDLERS);
+  for (const event of events) {
+    const payload = event.payload as Record<string, unknown>;
+    const familyId = typeof payload.familyId === 'string' ? payload.familyId : undefined;
+    if (familyId && !projection.families.has(familyId)) projection.families.set(familyId, { id: familyId, label: familyId, manifest: { scopeQuery: familyId }, createdAt: new Date().toISOString(), lastActivity: new Date().toISOString(), relatedFamilies: [] } as never);
+    if (event.eventType === 'ENTITY_MERGED') {
+      const p = payload as { survivorId?: string; mergedIds?: string[] };
+      for (const id of [p.survivorId, ...(p.mergedIds ?? [])]) if (id) projection.entities.set(id, { id, label: id, canonicalLabel: null, entityType: 'unknown', aliases: [], extractionConfidence: null, firstSeenRunId: event.runId, lastUpdatedRunId: event.runId, metadata: {} } as never);
+    }
+    if (event.eventType === 'NODE_RELABELED') {
+      const id = typeof payload.targetId === 'string' ? payload.targetId : undefined;
+      if (id) projection.entities.set(id, { id, label: id, canonicalLabel: null, entityType: 'unknown', aliases: [], extractionConfidence: null, firstSeenRunId: event.runId, lastUpdatedRunId: event.runId, metadata: {} } as never);
+    }
+  }
+  return appendEventsStore(events, { projection, handlers: ALL_HANDLERS });
+}
+
+function normalizeNodePayload(payload: Record<string, unknown>, runId: string): Record<string, unknown> {
+  const { type, ...rest } = payload;
+  return { id: 'node', label: 'node', canonicalLabel: null, entityType: rest.entityType ?? type ?? 'unknown', aliases: [], extractionConfidence: null, firstSeenRunId: runId, lastUpdatedRunId: runId, metadata: {}, ...rest };
+}
+
 function makeEvent(
-  overrides: Partial<EventEnvelope> & { eventType: TrellisEventType },
-): EventEnvelope {
+  overrides: Partial<NewEventInput> & { eventType: TrellisEventType },
+): NewEventInput {
   return {
-    id: '',
     timestamp: new Date().toISOString(),
     eventVersion: 1,
     runId: 'run-test',
@@ -36,8 +62,13 @@ function makeEvent(
     entityId: null,
     entityType: null,
     payload: {},
-    payloadHash: null,
     ...overrides,
+    ...(overrides.eventType === 'NODE_ADDED' ? { payload: normalizeNodePayload(overrides.payload as Record<string, unknown>, overrides.runId ?? 'run-test') } : {}),
+    ...(overrides.eventType === 'RUN_STARTED' ? { payload: {
+      runId: overrides.runId ?? 'run-test', familyId: 'fixture-family', query: 'fixture', strategy: 'agent',
+      ...(overrides.payload as Record<string, unknown>),
+    } } : {}),
+    ...(overrides.eventType === 'RUN_COMPLETED' ? { payload: { runId: overrides.runId ?? 'run-test', ...(overrides.payload as Record<string, unknown>) } } : {}),
   };
 }
 
@@ -120,7 +151,7 @@ describe('example handlers: direct dispatch', () => {
       payload: { runId: 'run-xyz', familyId: 'f1', query: 'test query', strategy: 'agent', topic: 'topic' },
     });
 
-    handleRunStarted(event, state);
+    handleRunStarted(event as EventEnvelope, state);
 
     expect(state.researchRuns.size).toBe(1);
     const run = state.researchRuns.get('run-xyz')!;
@@ -137,14 +168,14 @@ describe('example handlers: direct dispatch', () => {
       runId: 'run-xyz',
       payload: { runId: 'run-xyz', familyId: 'f1', query: 'q', strategy: 'agent' },
     });
-    handleRunStarted(startEvent, state);
+    handleRunStarted(startEvent as EventEnvelope, state);
 
     const completeEvent = makeEvent({
       eventType: 'RUN_COMPLETED',
       runId: 'run-xyz',
       payload: { runId: 'run-xyz', entityCount: 5, claimCount: 3 },
     });
-    handleRunCompleted(completeEvent, state);
+    handleRunCompleted(completeEvent as EventEnvelope, state);
 
     const run = state.researchRuns.get('run-xyz')!;
     expect(run.status).toBe('completed');
@@ -182,7 +213,7 @@ describe('rebuildProjection: end-to-end dispatch', () => {
           id: p.id,
           label: p.label,
           canonicalLabel: null,
-          entityType: p.type,
+          entityType: p.type ?? (event.payload as { entityType?: string }).entityType ?? 'unknown',
           aliases: p.aliases,
           extractionConfidence: null,
           firstSeenRunId: p.firstSeenRunId,
@@ -251,7 +282,7 @@ describe('rollback: pure_run_local run', () => {
     expect(state1.entities.size).toBe(2);
 
     // Roll back run-bad
-    rollbackRun('run-bad', state1);
+    rollbackRun('run-bad', state1, { projection: state1, handlers: handlers });
 
     // Rebuild — run-bad events should be skipped
     const state2 = rebuildProjection(handlers);
@@ -283,10 +314,12 @@ describe('rollback: cross_run_mutation ENTITY_MERGED', () => {
     ]);
 
     const state = createEmptyProjectionState();
+    state.lastAppliedSeq = queryEvents({}).at(-1)?.seq ?? 0;
+    state.entities.set('ent-a', { id: 'ent-a', label: 'Entity A', canonicalLabel: null, entityType: 'unknown', aliases: [], extractionConfidence: null, firstSeenRunId: 'run-merge', lastUpdatedRunId: 'run-merge', metadata: {} });
     const countBefore = countEvents();
 
     const mergeEvent = queryEvents({ eventType: 'ENTITY_MERGED' })[0]!;
-    const outcome = rollbackCrossRunMutation(mergeEvent, state);
+    const outcome = rollbackCrossRunMutation(mergeEvent, state, { projection: state, handlers: ALL_HANDLERS });
 
     expect(outcome.kind).toBe('executed');
     if (outcome.kind === 'executed') {
@@ -325,16 +358,18 @@ describe('rollback: cross_run_mutation ENTITY_MERGED', () => {
         eventType: 'NODE_RELABELED',
         runId: 'run-other',
         timestamp: t2,
-        entityId: 'ent-b',
+        entityId: 'ent-a',
         entityType: 'entity',
-        payload: { targetId: 'ent-b', oldLabel: 'old', newLabel: 'new' },
+        payload: { targetId: 'ent-a', oldLabel: 'old', newLabel: 'new' },
       }),
     ]);
 
     const state = createEmptyProjectionState();
+    state.lastAppliedSeq = queryEvents({}).at(-1)?.seq ?? 0;
+    state.entities.set('ent-a', { id: 'ent-a', label: 'Entity A', canonicalLabel: null, entityType: 'unknown', aliases: [], extractionConfidence: null, firstSeenRunId: 'run-merge', lastUpdatedRunId: 'run-merge', metadata: {} });
     const mergeEvent = queryEvents({ eventType: 'ENTITY_MERGED' })[0]!;
 
-    const outcome = rollbackCrossRunMutation(mergeEvent, state);
+    const outcome = rollbackCrossRunMutation(mergeEvent, state, { projection: state, handlers: ALL_HANDLERS });
 
     expect(outcome.kind).toBe('blocked');
     if (outcome.kind === 'blocked') {
@@ -350,7 +385,7 @@ describe('rollback: non-cross_run_mutation event', () => {
     const event = makeEvent({ eventType: 'NODE_ADDED', runId: 'r1', payload: {} });
     const state = createEmptyProjectionState();
 
-    const outcome = rollbackCrossRunMutation(event, state);
+    const outcome = rollbackCrossRunMutation(event, state, { projection: state, handlers: ALL_HANDLERS });
     expect(outcome.kind).toBe('blocked');
     if (outcome.kind === 'blocked') {
       expect(outcome.reason).toContain('cross_run_mutation');

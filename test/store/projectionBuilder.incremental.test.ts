@@ -5,7 +5,7 @@ import os from 'node:os';
 import {
   initDb,
   closeDb,
-  appendEvents,
+  appendEvents as appendEventsStore,
   rebuildProjection,
   rollbackRun,
   computeProjectionChecksum,
@@ -15,16 +15,16 @@ import {
 } from '../../src/store/index.js';
 import type { EventEnvelope, TrellisEventType } from '../../src/store/eventTypes.js';
 import type { EventHandlerRegistry } from '../../src/store/projectionState.js';
+import type { NewEventInput } from '../../src/store/events.js';
 
 // ── Test helpers ────────────────────────────────────────────────────
 
 let tmpDir: string;
 
 function makeEvent(
-  overrides: Partial<EventEnvelope> & { eventType: TrellisEventType },
-): EventEnvelope {
+  overrides: Partial<NewEventInput> & { eventType: TrellisEventType },
+): NewEventInput {
   return {
-    id: '',
     timestamp: new Date().toISOString(),
     eventVersion: 1,
     runId: 'run-test',
@@ -33,8 +33,14 @@ function makeEvent(
     entityId: null,
     entityType: null,
     payload: {},
-    payloadHash: null,
     ...overrides,
+    ...(overrides.eventType === 'NODE_ADDED' ? {
+      payload: {
+        id: 'node', label: 'node', canonicalLabel: null, entityType: 'unknown', aliases: [],
+        extractionConfidence: null, firstSeenRunId: overrides.runId ?? 'run-test', lastUpdatedRunId: overrides.runId ?? 'run-test', metadata: {},
+        ...(overrides.payload as Record<string, unknown>),
+      },
+    } : {}),
   };
 }
 
@@ -55,6 +61,7 @@ const nodeAddedHandler = (event: EventEnvelope, state: import('../../src/store/p
 };
 
 const HANDLERS: EventHandlerRegistry = { NODE_ADDED: nodeAddedHandler };
+const appendEvents = (events: readonly NewEventInput[]) => appendEventsStore(events, { projection: rebuildProjection(HANDLERS), handlers: HANDLERS });
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-incr-test-'));
@@ -129,7 +136,7 @@ describe('incremental rebuild: rollback staleness detection', () => {
     expect(state1.entities.has('eA1')).toBe(true);
 
     // Rollback run A
-    rollbackRun('run-A', state1);
+    rollbackRun('run-A', state1, { projection: state1, handlers: HANDLERS });
 
     // Append unrelated events
     appendEvents([
@@ -163,8 +170,8 @@ describe('incremental rebuild: rollback without prior checkpoint', () => {
 
     // Rollback run A BEFORE any rebuild/checkpoint
     // rollbackRun needs a state, use empty one to just emit the RUN_ROLLED_BACK event
-    const emptyState = createEmptyProjectionState();
-    rollbackRun('run-A', emptyState);
+    const emptyState = rebuildProjection(HANDLERS);
+    rollbackRun('run-A', emptyState, { projection: emptyState, handlers: HANDLERS });
 
     // Append some good events
     appendEvents([
