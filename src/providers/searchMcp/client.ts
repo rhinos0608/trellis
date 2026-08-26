@@ -11,7 +11,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { TrellisConfig } from '../../config/index.js';
 import { logger } from '../../logger.js';
-import { withRetry, CircuitBreaker, type RetryOptions } from '../../research/retry.js';
+import { withRetry, classifyError, CircuitBreaker, type RetryOptions } from '../../research/retry.js';
+import { TRELLIS_VERSION } from '../../version.js';
 
 export interface ToolCallResult {
   /** Parsed tool result data (JSON-deserialized from MCP response). */
@@ -47,13 +48,17 @@ export async function createSearchMcpClient(
 ): Promise<DiscoveredSearchMcpClient> {
   const { command, args } = cfg.searchProvider;
 
+  // Explicit 10 MiB cap — SDK default is also 10 MiB but we pin it
+  // so a future SDK version change can't silently alter this safety bound.
+  const MAX_MCP_BUFFER = 10 * 1024 * 1024;
   const transport = new StdioClientTransport({
     command,
     args,
     stderr: 'pipe',
+    maxBufferSize: MAX_MCP_BUFFER,
   });
 
-  const client = new Client({ name: 'trellis', version: '0.1.0' });
+  const client = new Client({ name: 'trellis', version: TRELLIS_VERSION });
   await client.connect(transport);
 
   // Verify connection and discover available tools (kept for capability mapping)
@@ -120,7 +125,15 @@ export function wrapClientWithRetry(
       args: Record<string, unknown>,
       options: SearchMcpCallOptions,
     ): Promise<ToolCallResult> {
-      return withRetry(() => client.callTool(name, args, options), { ...opts, signal: options.signal });
+      return withRetry(() => client.callTool(name, args, options), {
+        ...opts,
+        signal: options.signal,
+        shouldRetry: (err) => {
+          const record = err as Record<string, unknown>;
+          if (record.classification === 'PERMANENT') return false;
+          return opts?.shouldRetry ? opts.shouldRetry(err) : classifyError(err) === 'TRANSIENT';
+        },
+      });
     },
     close: () => client.close(),
   };
@@ -132,7 +145,7 @@ export function wrapClientWithRetry(
 export async function createSearchMcpClientWithTransport(
   transport: Transport,
 ): Promise<DiscoveredSearchMcpClient> {
-  const client = new Client({ name: 'trellis', version: '0.1.0' });
+  const client = new Client({ name: 'trellis', version: TRELLIS_VERSION });
   await client.connect(transport);
   const { tools } = await client.listTools();
   const toolNames = tools.map((t) => t.name);
@@ -177,7 +190,14 @@ function parseToolResult(raw: unknown): ToolCallResult {
   // Check for MCP error responses
   if (result.isError === true) {
     const textContent = extractTextContent(result);
-    const err = new Error(`MCP tool error: ${textContent ?? 'unknown error'}`);
+    const err = new Error('MCP tool call failed');
+    (err as unknown as Record<string, unknown>).operation = 'callTool';
+    (err as unknown as Record<string, unknown>).classification = 'PERMANENT';
+    // Raw diagnostic detail preserved ONLY for local debugging;
+    // never included in the default error message (avoids log injection).
+    if (typeof textContent === 'string' && textContent.length > 0) {
+      (err as unknown as Record<string, unknown>).rawDetail = textContent;
+    }
     // Preserve the JSON-RPC code when the server includes one so
     // classifyError() can tell validation failures from transient ones.
     const rpcCode = result.code;

@@ -3,7 +3,7 @@
  * Ported from search-mcp retry.ts.
  */
 
-import { logger } from '../logger.js';
+import { logger, safeErrorLog } from '../logger.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -120,7 +120,7 @@ export async function withRetry<T>(
 
       const delay = calculateDelay(attempt, baseDelayMs, maxDelayMs);
       logger.warn(
-        { err, attempt: attempt + 1, maxRetries, delayMs: delay },
+        { ...safeErrorLog(err), attempt: attempt + 1, maxRetries, delayMs: delay, errorClassification: classifyError(err) },
         'Retrying after transient error',
       );
       await sleepWithSignal(delay, signal);

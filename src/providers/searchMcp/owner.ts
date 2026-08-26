@@ -8,7 +8,7 @@
 import type { ResearchProvider } from '../types.js';
 import { loadConfig } from '../../config/index.js';
 import type { TrellisConfig } from '../../config/index.js';
-import { logger } from '../../logger.js';
+import { logger, safeErrorLog } from '../../logger.js';
 
 let instance: ResearchProvider | null = null;
 let creating: Promise<ResearchProvider> | null = null;
@@ -83,7 +83,7 @@ export async function closeProvider(): Promise<void> {
     try {
       await (cached ?? created)?.close?.();
     } catch (err: unknown) {
-      logger.warn({ err }, 'Provider close failed');
+      logger.warn({ ...safeErrorLog(err) }, 'Provider close failed');
     }
   })();
   try {

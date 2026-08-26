@@ -25,6 +25,7 @@ import { getProvider as getSharedProvider, closeProvider } from '../providers/se
 import type { ProjectionState } from '../store/projectionState.js';
 import { graphEventHandlers } from '../graph/index.js';
 import { workspaceEventHandlers } from '../workspace/index.js';
+import { TRELLIS_VERSION } from '../version.js';
 
 // ── Merged handler registry for projection rebuilds ────────────────
 const ALL_HANDLERS = { ...graphEventHandlers, ...workspaceEventHandlers };
@@ -54,7 +55,7 @@ async function getProvider(): Promise<ResearchProvider> {
 // ── MCP Server ─────────────────────────────────────────────────────
 const server = new McpServer({
   name: 'trellis',
-  version: '0.1.0',
+  version: TRELLIS_VERSION,
 });
 
 // ── research tool ──────────────────────────────────────────────────
@@ -92,23 +93,32 @@ server.registerTool('knowledge', {
 });
 
 // ── Bootstrap ──────────────────────────────────────────────────────
+let transport: StdioServerTransport | undefined;
 async function main(): Promise<void> {
-  const transport = new StdioServerTransport();
+  transport = new StdioServerTransport();
   await server.connect(transport);
   runService.startScheduler();
   logger.info('Trellis MCP server started (2 tools: research, knowledge)');
 }
 
-// Shutdown handler
+// Shutdown handler — ordering: scheduler (aborts active runs, appends final
+// RUN_INTERRUPTED events) → provider close → MCP transport close → DB LAST.
+// Sets process.exitCode and lets the event loop drain; never process.exit().
 let shuttingDown = false;
 async function shutdown(exitCode = 0): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info('Shutting down Trellis MCP server');
-  await runService.shutdownScheduler();
-  await closeProvider();
-  closeDb();
-  if (exitCode !== 0) process.exit(exitCode);
+  let firstError: unknown;
+  const attempt = async (action: () => Promise<void>): Promise<void> => {
+    try { await action(); } catch (err) { firstError ??= err; logger.warn({ err }, 'MCP teardown step failed'); }
+  };
+  await attempt(() => runService.shutdownScheduler());
+  await attempt(() => closeProvider());
+  await attempt(() => server.close());
+  await attempt(async () => { await transport?.close(); });
+  await attempt(async () => { closeDb(); });
+  process.exitCode = firstError === undefined ? exitCode : 1;
 }
 
 process.once('SIGINT', () => {
