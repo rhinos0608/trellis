@@ -14,7 +14,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { logger } from '../logger.js';
 import { loadConfig } from '../config/index.js';
-import { initDb, closeDb } from '../store/db.js';
+import { initDb, closeDb, getDb } from '../store/db.js';
 import { rebuildProjection } from '../store/projectionBuilder.js';
 import { createRunService } from '../research/runService.js';
 import { ResearchToolSchema, KnowledgeToolSchema } from './schemas.js';
@@ -26,12 +26,22 @@ import type { ProjectionState } from '../store/projectionState.js';
 import { graphEventHandlers } from '../graph/index.js';
 import { workspaceEventHandlers } from '../workspace/index.js';
 import { TRELLIS_VERSION } from '../version.js';
+import { getLatestEventCursor } from '../store/events.js';
+import { createKnowledgeQueryService } from '../query/service.js';
+import { queryEvents } from '../store/events.js';
 
 // ── Merged handler registry for projection rebuilds ────────────────
 const ALL_HANDLERS = { ...graphEventHandlers, ...workspaceEventHandlers };
 
-function rebuildState(): ProjectionState {
-  return rebuildProjection(ALL_HANDLERS);
+// ── Lazy cursor-invalidated projection cache ─────────────────────
+let cachedState: ProjectionState | undefined;
+
+function getState(): ProjectionState {
+  const cursor = getLatestEventCursor() ?? 0;
+  if (cachedState?.lastAppliedSeq !== cursor) {
+    cachedState = rebuildProjection(ALL_HANDLERS);
+  }
+  return cachedState;
 }
 
 // ── Init config + db (sync, always succeeds) ──────────────────────
@@ -74,21 +84,19 @@ server.registerTool('research', {
   return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
 });
 
+function getQueryService() {
+  const d = getDb();
+  if (!d) throw new Error('Database not initialized');
+  return createKnowledgeQueryService(d);
+}
+
 // ── knowledge tool ─────────────────────────────────────────────────
 server.registerTool('knowledge', {
   title: 'Knowledge',
   description: 'Knowledge graph queries: families, threads, claims, evidence, contradictions, gaps, entity.',
   inputSchema: KnowledgeToolSchema,
 }, async (input) => {
-  let state: ProjectionState;
-  try {
-    state = rebuildState();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ err: msg }, 'knowledge tool: projection rebuild failed');
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ error: `Projection rebuild failed: ${msg}` }, null, 2) }] };
-  }
-  const result = handleKnowledgeTool(input, state);
+  const result = handleKnowledgeTool(input, { getState, get queryService() { return getQueryService(); }, queryEvents });
   return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
 });
 

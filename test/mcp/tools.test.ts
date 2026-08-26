@@ -6,13 +6,14 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ResearchToolSchema, KnowledgeToolSchema } from '../../src/mcp/schemas.js';
 import { handleResearchTool, type ResearchToolDeps } from '../../src/mcp/researchTool.js';
-import { handleKnowledgeTool } from '../../src/mcp/knowledgeTool.js';
+import { handleKnowledgeTool, type KnowledgeToolDeps } from '../../src/mcp/knowledgeTool.js';
 import { createRunService, type RunService, type RunStatus } from '../../src/research/runService.js';
 import type { ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 import type { ProjectionState } from '../../src/store/projectionState.js';
-import { initDb, appendEvents, closeDb } from '../../src/store/index.js';
+import { initDb, getDb, appendEvents, closeDb } from '../../src/store/index.js';
 import { createEmptyProjectionState } from '../../src/store/projectionState.js';
+import { createKnowledgeQueryService, type KnowledgeQueryService } from '../../src/query/service.js';
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -241,63 +242,64 @@ describe('handleResearchTool', () => {
 // ── Knowledge tool handler ─────────────────────────────────────────
 
 describe('handleKnowledgeTool', () => {
+  let queryService: KnowledgeQueryService;
+
+  beforeEach(() => {
+    initDb(TEST_DB);
+    queryService = createKnowledgeQueryService(getDb()!);
+  });
+
+  function makeDeps(state: ProjectionState): KnowledgeToolDeps {
+    return { getState: () => state, queryService, queryEvents: () => [] };
+  }
+
   it('families lists all families on empty state', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'families' }, state);
+    const result = handleKnowledgeTool({ action: 'families' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ families: [] });
   });
 
   it('families with familyId returns not found on empty state', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'families', familyId: 'f1' }, state);
+    const result = handleKnowledgeTool({ action: 'families', familyId: 'f1' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ found: false, error: 'Family not found: f1' });
   });
 
   it('threads returns empty array for unknown family', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'threads', familyId: 'f1' }, state);
+    const result = handleKnowledgeTool({ action: 'threads', familyId: 'f1' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ familyId: 'f1', threads: [] });
   });
 
   it('claims returns empty array for unknown family', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'claims', familyId: 'f1' }, state);
+    const result = handleKnowledgeTool({ action: 'claims', familyId: 'f1' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ familyId: 'f1', threadId: undefined, claims: [] });
   });
 
   it('evidence returns empty array for unknown claim', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'evidence', claimId: 'clm_1' }, state);
+    const result = handleKnowledgeTool({ action: 'evidence', claimId: 'clm_1' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ claimId: 'clm_1', evidence: [] });
   });
 
   it('contradictions returns empty array for unknown family', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'contradictions', familyId: 'f1' }, state);
+    const result = handleKnowledgeTool({ action: 'contradictions', familyId: 'f1' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ familyId: 'f1', contradictions: [] });
   });
 
   it('gaps returns empty array for unknown family', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'gaps', familyId: 'f1' }, state);
+    const result = handleKnowledgeTool({ action: 'gaps', familyId: 'f1' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ familyId: 'f1', gaps: [] });
   });
 
   it('entity returns not found for unknown id', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'entity', entityId: 'e1' }, state);
+    const result = handleKnowledgeTool({ action: 'entity', entityId: 'e1' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ found: false, error: 'Entity not found: e1' });
   });
 
   it('entity returns not found for unknown label', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'entity', label: 'NoSuchThing' }, state);
+    const result = handleKnowledgeTool({ action: 'entity', label: 'NoSuchThing' }, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ found: false, error: 'No entity with label: NoSuchThing' });
   });
 
   it('entity returns error when neither id nor label given', () => {
-    const state = makeEmptyProjectionState();
-    const result = handleKnowledgeTool({ action: 'entity' } as any, state);
+    const result = handleKnowledgeTool({ action: 'entity' } as any, makeDeps(makeEmptyProjectionState()));
     expect(result).toEqual({ error: 'Either entityId or label must be provided' });
   });
 });
