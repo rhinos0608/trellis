@@ -19,10 +19,10 @@ const cases = corpusFiles.flatMap((f) => f.file.cases);
  * labels — re-adjudicate labels deliberately or fix the reconciler; never
  * weaken either silently.
  */
-describe('reconciler pair corpus gate (v1, 42 cases)', () => {
+describe('reconciler pair corpus gate (v1, 43 cases)', () => {
   it('corpus passes self-validation', () => {
     expect(() => validatePairCorpus(corpusFiles)).not.toThrow();
-    expect(cases).toHaveLength(42);
+    expect(cases).toHaveLength(43);
   });
 
   it('every case matches planClaimObservation output exactly', () => {

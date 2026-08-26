@@ -114,7 +114,7 @@
     {
       "id": "polarity-supersedes-retraction-notice",
       "category": "polarity-negation",
-      "rationale": "CHANGELOG (reconciler v4): Re-labeled from 'supersedes' to 'new_claim' because the replacement text ('no longer supported, replaces deprecated approach') never establishes lineage to the prior object 'claim reconciliation'. Under stricter v4 supersession scope, the observation must reference the existing claim's objectText.",
+      "rationale": "Replacement verb 'replaces deprecated' with newer date and prior-object-lineage reference to 'claim reconciliation'. Tests the 'deprecated' keyword variant of supersession.",
       "existing": [
         {
           "id": "claim-1",
@@ -138,7 +138,7 @@
       "observation": {
         "subjectText": "Trellis",
         "predicate": "supports",
-        "objectText": "no longer supported, replaces deprecated approach",
+        "objectText": "replaces deprecated claim reconciliation approach",
         "polarity": "asserted",
         "hedge": "certain",
         "evidenceType": "study",
@@ -153,7 +153,8 @@
         }
       },
       "expected": {
-        "classification": "new_claim"
+        "classification": "supersedes",
+        "matchedClaimId": "claim-1"
       }
     },
     {
@@ -307,6 +308,96 @@
       "expected": {
         "classification": "supersedes",
         "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "polarity-new-claim-replacement-no-lineage",
+      "category": "polarity-negation",
+      "rationale": "Replacement wording with newer date but no reference to the prior object. Subject/predicate identical to existing claim, but object has no lineage — must classify as new_claim.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2024-01-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "improved reconciliation system",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "eventDate": "2025-06-01"
+        }
+      },
+      "expected": {
+        "classification": "new_claim"
+      }
+    },
+    {
+      "id": "polarity-adversarial-unrelated-replacement",
+      "category": "polarity-negation",
+      "rationale": "v2 adversarial: Unrelated-topic observation (different predicate, disjoint object) with replacement wording and strictly newer date. Must NOT be classified as supersedes because the observation never references the prior claim's subject or object.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "temporalScope": {
+            "eventType": "released",
+            "dateConfidence": "exact",
+            "eventDate": "2024-01-01"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Kubernetes",
+        "predicate": "deprecates",
+        "objectText": "legacy deployment approach",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "kubernetes",
+          "predicate": "deprecates"
+        },
+        "temporalScope": {
+          "eventType": "updated",
+          "dateConfidence": "exact",
+          "eventDate": "2025-06-01"
+        }
+      },
+      "expected": {
+        "classification": "new_claim"
       }
     }
   ]

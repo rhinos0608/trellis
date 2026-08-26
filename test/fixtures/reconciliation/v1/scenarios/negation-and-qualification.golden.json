@@ -1,8 +1,8 @@
 {
   "corpusVersion": 1,
   "projectionVersion": 5,
-  "reconcilerVersion": 2,
-  "checksum": "sha256:projection-v1:b4a08dc679427241f91ded9b3a208c2ce70d6ee77b47468701b6abcabe2329c9",
+  "reconcilerVersion": 4,
+  "checksum": "sha256:projection-v1:9f80f81017f188757daec7a062f2261591a07e3186b300e466fc3eaeb5b96f65",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -280,7 +280,7 @@
           "method": "canonical_key_exact",
           "observationId": "g1",
           "rationale": "Deterministic lexical reconciliation: contradiction (score=0.825).",
-          "reconcilerVersion": 3,
+          "reconcilerVersion": 4,
           "score": 0.825
         }
       ],
@@ -305,7 +305,7 @@
           "method": "canonical_key_exact",
           "observationId": "g2",
           "rationale": "Deterministic lexical reconciliation: qualification (score=0.825).",
-          "reconcilerVersion": 3,
+          "reconcilerVersion": 4,
           "score": 0.825
         }
       ],
@@ -335,7 +335,7 @@
           "method": "canonical_key_exact",
           "observationId": "g3",
           "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
-          "reconcilerVersion": 3,
+          "reconcilerVersion": 4,
           "score": 1
         }
       ],
@@ -365,7 +365,7 @@
           "method": "canonical_key_exact",
           "observationId": "g4",
           "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
-          "reconcilerVersion": 3,
+          "reconcilerVersion": 4,
           "score": 1
         }
       ]

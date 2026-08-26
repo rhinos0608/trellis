@@ -156,6 +156,23 @@ describe('deriveEpistemicState', () => {
     expect(result.confidence).toBeGreaterThan(0.7);
   });
 
+  it('not consensus — 1 observation with evidence from 2 domains falls back to emerging', () => {
+    const src1 = makeSource('s1', 'a.com', 'news', '2024-01-01T00:00:00Z');
+    const src2 = makeSource('s2', 'b.com', 'third_party_analysis', '2024-03-01T00:00:00Z');
+    const obs1 = makeObservation('o1', 'f1', ['s1'], 0.8, 'study');
+    const ev1 = makeEvidence('e1', 'c1', 's1', 'supports');
+    const ev2 = makeEvidence('e2', 'c1', 's2', 'supports');
+    const claim = makeClaim('c1', 'f1', ['o1'], ['e1', 'e2']);
+    const state = buildState([src1, src2], [obs1], [ev1, ev2], [claim]);
+
+    const result = deriveEpistemicState(state, claim, '2024-06-01T00:00:00Z');
+
+    // Evidence from 2 domains but only 1 observation → not enough for consensus
+    expect(result.epistemicStatus).not.toBe('consensus');
+    // Has active evidence → falls back to emerging
+    expect(result.epistemicStatus).toBe('emerging');
+  });
+
   it('contested — supporting + opposing evidence → contested state, dampened confidence', () => {
     const src1 = makeSource('s1', 'a.com', 'news');
     const src2 = makeSource('s2', 'b.com', 'forum_social');

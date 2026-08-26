@@ -18,7 +18,7 @@ import type {
   ClaimReconciliation,
   ClaimReconciliationKind,
 } from '../graph/types.js';
-import { planClaimObservation } from '../graph/claimReconciler.js';
+import { planClaimObservation, RECONCILER_VERSION } from '../graph/claimReconciler.js';
 import {
   createEmptyProjectionState,
   canonicalSerializeProjectionState,
@@ -546,7 +546,7 @@ export function buildGoldenProjection(scenario: ScenarioFixture): GoldenProjecti
   return {
     corpusVersion: CORPUS_SCHEMA_VERSION,
     projectionVersion: CURRENT_PROJECTION_VERSION,
-    reconcilerVersion: 2,
+    reconcilerVersion: RECONCILER_VERSION,
     checksum: computeProjectionChecksum(state),
     state: JSON.parse(canonical) as Record<string, unknown>,
   };
@@ -594,8 +594,8 @@ export function compareGoldenProjection(scenario: ScenarioFixture, golden: Golde
   if (golden.projectionVersion !== CURRENT_PROJECTION_VERSION) {
     metadataDiffs.push(`projectionVersion: expected ${String(CURRENT_PROJECTION_VERSION)}, got ${String(golden.projectionVersion)}`);
   }
-  if (golden.reconcilerVersion !== 2) {
-    metadataDiffs.push(`reconcilerVersion: expected 2, got ${String(golden.reconcilerVersion)}`);
+  if (golden.reconcilerVersion !== RECONCILER_VERSION) {
+    metadataDiffs.push(`reconcilerVersion: expected ${String(RECONCILER_VERSION)}, got ${String(golden.reconcilerVersion)}`);
   }
   const metadataMatches = metadataDiffs.length === 0;
   diffs.push(...metadataDiffs);

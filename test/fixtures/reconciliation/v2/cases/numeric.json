@@ -3,21 +3,26 @@
   "labelPolicyVersion": 1,
   "cases": [
     {
-      "id": "polarity-same-claim-both-negated",
-      "category": "polarity-negation",
-      "rationale": "Two negations agree: polarity equality preserves the canonical-key shortcut to same_claim.",
+      "id": "numeric-same-claim-tolerance-within",
+      "category": "numeric",
+      "rationale": "10% relative tolerance: |105-100|/105 = 4.8% <= 10% keeps numericCompatibility true, so canonical key match yields score 1.0 same_claim.",
       "existing": [
         {
           "id": "claim-1",
           "subjectText": "Trellis",
           "predicate": "supports",
           "objectText": "claim reconciliation",
-          "polarity": "negated",
+          "polarity": "asserted",
           "hedge": "certain",
           "evidenceType": "study",
           "canonicalKey": {
             "subject": "trellis",
             "predicate": "supports"
+          },
+          "quantifier": {
+            "value": 100,
+            "unit": "%",
+            "comparisonType": "increase"
           }
         }
       ],
@@ -25,12 +30,17 @@
         "subjectText": "Trellis",
         "predicate": "supports",
         "objectText": "claim reconciliation",
-        "polarity": "negated",
+        "polarity": "asserted",
         "hedge": "certain",
         "evidenceType": "study",
         "canonicalKey": {
           "subject": "trellis",
           "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 105,
+          "unit": "%",
+          "comparisonType": "increase"
         }
       },
       "expected": {
@@ -39,16 +49,16 @@
       }
     },
     {
-      "id": "polarity-near-duplicate-hedged-denial",
-      "category": "polarity-negation",
-      "rationale": "Matching negation keeps the polarity term at full weight; 0.8 text overlap scores ~0.785 -> near_duplicate.",
+      "id": "numeric-near-duplicate-metadata-only-on-observation",
+      "category": "numeric",
+      "rationale": "Quantifier present on the observation only is neutral (0.5) in scoring; text overlap 0.8 gives ~0.785 -> near_duplicate despite missing claim-side numbers.",
       "existing": [
         {
           "id": "claim-1",
           "subjectText": "Trellis",
           "predicate": "supports",
           "objectText": "claim reconciliation tools",
-          "polarity": "negated",
+          "polarity": "asserted",
           "hedge": "certain",
           "evidenceType": "study",
           "canonicalKey": {
@@ -61,13 +71,18 @@
         "subjectText": "Trellis",
         "predicate": "supports",
         "objectText": "claim reconciliation",
-        "polarity": "negated",
+        "polarity": "asserted",
         "hedge": "certain",
         "evidenceType": "study",
         "canonicalKey": {
           "subject": "trellis",
           "predicate": "supports",
           "quantifierCanonical": "50%"
+        },
+        "quantifier": {
+          "value": 50,
+          "unit": "%",
+          "comparisonType": "increase"
         }
       },
       "expected": {
@@ -76,9 +91,9 @@
       }
     },
     {
-      "id": "polarity-contradiction-asserted-versus-negated",
-      "category": "polarity-negation",
-      "rationale": "Canonical polarity flip in shared scope \u2014 textbook contradiction.",
+      "id": "numeric-contradiction-out-of-tolerance",
+      "category": "numeric",
+      "rationale": "|10-50|/50 = 80% far exceeds tolerance in the same scope \u2014 scoped numeric mismatch is contradiction even though raw text is identical.",
       "existing": [
         {
           "id": "claim-1",
@@ -91,6 +106,11 @@
           "canonicalKey": {
             "subject": "trellis",
             "predicate": "supports"
+          },
+          "quantifier": {
+            "value": 50,
+            "unit": "%",
+            "comparisonType": "increase"
           }
         }
       ],
@@ -98,12 +118,17 @@
         "subjectText": "Trellis",
         "predicate": "supports",
         "objectText": "claim reconciliation",
-        "polarity": "negated",
+        "polarity": "asserted",
         "hedge": "certain",
         "evidenceType": "study",
         "canonicalKey": {
           "subject": "trellis",
           "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 10,
+          "unit": "%",
+          "comparisonType": "increase"
         }
       },
       "expected": {
@@ -112,15 +137,15 @@
       }
     },
     {
-      "id": "polarity-supersedes-retraction-notice",
-      "category": "polarity-negation",
-      "rationale": "CHANGELOG (reconciler v4): Re-labeled from 'supersedes' to 'new_claim' because the replacement text ('no longer supported, replaces deprecated approach') never establishes lineage to the prior object 'claim reconciliation'. Under stricter v4 supersession scope, the observation must reference the existing claim's objectText.",
+      "id": "numeric-supersedes-benchmark-revision",
+      "category": "numeric",
+      "rationale": "'supersedes' verb with newer eventDate replaces the earlier benchmark claim regardless of textual elaboration.",
       "existing": [
         {
           "id": "claim-1",
           "subjectText": "Trellis",
           "predicate": "supports",
-          "objectText": "claim reconciliation",
+          "objectText": "throughput benchmark result",
           "polarity": "asserted",
           "hedge": "certain",
           "evidenceType": "study",
@@ -138,159 +163,7 @@
       "observation": {
         "subjectText": "Trellis",
         "predicate": "supports",
-        "objectText": "no longer supported, replaces deprecated approach",
-        "polarity": "asserted",
-        "hedge": "certain",
-        "evidenceType": "study",
-        "canonicalKey": {
-          "subject": "trellis",
-          "predicate": "supports"
-        },
-        "temporalScope": {
-          "eventType": "updated",
-          "dateConfidence": "exact",
-          "eventDate": "2025-01-01"
-        }
-      },
-      "expected": {
-        "classification": "new_claim"
-      }
-    },
-    {
-      "id": "polarity-qualification-conditional-narrowing",
-      "category": "polarity-negation",
-      "rationale": "Conditional observation against an asserted base narrows scope instead of contradicting.",
-      "existing": [
-        {
-          "id": "claim-1",
-          "subjectText": "Trellis",
-          "predicate": "supports",
-          "objectText": "claim reconciliation",
-          "polarity": "asserted",
-          "hedge": "certain",
-          "evidenceType": "study",
-          "canonicalKey": {
-            "subject": "trellis",
-            "predicate": "supports"
-          }
-        }
-      ],
-      "observation": {
-        "subjectText": "Trellis",
-        "predicate": "supports",
-        "objectText": "claim reconciliation",
-        "polarity": "conditional",
-        "hedge": "certain",
-        "evidenceType": "study",
-        "canonicalKey": {
-          "subject": "trellis",
-          "predicate": "supports"
-        }
-      },
-      "expected": {
-        "classification": "qualification",
-        "matchedClaimId": "claim-1"
-      }
-    },
-    {
-      "id": "polarity-elaboration-expanded-negative-finding",
-      "category": "polarity-negation",
-      "rationale": "Negated finding extended with reproduction detail stays one negated cluster's elaboration, not a new polarity conflict.",
-      "existing": [
-        {
-          "id": "claim-1",
-          "subjectText": "Trellis",
-          "predicate": "supports",
-          "objectText": "memory leak",
-          "polarity": "negated",
-          "hedge": "certain",
-          "evidenceType": "study",
-          "canonicalKey": {
-            "subject": "trellis",
-            "predicate": "supports"
-          }
-        }
-      ],
-      "observation": {
-        "subjectText": "Trellis",
-        "predicate": "supports",
-        "objectText": "memory leak reproduction steps",
-        "polarity": "negated",
-        "hedge": "certain",
-        "evidenceType": "study",
-        "canonicalKey": {
-          "subject": "trellis",
-          "predicate": "supports"
-        }
-      },
-      "expected": {
-        "classification": "elaboration",
-        "matchedClaimId": "claim-1"
-      }
-    },
-    {
-      "id": "polarity-new-claim-separate-positive-finding",
-      "category": "polarity-negation",
-      "rationale": "An unrelated positive assertion shares nothing with the negated base claim.",
-      "existing": [
-        {
-          "id": "claim-1",
-          "subjectText": "Trellis",
-          "predicate": "supports",
-          "objectText": "claim reconciliation",
-          "polarity": "negated",
-          "hedge": "certain",
-          "evidenceType": "study",
-          "canonicalKey": {
-            "subject": "trellis",
-            "predicate": "supports"
-          }
-        }
-      ],
-      "observation": {
-        "subjectText": "Redis",
-        "predicate": "caches",
-        "objectText": "sessions",
-        "polarity": "asserted",
-        "hedge": "certain",
-        "evidenceType": "study",
-        "canonicalKey": {
-          "subject": "redis",
-          "predicate": "caches"
-        }
-      },
-      "expected": {
-        "classification": "new_claim"
-      }
-    },
-    {
-      "id": "polarity-supersedes-explicit-object-lineage",
-      "category": "polarity-negation",
-      "rationale": "CHANGELOG (reconciler v4): Added to replace the relabeled 'retraction-notice' case. The replacement text explicitly references the prior object 'claim reconciliation', satisfying the stricter v4 supersession lineage requirement.",
-      "existing": [
-        {
-          "id": "claim-1",
-          "subjectText": "Trellis",
-          "predicate": "supports",
-          "objectText": "claim reconciliation",
-          "polarity": "asserted",
-          "hedge": "certain",
-          "evidenceType": "study",
-          "canonicalKey": {
-            "subject": "trellis",
-            "predicate": "supports"
-          },
-          "temporalScope": {
-            "eventType": "released",
-            "dateConfidence": "exact",
-            "eventDate": "2024-01-01"
-          }
-        }
-      ],
-      "observation": {
-        "subjectText": "Trellis",
-        "predicate": "supports",
-        "objectText": "replaces claim reconciliation with improved approach",
+        "objectText": "supersedes prior throughput benchmark result",
         "polarity": "asserted",
         "hedge": "certain",
         "evidenceType": "study",
@@ -307,6 +180,128 @@
       "expected": {
         "classification": "supersedes",
         "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-qualification-conditional-measurement",
+      "category": "numeric",
+      "rationale": "Conditional polarity on a within-tolerance measurement narrows rather than contradicts or confirms.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "quantifier": {
+            "value": 100,
+            "unit": "%",
+            "comparisonType": "increase"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "claim reconciliation",
+        "polarity": "conditional",
+        "hedge": "likely",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        },
+        "quantifier": {
+          "value": 105,
+          "unit": "%",
+          "comparisonType": "increase"
+        }
+      },
+      "expected": {
+        "classification": "qualification",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-elaboration-metric-detail",
+      "category": "numeric",
+      "rationale": "Object extension ('benchmark result' -> 'benchmark result details') with same subject/predicate is elaboration.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "benchmark result",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Trellis",
+        "predicate": "supports",
+        "objectText": "benchmark result details",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "trellis",
+          "predicate": "supports"
+        }
+      },
+      "expected": {
+        "classification": "elaboration",
+        "matchedClaimId": "claim-1"
+      }
+    },
+    {
+      "id": "numeric-new-claim-different-measure-domain",
+      "category": "numeric",
+      "rationale": "Different domain entirely; numeric machinery never engages without candidate overlap.",
+      "existing": [
+        {
+          "id": "claim-1",
+          "subjectText": "Trellis",
+          "predicate": "supports",
+          "objectText": "claim reconciliation",
+          "polarity": "asserted",
+          "hedge": "certain",
+          "evidenceType": "study",
+          "canonicalKey": {
+            "subject": "trellis",
+            "predicate": "supports"
+          },
+          "quantifier": {
+            "value": 100,
+            "unit": "%",
+            "comparisonType": "increase"
+          }
+        }
+      ],
+      "observation": {
+        "subjectText": "Postgres",
+        "predicate": "indexes",
+        "objectText": "json columns",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "study",
+        "canonicalKey": {
+          "subject": "postgres",
+          "predicate": "indexes"
+        }
+      },
+      "expected": {
+        "classification": "new_claim"
       }
     }
   ]

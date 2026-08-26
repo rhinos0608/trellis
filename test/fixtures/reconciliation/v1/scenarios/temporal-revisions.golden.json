@@ -1,8 +1,8 @@
 {
   "corpusVersion": 1,
   "projectionVersion": 5,
-  "reconcilerVersion": 2,
-  "checksum": "sha256:projection-v1:2b6b4558dbe2d92ff89b48e044f91ae7ccb622ce47f79c79779ce5955d523fca",
+  "reconcilerVersion": 4,
+  "checksum": "sha256:projection-v1:bb2b8ec3aefb16ed2e6fe53093354849ec3a634edad1c9b7164b9c003eb36745",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -382,7 +382,7 @@
           "method": "lexical_rules_v2",
           "observationId": "t1",
           "rationale": "Deterministic lexical reconciliation: supersedes (score=0.692).",
-          "reconcilerVersion": 3,
+          "reconcilerVersion": 4,
           "score": 0.6916666666666667,
           "supersedes": {
             "previousAssertion": {
@@ -422,7 +422,7 @@
           "method": "canonical_key_exact",
           "observationId": "t2",
           "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
-          "reconcilerVersion": 3,
+          "reconcilerVersion": 4,
           "score": 1
         }
       ],
@@ -435,7 +435,7 @@
           "method": "lexical_rules_v2",
           "observationId": "t3",
           "rationale": "Deterministic lexical reconciliation: new_claim (score=0.692).",
-          "reconcilerVersion": 3,
+          "reconcilerVersion": 4,
           "score": 0.6916666666666667
         }
       ],
@@ -460,7 +460,7 @@
           "method": "lexical_rules_v2",
           "observationId": "t4",
           "rationale": "Deterministic lexical reconciliation: supersedes (score=0.825).",
-          "reconcilerVersion": 3,
+          "reconcilerVersion": 4,
           "score": 0.825,
           "supersedes": {
             "previousAssertion": {

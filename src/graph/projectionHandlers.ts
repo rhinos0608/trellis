@@ -357,9 +357,7 @@ const handleSourceObserved: EventHandler = (event, state) => {
     state.sources.set(source.id, source);
     return;
   }
-  if (existing.authorityClass === undefined) {
-    existing.authorityClass = classifySourceAuthority({ url: payload.url, domain: payload.domain, sourceType: payload.sourceType });
-  }
+  existing.authorityClass ??= classifySourceAuthority({ url: payload.url, domain: payload.domain, sourceType: payload.sourceType });
   existing.runCount += 1;
   existing.lastSeenRunId = payload.runId;
   existing.lastSeenAt = payload.observedAt;

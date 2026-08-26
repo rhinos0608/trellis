@@ -1,22 +1,33 @@
 # Reconciliation Evaluation Corpus v1
 
 Versioned gold-label corpus for the claim reconciler (`src/graph/claimReconciler.ts`,
-`reconcilerVersion: 2`, the Stage-A-corrected implementation). Every case carries
+`reconcilerVersion: 4`). Every case carries
 exactly one gold label with a rationale — there is no alternative-label escape
 hatch. The corpus encodes TRUE v2 semantics; if the reconciler changes behavior,
 labels are re-adjudicated deliberately, never gamed to pass.
 
 - `schemaVersion` / `labelPolicyVersion`: 1. Bump both together when the label
   policy below changes.
-- Pair corpus: `cases/*.json` — 42 cases, 6 per classification
+- Pair corpus: `cases/*.json` — 43 cases, 6 per classification
   (contradiction / supersedes / qualification / elaboration / same_claim /
-  near_duplicate / new_claim), distributed so each of the 6 hard-case category
+  near_duplicate / new_claim), distributed so each of the hard-case category
   files contains one case of every class.
 - Sequence scenarios: `scenarios/*.json` — 6 ordered clustering scenarios with
   per-observation gold cluster + expected outcome, plus an adjacent
   `*.golden.json` full projection snapshot (canonical state +
   `sha256` checksum) replayed deterministically through the graph handler
   registry with fixed envelope ids/seqs/timestamps.
+
+## Changelog
+
+- **v4 (current):** Supersedes now requires the observation to reference the
+  existing claim's subject/predicate scope, have a strictly newer temporal
+  position, and include prior-object-lineage in the assertion text.
+  `polarity-supersedes-retraction-notice` relabeled from `supersedes`
+  to `new_claim` — the replacement text never established lineage to the prior
+  object `claim reconciliation`. Added compensating case
+  `polarity-supersedes-explicit-object-lineage` (supersedes with lineage). See v2
+  corpus for the corrected version of the original case.
 
 ## Label policy — classification definitions
 
@@ -34,8 +45,9 @@ labels are re-adjudicated deliberately, never gamed to pass.
   scope (same subject/predicate anchors, sufficient object overlap, compatible
   temporal period). Cross-scope flips are NOT contradictions.
 - `supersedes` — replacement verb (replaces/supersedes/deprecates/no longer
-  supported...) plus a strictly newer temporal position. Precedes all
-  similarity branches.
+  supported...) plus a strictly newer temporal position, same subject/predicate
+  scope, and the observation's assertion text must reference the existing claim's
+  objectText when non-empty. Precedes all similarity branches.
 - `new_claim` — no candidate clears the near_duplicate band. Correct rejection.
 
 ## The five hard-case categories

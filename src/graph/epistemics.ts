@@ -149,7 +149,7 @@ function computeContradictionState(
   }
 
   if (hasUnresolved) return 'contested';
-  if (hasResolved && !hasUnresolved) return 'resolved';
+  if (hasResolved) return 'resolved';
 
   // Mixed evidence stance → contested even without explicit Contradiction rows
   let sup = 0;
@@ -183,7 +183,7 @@ function computeConfidence(
 
   for (const obs of observations) {
     const authWeight = resolveAuthorityWeight(obs, state);
-    const directness = EVIDENCE_TYPE_WEIGHT[obs.evidenceType] ?? 0.5;
+    const directness = EVIDENCE_TYPE_WEIGHT[obs.evidenceType];
     const freshness = resolveFreshness(obs, state, nowMs);
     const weight = authWeight * directness * freshness;
 
@@ -203,7 +203,7 @@ function computeConfidence(
     for (const e of opposing) {
       const src = state.sources.get(e.sourceId);
       opposingAuthority += src?.authorityClass
-        ? (AUTHORITY_WEIGHT[src.authorityClass] ?? 0.5)
+        ? AUTHORITY_WEIGHT[src.authorityClass]
         : 0.5;
     }
     const opposingPenalty = Math.min(opposingAuthority / Math.max(supporting.length, 1), 0.8);
@@ -219,14 +219,14 @@ function resolveAuthorityWeight(
 ): number {
   // Observation-level authorityClass first, then fall back to source authority
   if (obs.authorityClass) {
-    return AUTHORITY_WEIGHT[obs.authorityClass] ?? 0.5;
+    return AUTHORITY_WEIGHT[obs.authorityClass];
   }
 
   // Look up source authority via observation's sourceIds
   for (const srcId of obs.sourceIds) {
     const src = state.sources.get(srcId);
     if (src?.authorityClass) {
-      return AUTHORITY_WEIGHT[src.authorityClass] ?? 0.5;
+      return AUTHORITY_WEIGHT[src.authorityClass];
     }
   }
 
@@ -299,7 +299,9 @@ function computeEpistemicStatus(
     activeEvidence.length > 0 || observations.length >= 2;
   const multiDomain = domains.size >= 2;
 
-  if (hasSubstantialEvidence && multiDomain) {
+  // Cross-domain corroboration heuristic — not true source independence;
+  // multiple sites citing the same press release still count as separate domains.
+  if (observations.length >= 2 && multiDomain) {
     return 'consensus';
   }
 

@@ -145,7 +145,7 @@ describe('claim reconciler', () => {
   it('emits canonical_key_exact when canonicalKey matches exactly', () => {
     const r = result(observation('o1'), claim('c1'));
     expect(r.method).toBe('canonical_key_exact');
-    expect(r.reconcilerVersion).toBe(3);
+    expect(r.reconcilerVersion).toBe(4);
   });
 
   it('supersedes.previousAssertion contains only assertion fields, not claim-only fields', () => {
@@ -178,6 +178,51 @@ describe('claim reconciler', () => {
     expect(pa).not.toHaveProperty('revisionHistory');
     expect(pa).not.toHaveProperty('evidenceIds');
     expect(pa).not.toHaveProperty('observationIds');
+  });
+
+  // ── Supersession scope gating (v4) ──────────────────────────────────────
+
+  it('same-entity replacement with lineage → supersedes', () => {
+    const old = claim('c1', {
+      objectText: 'claim reconciliation',
+      temporalScope: { eventType: 'released', eventDate: '2024-01-01', dateConfidence: 'exact' },
+      currentObservationId: 'old-o',
+    });
+    const next = observation('o1', {
+      observedAt: '2025-01-01',
+      objectText: 'replaces claim reconciliation with improved approach',
+      temporalScope: { eventType: 'updated', eventDate: '2025-01-01', dateConfidence: 'exact' },
+    });
+    expect(result(next, old).classification).toBe('supersedes');
+  });
+
+  it('unrelated-topic + replacement wording + newer date → new_claim, not supersedes', () => {
+    const old = claim('c1', {
+      objectText: 'claim reconciliation',
+      temporalScope: { eventType: 'released', eventDate: '2024-01-01', dateConfidence: 'exact' },
+    });
+    const next = observation('o1', {
+      observedAt: '2025-01-01',
+      canonicalKey: { subject: 'kubernetes', predicate: 'deprecates' },
+      objectText: 'legacy deployment approach',
+      temporalScope: { eventType: 'updated', eventDate: '2025-06-01', dateConfidence: 'exact' },
+    });
+    expect(result(next, old).classification).not.toBe('supersedes');
+    expect(result(next, old).classification).toBe('new_claim');
+  });
+
+  it('replacement wording but no lineage reference to prior object → new_claim', () => {
+    const old = claim('c1', {
+      objectText: 'claim reconciliation',
+      temporalScope: { eventType: 'released', eventDate: '2024-01-01', dateConfidence: 'exact' },
+    });
+    const next = observation('o1', {
+      observedAt: '2025-01-01',
+      objectText: 'replaces deprecated approach',
+      temporalScope: { eventType: 'updated', eventDate: '2025-06-01', dateConfidence: 'exact' },
+    });
+    expect(result(next, old).classification).not.toBe('supersedes');
+    expect(result(next, old).classification).toBe('new_claim');
   });
 
   // ── Entity-aware reconciliation (v3) ───────────────────────────────────

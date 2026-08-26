@@ -12,7 +12,7 @@ export interface PlannedClaimObservation {
 }
 
 const MAX_CANDIDATES = 5;
-export const RECONCILER_VERSION = 3 as const;
+export const RECONCILER_VERSION = 4 as const;
 
 // Ambiguity guard constants — same values as workspace/familyResolver.ts
 // for cross-module consistency. Defined locally per module policy.
@@ -109,10 +109,39 @@ function newer(observation: ClaimObservation, claim: Claim): boolean {
   return false;
 }
 
-function hasReplacementSignal(observation: ClaimObservation, claim: Claim): boolean {
-  return /\b(replaces?|supersedes?|deprecated|deprecates?|removed|no longer supported)\b/i.test(
-    assertionText(observation),
-  ) && newer(observation, claim);
+function hasReplacementWording(text: string): boolean {
+  return /\b(replaces?|supersedes?|deprecated|deprecates?|removed|no longer supported)\b/i.test(text);
+}
+
+/**
+ * Strict supersession scope gate: the observation must be about the SAME
+ * subject+predicate, be strictly newer, carry replacement wording, AND
+ * (if the existing claim has a non-empty objectText) the observation must
+ * explicitly reference that prior object.  Fails closed to new_claim.
+ */
+function sameSupersessionScope(observation: ClaimObservation, claim: Claim): boolean {
+  // Subject entity match (if both set) or canonical subject match
+  const obsEntity = observation.subjectEntityId;
+  const claimEntity = claim.subjectEntityId;
+  if (obsEntity !== undefined && claimEntity !== undefined) {
+    if (obsEntity !== claimEntity) return false;
+  } else {
+    if (observation.canonicalKey.subject !== claim.canonicalKey.subject) return false;
+  }
+  // Exact canonical predicate match
+  if (observation.canonicalKey.predicate !== claim.canonicalKey.predicate) return false;
+  // Strictly newer temporal position
+  if (!newer(observation, claim)) return false;
+  // Replacement/deprecation wording present
+  if (!hasReplacementWording(assertionText(observation))) return false;
+  // Object lineage: if the existing claim has a non-empty objectText, the
+  // observation must reference it (or a token thereof).
+  const priorObject = normalize(claim.objectText ?? '');
+  if (priorObject.length > 0) {
+    const obsText = normalize(assertionText(observation));
+    if (!obsText.includes(priorObject)) return false;
+  }
+  return true;
 }
 
 function isNarrowing(observation: ClaimObservation, claim: Claim): boolean {
@@ -160,7 +189,7 @@ function classify(
   // Polarity/numeric contradictions only when claims share the same scope
   if (scoped && observation.polarity !== claim.polarity && observation.polarity !== 'conditional' && claim.polarity !== 'conditional') return 'contradiction';
   if (scoped && numeric === false) return 'contradiction';
-  if (hasReplacementSignal(observation, claim)) return 'supersedes';
+  if (sameSupersessionScope(observation, claim)) return 'supersedes';
   if (isNarrowing(observation, claim)) return 'qualification';
   if (isElaboration(observation, claim)) return 'elaboration';
   // Entity-equality hard negative: different subjectEntityId → never same_claim
@@ -233,7 +262,7 @@ export function planClaimObservation(
   const createsClaim = classification === 'new_claim' || classification === 'near_duplicate' || classification === 'elaboration' || classification === 'qualification' || classification === 'contradiction';
   const canonicalClaimId = createsClaim ? `claim_${observation.id}` : best?.claim.id ?? `claim_${observation.id}`;
   const method = best !== undefined && sameKey(observation, best.claim) ? 'canonical_key_exact'
-    : (topScore !== undefined && topScore >= 0.92 && sameScope(observation, best!.claim)) ? 'entity_aware_v3'
+    : (best !== undefined && topScore !== undefined && topScore >= 0.92 && sameScope(observation, best.claim)) ? 'entity_aware_v3'
     : 'lexical_rules_v2';
   const reconciliation: ClaimReconciliation = {
     observationId: observation.id,

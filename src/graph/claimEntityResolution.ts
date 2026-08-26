@@ -78,11 +78,16 @@ export function resolveClaimEntities(
     );
 
     if (candidates.length === 0) return mintEntity(text);
-    if (candidates.length === 1) return candidates[0]!.intoId;
+    if (candidates.length === 1) {
+      const first = candidates[0];
+      if (first === undefined) return mintEntity(text);
+      return first.intoId;
+    }
 
     // Multiple candidates — apply ambiguity guard
-    const best = candidates[0]!;
-    const second = candidates[1]!;
+    const best = candidates[0];
+    const second = candidates[1];
+    if (best === undefined || second === undefined) return mintEntity(text);
     const gap = best.confidence - second.confidence;
 
     if (gap < AMBIGUITY_MIN_GAP && best.confidence < AMBIGUITY_CONFIDENT_SCORE) {
@@ -140,27 +145,15 @@ export function resolveClaimEntities(
     return id;
   };
 
-  const subjectEventCountBefore = entityEvents.length;
   const subjectEntityId = resolveText(observation.subjectText);
-  // Make newly minted subject entity available for object resolution
-  if (entityEvents.length > subjectEventCountBefore && subjectEntityId) {
-    const lastEvt = entityEvents[entityEvents.length - 1];
-    if (lastEvt) {
-      const p = lastEvt.payload as { id: string; label: string; entityType: string };
-      if (!state.entities.has(p.id)) {
-        state.entities.set(p.id, {
-          id: p.id, label: p.label, canonicalLabel: null,
-          entityType: p.entityType as CanonicalEntity['entityType'],
-          aliases: [], extractionConfidence: null,
-          firstSeenRunId: opts.runId, lastUpdatedRunId: opts.runId, metadata: {},
-        });
-      }
-    }
-  }
-  const objectEntityId = resolveText(observation.objectText);
+
+  // ponytail: object-entity resolution removed — arbitrary objectText
+  // ("revenue grew 20%", "the 2024 report") should not mint spurious
+  // concept entities. Re-enable only when extraction pipeline supplies
+  // an explicit pre-typed object entity candidate.
 
   const result: ResolveClaimEntitiesResult = { entityEvents };
   if (subjectEntityId !== undefined) result.subjectEntityId = subjectEntityId;
-  if (objectEntityId !== undefined) result.objectEntityId = objectEntityId;
+  // objectEntityId left absent: no automatic resolution for object text.
   return result;
 }

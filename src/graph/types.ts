@@ -230,7 +230,7 @@ export type ClaimReconciliationMethod = 'canonical_key_exact' | 'lexical_rules_v
 export interface ClaimMatchCandidate { claimId: string; classification: Exclude<ClaimReconciliationKind, 'new_claim'>; score: number; }
 export interface ClaimReconciliation {
   observationId: string; classification: ClaimReconciliationKind; canonicalClaimId: string; matchedClaimId?: string;
-  score: number; method: ClaimReconciliationMethod; rationale: string; reconcilerVersion: 1 | 2 | 3;
+  score: number; method: ClaimReconciliationMethod; rationale: string; reconcilerVersion: 1 | 2 | 3 | 4;
   candidates: ClaimMatchCandidate[]; supersedes?: { previousObservationId: string; previousAssertion: ClaimAssertion };
 }
 

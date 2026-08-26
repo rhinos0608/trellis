@@ -45,7 +45,7 @@ const TRACKING_PARAMS = new Set([
 ]);
 
 /** DOI pattern: 10.{digits}/{rest} where rest contains valid DOI chars. */
-// eslint-disable-next-line no-control-regex
+ 
 const DOI_PATTERN = /10\.\d{4,9}\/[\w.\-;()/:[\]\\]+/;
 
 /** Hosts that are DOI resolvers. */
@@ -100,8 +100,8 @@ export function canonicalizeSourceUrl(rawUrl: string, explicitCanonical?: string
     // --- Tracking parameter removal ---
     // Use Array.from to avoid downlevelIteration issues with Set iteration.
     const params = Array.from(TRACKING_PARAMS);
-    for (let i = 0; i < params.length; i++) {
-      parsed.searchParams.delete(params[i]!);
+    for (const param of params) {
+      parsed.searchParams.delete(param);
     }
 
     // --- Sort remaining query params for stable canonical form ---

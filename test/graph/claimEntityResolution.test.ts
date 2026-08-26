@@ -48,12 +48,11 @@ describe('resolveClaimEntities', () => {
       defaultOpts,
     );
     expect(result.subjectEntityId).toBeDefined();
-    expect(result.objectEntityId).toBeDefined();
-    expect(result.subjectEntityId).not.toBe(result.objectEntityId);
-    expect(result.entityEvents).toHaveLength(2);
+    // Object text is NOT auto-resolved — objectEntityId absent
+    expect(result.objectEntityId).toBeUndefined();
+    expect(result.entityEvents).toHaveLength(1); // only subject
     expect(result.entityEvents[0]!.eventType).toBe('NODE_ADDED');
     expect(result.entityEvents[0]!.payload.entityType).toBe('concept');
-    expect(result.entityEvents[1]!.eventType).toBe('NODE_ADDED');
   });
 
   it('ambiguity guard: near-tied candidates mint new entity', () => {
@@ -72,7 +71,7 @@ describe('resolveClaimEntities', () => {
     expect(result.subjectEntityId).toBeDefined();
     expect(result.subjectEntityId).not.toBe('e1');
     expect(result.subjectEntityId).not.toBe('e2');
-    expect(result.entityEvents).toHaveLength(2); // subject (ambiguity guard) + object (80GB VRAM)
+    expect(result.entityEvents).toHaveLength(1); // only subject (ambiguity guard mints)
   });
 
   it('llmJudgesSameEntity returns true → reuses entity (no NODE_ADDED)', () => {
@@ -176,6 +175,20 @@ describe('resolveClaimEntities', () => {
     );
     expect(result.objectEntityId).toBeUndefined();
     expect(result.entityEvents).toHaveLength(1); // only subject entity
+  });
+
+  it('does NOT resolve objectText as entity', () => {
+    const state = stateWith(); // empty
+    const result = resolveClaimEntities(
+      obs({ subjectText: 'NVIDIA', objectText: 'revenue grew 20%' }),
+      state,
+      defaultOpts,
+    );
+    expect(result.subjectEntityId).toBeDefined();
+    expect(result.objectEntityId).toBeUndefined();
+    // Only 1 NODE_ADDED event (subject), none for object
+    expect(result.entityEvents).toHaveLength(1);
+    expect(result.entityEvents[0]!.payload.label).toBe('NVIDIA');
   });
 
   it('uses custom idGen', () => {
