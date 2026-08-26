@@ -16,7 +16,8 @@ import { createHttpServer } from '../../http/server.js';
 import { rebuildProjection } from '../../store/projectionBuilder.js';
 import type { TrellisConfig } from '../../config/index.js';
 import type { ResearchProvider } from '../../providers/types.js';
-import { ALL_HANDLERS } from '../runtime.js';
+import { ALL_HANDLERS, requireCliRuntime } from '../runtime.js';
+import { shutdownCliRuntime } from '../runtime.js';
 import type { CommandContext } from '../runtime.js';
 import { UsageError, EXIT_CODES, printResult } from '../output.js';
 import { logger } from '../../logger.js';
@@ -38,10 +39,10 @@ function worstStatus(checks: DoctorCheck[]): 'ok' | 'warning' | 'error' {
 function probeDatabase(ctx: CommandContext): { ok: true } | { ok: false; detail: string } {
   // Effective path (CLI --db flag or config default), never the static
   // config value — doctor must check the DB it actually opened.
-  const dbPath = ctx.rt.dbPath;
+  const dbPath = requireCliRuntime(ctx).dbPath;
   if (!existsSync(dbPath)) return { ok: false, detail: `Database file does not exist: ${dbPath}` };
   try {
-    ctx.rt.db.prepare('SELECT 1').get();
+    requireCliRuntime(ctx).db.prepare('SELECT 1').get();
     return { ok: true };
   } catch (err) {
     return { ok: false, detail: `Database not readable: ${err instanceof Error ? err.message : String(err)}` };
@@ -72,7 +73,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * connection (bounded handshake + listTools), then always close it.
  */
 async function probeProvider(ctx: CommandContext, deps: DoctorProviderDeps): Promise<DoctorCheck> {
-  const cfg = ctx.rt.config;
+  const cfg = requireCliRuntime(ctx).config;
   if (cfg.searchProvider.args.length === 0) {
     return {
       name: 'provider',
@@ -120,14 +121,14 @@ async function probeProvider(ctx: CommandContext, deps: DoctorProviderDeps): Pro
 
 export async function runDoctor(ctx: CommandContext, providerDeps: DoctorProviderDeps = {}): Promise<number> {
   const checks: DoctorCheck[] = [];
-  const dbPath = ctx.rt.dbPath;
+  const dbPath = requireCliRuntime(ctx).dbPath;
   const open = probeDatabase(ctx);
   checks.push({ name: 'database', status: open.ok ? 'ok' : 'error', detail: open.ok ? dbPath : open.detail });
 
   if (open.ok) {
     // quick_check
     try {
-      const result = ctx.rt.db.pragma('quick_check', { simple: true });
+      const result = requireCliRuntime(ctx).db.pragma('quick_check', { simple: true });
       checks.push({
         name: 'quick_check',
         status: result === 'ok' ? 'ok' : 'error',
@@ -139,7 +140,7 @@ export async function runDoctor(ctx: CommandContext, providerDeps: DoctorProvide
 
     // migration versions
     try {
-      const applied = ctx.rt.db.prepare('SELECT version FROM schema_migrations ORDER BY version ASC').all() as { version: number }[];
+      const applied = requireCliRuntime(ctx).db.prepare('SELECT version FROM schema_migrations ORDER BY version ASC').all() as { version: number }[];
       const appliedVersions = applied.map((r) => r.version);
       const expectedVersions = MIGRATIONS.map((m) => m.version);
       const match =
@@ -234,8 +235,8 @@ export async function runVerify(ctx: CommandContext): Promise<number> {
 }
 
 export async function runMigrate(ctx: CommandContext): Promise<number> {
-  initializeSchema(ctx.rt.db);
-  const applied = ctx.rt.db.prepare('SELECT MAX(version) AS v FROM schema_migrations').get() as { v: number };
+  initializeSchema(requireCliRuntime(ctx).db);
+  const applied = requireCliRuntime(ctx).db.prepare('SELECT MAX(version) AS v FROM schema_migrations').get() as { v: number };
   printResult(ctx.io, { currentVersion: applied.v, schemaVersion: SCHEMA_VERSION }, 'migrate');
   return EXIT_CODES.OK;
 }
@@ -262,32 +263,43 @@ export async function runServe(ctx: CommandContext): Promise<number> {
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new UsageError(`--port must be an integer in [0, 65535], got: ${String(portRaw)}`);
   }
-  const app = ctx.rt.app;
-  const runService = ctx.rt.runService;
+  const app = requireCliRuntime(ctx).app;
+  const runService = requireCliRuntime(ctx).runService;
   if (app === undefined || runService === undefined) throw new UsageError('serve requires a writable runtime');
-  const server = createHttpServer({ app, query: ctx.rt.query, port });
+  const server = createHttpServer({ app, query: requireCliRuntime(ctx).query, port });
   const address: AddressInfo = await server.start();
   runService.startScheduler();
   ctx.io.err.write(`trellis serve: listening on 127.0.0.1:${String(address.port)}\n`);
 
-  let exitCode: number | undefined;
-  const shutdown = (): void => {
+  // Single idempotent shutdown latch: one signal triggers exactly one awaited
+  // teardown (scheduler → provider → HTTP drain → DB last). SIGINT+SIGTERM or
+  // repeated signals cannot double-stop.
+  let triggered = false;
+  let shutdownComplete!: () => void;
+  let shutdownError: unknown;
+  const done = new Promise<void>((resolve) => { shutdownComplete = resolve; });
+  const requestShutdown = (): void => {
+    if (triggered) return;
+    triggered = true;
+    ctx.io.err.write('trellis serve: shutting down\n');
     void (async () => {
-      if (exitCode !== undefined) return;
-      exitCode = EXIT_CODES.OK;
-      ctx.io.err.write('trellis serve: shutting down\n');
-      await runService.shutdownScheduler().catch(() => undefined);
-      await server.stop().catch(() => undefined);
+      try {
+        await shutdownCliRuntime(ctx.rt, { beforeDbClose: () => server.stop() });
+      } catch (err) {
+        logger.error({ err }, 'CLI serve shutdown failed');
+        shutdownError = err;
+      } finally {
+        shutdownComplete();
+      }
     })();
   };
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', requestShutdown);
+  process.once('SIGTERM', requestShutdown);
 
-  while (exitCode === undefined) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  process.removeListener('SIGINT', shutdown);
-  process.removeListener('SIGTERM', shutdown);
-  await server.stop().catch(() => undefined);
-  return exitCode;
+  await done;
+  process.removeListener('SIGINT', requestShutdown);
+  process.removeListener('SIGTERM', requestShutdown);
+  // eslint-disable-next-line @typescript-eslint/only-throw-error
+  if (shutdownError !== undefined) throw shutdownError;
+  return EXIT_CODES.OK;
 }

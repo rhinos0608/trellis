@@ -12,15 +12,18 @@
  */
 
 import { parseArgs } from 'node:util';
-import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import type { CliIo } from './output.js';
 import { EXIT_CODES, UsageError, printError } from './output.js';
 import { initCliRuntime, shutdownCliRuntime } from './runtime.js';
 import type { CliValues, CommandContext } from './runtime.js';
+import { TRELLIS_VERSION } from '../version.js';
 import * as read from './commands/read.js';
 import * as curation from './commands/curation.js';
 import * as operations from './commands/operations.js';
+import * as backup from './commands/backup.js';
+import * as exportCmd from './commands/export.js';
+import * as restore from './commands/restore.js';
 
 interface OptionSpec {
   type: 'string' | 'boolean';
@@ -33,6 +36,8 @@ interface CommandSpec {
   options?: Record<string, OptionSpec>;
   /** Run against a read-only runtime (no migrations/rebuild/self-heal). */
   readOnly?: boolean;
+  /** Run without initCliRuntime — manages its own DB connections. */
+  offline?: boolean;
   run(ctx: CommandContext): Promise<number>;
 }
 
@@ -153,18 +158,26 @@ const COMMANDS: Record<string, CommandSpec> = {
     options: { port: { type: 'string' } },
     run: operations.runServe,
   },
+  backup: {
+    description: 'Snapshot the event store into a verifiable bundle',
+    usage: 'trellis backup <bundle-directory>',
+    readOnly: true,
+    run: backup.runBackup,
+  },
+  export: {
+    description: 'Export the event log as newline-delimited JSON',
+    usage: 'trellis export <events.jsonl>',
+    readOnly: true,
+    run: exportCmd.runExport,
+  },
+  restore: {
+    description: 'Restore the event store from a verifiable bundle',
+    usage: 'trellis restore <bundle-directory> [--replace]',
+    options: { replace: { type: 'boolean' } },
+    offline: true,
+    run: restore.runRestore,
+  },
 };
-
-function getVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
-      version?: string;
-    };
-    return pkg.version ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
 
 function usageText(command: string | undefined): string {
   const lines = [
@@ -210,7 +223,7 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
   const command = name ?? '';
 
   if (command === '--version') {
-    io.out.write(`${getVersion()}\n`);
+    io.out.write(`${TRELLIS_VERSION}\n`);
     return EXIT_CODES.OK;
   }
   if (command === '' || command === 'help' || command === '--help' || command === '-h') {
@@ -225,7 +238,13 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
     return printError(io, new UsageError(`Unknown command: ${command}`), command);
   }
 
-  let rt: ReturnType<typeof initCliRuntime> | null = null;
+  let rt: ReturnType<typeof initCliRuntime> | undefined;
+  let cleaned = false;
+  const cleanup = async (): Promise<void> => {
+    if (cleaned || rt === undefined) return;
+    cleaned = true;
+    await shutdownCliRuntime(rt);
+  };
   try {
     let parsed: { values: CliValues; positionals: string[] };
     try {
@@ -244,17 +263,28 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
       io.out.write(`${usageText(command)}\n`);
       return EXIT_CODES.OK;
     }
-    rt = initCliRuntime({
-      dbPath: typeof values.db === 'string' ? values.db : globalDb,
-      readOnly: spec.readOnly === true,
-    });
-    try {
-      return await spec.run({ io, rt, values, positionals });
-    } finally {
-      await shutdownCliRuntime();
+    // Ensure offline commands see the resolved --db path from the global pre-scan.
+    if (typeof values.db !== 'string' && typeof globalDb === 'string') {
+      values.db = globalDb;
     }
+    if (spec.offline !== true) {
+      rt = initCliRuntime({
+        dbPath: typeof values.db === 'string' ? values.db : globalDb,
+        readOnly: spec.readOnly === true,
+      });
+    }
+    const cmdCtx: CommandContext = { io, ...(rt === undefined ? {} : { rt }), values, positionals };
+    let result: number;
+    try {
+      result = await spec.run(cmdCtx);
+    } catch (err) {
+      try { if (spec.offline !== true) await cleanup(); } catch { /* preserve command error */ }
+      throw err;
+    }
+    if (spec.offline !== true) await cleanup();
+    return result;
   } catch (err) {
-    if (rt !== null) await shutdownCliRuntime();
+    await cleanup();
     if (err instanceof Error && (err.name === 'AbortError' || err.name === 'SIGINT')) {
       return EXIT_CODES.INTERRUPTED;
     }

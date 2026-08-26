@@ -9,7 +9,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { z } from 'zod';
 import { generateUlid } from '../../store/events.js';
 import type { ClaimRelationType } from '../../graph/types.js';
-import type { CommandContext } from '../runtime.js';
+import { requireCliRuntime, type CommandContext } from '../runtime.js';
 import { UsageError, EXIT_CODES, printResult } from '../output.js';
 
 /** Read a string flag value from parsed args. */
@@ -67,7 +67,7 @@ function requirePositional(ctx: CommandContext, index: number, name: string): st
 export async function runMerge(ctx: CommandContext): Promise<number> {
   const sourceClaimId = requirePositional(ctx, 0, '<source>');
   const survivorClaimId = requirePositional(ctx, 1, '<survivor>');
-  const result = ctx.rt.curation.mergeClaims({
+  const result = requireCliRuntime(ctx).curation.mergeClaims({
     ...parseCommandBase(ctx),
     sourceClaimId,
     survivorClaimId,
@@ -108,7 +108,7 @@ export async function runSplit(ctx: CommandContext): Promise<number> {
   if (!parsed.success) {
     throw new UsageError(`Partition plan invalid: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
   }
-  const result = ctx.rt.curation.splitClaim({
+  const result = requireCliRuntime(ctx).curation.splitClaim({
     ...parseCommandBase(ctx),
     sourceClaimId,
     results: parsed.data.results,
@@ -124,7 +124,7 @@ export async function runRetract(ctx: CommandContext): Promise<number> {
     throw new UsageError(`--kind must be claim|observation, got: ${String(kind)}`);
   }
   const retracted = !hasFlag(ctx, 'restore');
-  const result = ctx.rt.curation.setRetraction({
+  const result = requireCliRuntime(ctx).curation.setRetraction({
     ...parseCommandBase(ctx),
     target: { kind, id: targetId },
     retracted,
@@ -139,7 +139,7 @@ export async function runCurateRelation(ctx: CommandContext): Promise<number> {
   if (action === 'remove') {
     const relationId = flag(ctx, 'relation-id');
     if (relationId === undefined || relationId === '') throw new UsageError('--relation-id is required');
-    const result = ctx.rt.curation.curateRelation({ ...base, action: 'remove', relationId });
+    const result = requireCliRuntime(ctx).curation.curateRelation({ ...base, action: 'remove', relationId });
     printResult(ctx.io, result, 'curate-relation');
     return EXIT_CODES.OK;
   }
@@ -164,7 +164,7 @@ export async function runCurateRelation(ctx: CommandContext): Promise<number> {
     const scoreRaw = flag(ctx, 'score');
     const score = scoreRaw === undefined ? 1 : Number(scoreRaw);
     if (!Number.isFinite(score)) throw new UsageError(`--score must be a number, got: ${String(scoreRaw)}`);
-    const result = ctx.rt.curation.curateRelation({
+    const result = requireCliRuntime(ctx).curation.curateRelation({
       ...base,
       action: 'upsert',
       relation: {
@@ -190,7 +190,7 @@ export async function runOverrideStance(ctx: CommandContext): Promise<number> {
   if (stance !== 'supports' && stance !== 'opposes') {
     throw new UsageError(`<stance> must be supports|opposes, got: ${stance}`);
   }
-  const result = ctx.rt.curation.overrideEvidenceStance({
+  const result = requireCliRuntime(ctx).curation.overrideEvidenceStance({
     ...parseCommandBase(ctx),
     evidenceId,
     stance,

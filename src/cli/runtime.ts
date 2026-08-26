@@ -31,12 +31,17 @@ export type CliValues = Record<string, string | boolean | (string | boolean)[] |
 /** Everything a command handler needs to run. */
 export interface CommandContext {
   io: CliIo;
-  rt: CliRuntime;
+  rt?: CliRuntime;
   values: CliValues;
   positionals: string[];
 }
 
 /** Merged domain handler registry — same composition as runService. */
+export function requireCliRuntime(ctx: CommandContext): CliRuntime {
+  if (ctx.rt === undefined) throw new Error('Command requires initialized runtime');
+  return ctx.rt;
+}
+
 export const ALL_HANDLERS: EventHandlerRegistry = {
   ...graphEventHandlers,
   ...workspaceEventHandlers,
@@ -137,8 +142,33 @@ export function initCliRuntime(opts: CliRuntimeOptions = {}): CliRuntime {
   return { db, dbPath, app, query, curation, runService, config, ...(bootstrapError !== undefined ? { bootstrapError } : {}) };
 }
 
-/** Close the runtime DB and terminate the shared search-mcp child process. Safe to call multiple times. */
-export async function shutdownCliRuntime(): Promise<void> {
-  await closeProvider();
-  closeDb();
+export interface ShutdownCliRuntimeOptions {
+  /** Invoked AFTER provider close and BEFORE the DB closes — e.g. HTTP
+   *  transport drain. Keeps the canonical ordering: scheduler → provider →
+   *  transport → DB last. */
+  beforeDbClose?: () => Promise<void>;
+}
+
+/**
+ * Ordered teardown: scheduler shutdown (aborts active runs, appends final
+ * RUN_INTERRUPTED events — these writes NEED the DB open) → provider close →
+ * optional transport drain → DB close LAST. Safe to call multiple times.
+ */
+export async function shutdownCliRuntime(rt?: CliRuntime, opts: ShutdownCliRuntimeOptions = {}): Promise<void> {
+  let firstError: unknown;
+  const attempt = async (action: () => Promise<void>): Promise<void> => {
+    try {
+      await action();
+    } catch (err) {
+      firstError ??= err;
+    }
+  };
+
+  const runService = rt?.runService;
+  if (runService !== undefined) await attempt(() => runService.shutdownScheduler());
+  await attempt(() => closeProvider());
+  await attempt(async () => { await opts.beforeDbClose?.(); });
+  await attempt(async () => { closeDb(); });
+  // eslint-disable-next-line @typescript-eslint/only-throw-error
+  if (firstError !== undefined) throw firstError;
 }

@@ -3,7 +3,7 @@
  */
 
 import { EntityNotFoundError, RunNotFoundError } from '../../app/errors.js';
-import type { CommandContext } from '../runtime.js';
+import { requireCliRuntime, type CommandContext } from '../runtime.js';
 import { UsageError, EXIT_CODES, printResult } from '../output.js';
 
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'rolled_back']);
@@ -38,7 +38,7 @@ export async function runSearch(ctx: CommandContext): Promise<number> {
     throw new UsageError(`--kind must be claims|sources|all, got: ${kind}`);
   }
   const limit = parseLimit(ctx.values.limit);
-  const { query } = ctx.rt;
+  const { query } = requireCliRuntime(ctx);
   let data: unknown;
   if (kind === 'claims') data = query.listClaims({ q, limit });
   else if (kind === 'sources') data = query.listSources({ q, limit });
@@ -53,7 +53,7 @@ export async function runSearch(ctx: CommandContext): Promise<number> {
 
 export async function runClaim(ctx: CommandContext): Promise<number> {
   const id = requirePositional(ctx, 0, '<id>');
-  const { query } = ctx.rt;
+  const { query } = requireCliRuntime(ctx);
   const detail = query.getClaim(id);
   const claim = detail.data;
   if (claim === null) throw new EntityNotFoundError('claim', id);
@@ -73,14 +73,14 @@ export async function runClaim(ctx: CommandContext): Promise<number> {
 
 export async function runSource(ctx: CommandContext): Promise<number> {
   const id = requirePositional(ctx, 0, '<id>');
-  const detail = ctx.rt.query.getSource(id);
+  const detail = requireCliRuntime(ctx).query.getSource(id);
   if (detail.data === null) throw new EntityNotFoundError('source', id);
   printResult(ctx.io, { source: detail.data, readModel: detail.readModel }, 'source');
   return EXIT_CODES.OK;
 }
 
 export async function runRuns(ctx: CommandContext): Promise<number> {
-  const app = ctx.rt.app;
+  const app = requireCliRuntime(ctx).app;
   if (app === undefined) throw new UsageError('runs requires a writable runtime');
   const status = ctx.values.status as string | undefined;
   const familyId = ctx.values.family as string | undefined;
@@ -112,7 +112,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 export async function runStartRun(ctx: CommandContext): Promise<number> {
   const q = requirePositional(ctx, 0, '<query>');
-  const app = ctx.rt.app;
+  const app = requireCliRuntime(ctx).app;
   if (app === undefined) throw new UsageError('run requires a writable runtime');
   const started = await app.startRun({ query: q });
   emitRunProgress(ctx.io, { event: 'started', ...started });
@@ -138,7 +138,7 @@ export async function runStartRun(ctx: CommandContext): Promise<number> {
  */
 export async function runWatch(ctx: CommandContext): Promise<number> {
   const runId = requirePositional(ctx, 0, '<run-id>');
-  const app = ctx.rt.app;
+  const app = requireCliRuntime(ctx).app;
   if (app === undefined) throw new UsageError('watch requires a writable runtime');
   if (app.getRun(runId) === null) throw new RunNotFoundError(runId);
   const timeoutRaw = ctx.values.timeout;

@@ -27,6 +27,7 @@ const CONFLICT_CODES: ReadonlySet<string> = new Set([
   'INVALID_TRANSITION',
   'STALE_PROJECTION',
   'IDEMPOTENCY_CONFLICT',
+  'DESTINATION_EXISTS',
 ]);
 
 export interface CliIo {
@@ -41,6 +42,25 @@ export class UsageError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'UsageError';
+  }
+}
+
+/** Archive schema version newer than current — exit 3. */
+export class ArchiveIncompatibleError extends Error {
+  readonly code = 'ARCHIVE_INCOMPATIBLE';
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArchiveIncompatibleError';
+  }
+}
+
+/** Database locked by another process — exit 4, retryable. */
+export class DatabaseInUseError extends Error {
+  readonly code = 'DATABASE_IN_USE';
+  readonly retryable = true;
+  constructor(message: string) {
+    super(message);
+    this.name = 'DatabaseInUseError';
   }
 }
 
@@ -76,7 +96,8 @@ function isSafeError(err: unknown): boolean {
     err instanceof ApplicationError ||
     err instanceof ReadModelUnavailableError ||
     err instanceof InvalidCursorError ||
-    err instanceof InvalidQueryError
+    err instanceof InvalidQueryError ||
+    (err instanceof Error && (err.name === 'ArchiveIntegrityError' || err.name === 'ArchiveIncompatibleError' || err.name === 'DatabaseInUseError' || err.name === 'DestinationExistsError' || err.name === 'ExportDestinationExistsError'))
   );
 }
 
@@ -89,9 +110,17 @@ function exitCodeFor(err: unknown): number {
       err.name === 'EventTypeUnknownError' ||
       err.name === 'EventVersionUnsupportedError' ||
       err.name === 'EventPayloadInvalidError' ||
+      err.name === 'ArchiveIntegrityError' ||
+      err.name === 'ArchiveIncompatibleError' ||
       /hash mismatch/i.test(err.message))
   ) {
     return EXIT_CODES.INTEGRITY;
+  }
+  if (
+    err instanceof Error &&
+    (err.name === 'DatabaseInUseError' || err.name === 'DestinationExistsError')
+  ) {
+    return EXIT_CODES.CONFLICT;
   }
   const code = errorCode(err);
   if (code !== undefined && CONFLICT_CODES.has(code)) return EXIT_CODES.CONFLICT;
