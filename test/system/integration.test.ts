@@ -34,6 +34,17 @@ import { ResearchToolSchema, KnowledgeToolSchema } from '../../src/mcp/schemas.j
 import { queryEvents } from '../../src/store/events.js';
 import { handleRunStarted } from '../../src/store/exampleHandlers.js';
 import { createEmptyProjectionState } from '../../src/store/projectionState.js';
+import { createKnowledgeQueryService, type KnowledgeQueryService } from '../../src/query/service.js';
+import { getDb } from '../../src/store/db.js';
+import type { ProjectionState } from '../../src/store/projectionState.js';
+import type { KnowledgeToolDeps } from '../../src/mcp/knowledgeTool.js';
+
+function getQueryService(): KnowledgeQueryService {
+  return createKnowledgeQueryService(getDb()!);
+}
+function wrapState(state: ProjectionState): KnowledgeToolDeps {
+  return { getState: () => state, queryService: getQueryService(), queryEvents };
+}
 import type { ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 
@@ -352,7 +363,7 @@ describe('Property 3: full pipeline through MCP tool handlers', () => {
     const state = rebuildProjection(ALL_HANDLERS);
     const claimsResult = handleKnowledgeTool(
       { action: 'claims', familyId },
-      state,
+      wrapState(state),
     );
     const claims = (claimsResult as Record<string, unknown>).claims as Array<Record<string, unknown>>;
     // No LLM configured → zero claims from extraction
@@ -363,7 +374,7 @@ describe('Property 3: full pipeline through MCP tool handlers', () => {
       const firstClaimId = claims[0]!.id as string;
       const evidenceResult = handleKnowledgeTool(
         { action: 'evidence', claimId: firstClaimId },
-        state,
+        wrapState(state),
       );
       const evidence = (evidenceResult as Record<string, unknown>).evidence as Array<Record<string, unknown>>;
       expect(evidence.length).toBeGreaterThan(0);
@@ -372,21 +383,21 @@ describe('Property 3: full pipeline through MCP tool handlers', () => {
     // ── Step 5: query knowledge.contradictions ────────────────────
     const contradictionsResult = handleKnowledgeTool(
       { action: 'contradictions', familyId },
-      state,
+      wrapState(state),
     );
     expect(contradictionsResult).toHaveProperty('contradictions');
 
     // ── Step 6: query knowledge.gaps ──────────────────────────────
     const gapsResult = handleKnowledgeTool(
       { action: 'gaps', familyId },
-      state,
+      wrapState(state),
     );
     expect(gapsResult).toHaveProperty('gaps');
 
     // ── Step 7: query knowledge.families ──────────────────────────
     const familiesResult = handleKnowledgeTool(
       { action: 'families', familyId },
-      state,
+      wrapState(state),
     );
     expect((familiesResult as Record<string, unknown>).found).toBe(true);
 
@@ -548,7 +559,7 @@ describe('combined: restart + longitudinal + MCP handlers', () => {
     const state2 = rebuildProjection(ALL_HANDLERS);
 
     // Claims from both runs coexist
-    const allClaims = handleKnowledgeTool({ action: 'claims', familyId: FAMILY }, state2);
+    const allClaims = handleKnowledgeTool({ action: 'claims', familyId: FAMILY }, wrapState(state2));
     const claimList = (allClaims as Record<string, unknown>).claims as Array<Record<string, unknown>>;
     expect(claimList.length).toBeGreaterThanOrEqual(claims1.length);
 
@@ -621,7 +632,7 @@ describe('Property 4: knowledge.threads integration', () => {
     await waitForRun(svc, runId);
 
     const state = rebuildProjection(ALL_HANDLERS);
-    const result = handleKnowledgeTool({ action: 'threads', familyId }, state);
+    const result = handleKnowledgeTool({ action: 'threads', familyId }, wrapState(state));
     expect(result).toHaveProperty('familyId', familyId);
     expect(result).toHaveProperty('threads');
     expect(Array.isArray(result.threads)).toBe(true);
@@ -637,11 +648,11 @@ describe('Property 4: knowledge.entity integration', () => {
     const state = rebuildProjection(ALL_HANDLERS);
 
     // By entityId
-    const byId = handleKnowledgeTool({ action: 'entity', entityId: 'nonexistent_123' }, state);
+    const byId = handleKnowledgeTool({ action: 'entity', entityId: 'nonexistent_123' }, wrapState(state));
     expect(byId).toHaveProperty('found', false);
 
     // By label
-    const byLabel = handleKnowledgeTool({ action: 'entity', label: 'NonExistent Entity' }, state);
+    const byLabel = handleKnowledgeTool({ action: 'entity', label: 'NonExistent Entity' }, wrapState(state));
     expect(byLabel).toHaveProperty('found', false);
   });
 });

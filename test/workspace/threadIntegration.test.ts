@@ -9,7 +9,10 @@ import { createRunService } from '../../src/research/runService.js';
 import { rebuildProjection } from '../../src/store/projectionBuilder.js';
 import { graphEventHandlers } from '../../src/graph/index.js';
 import { workspaceEventHandlers } from '../../src/workspace/index.js';
-import { handleKnowledgeTool } from '../../src/mcp/knowledgeTool.js';
+import { handleKnowledgeTool, type KnowledgeToolDeps } from '../../src/mcp/knowledgeTool.js';
+import { createKnowledgeQueryService } from '../../src/query/service.js';
+import { getDb } from '../../src/store/db.js';
+import type { ProjectionState } from '../../src/store/projectionState.js';
 
 const handlers = { ...graphEventHandlers, ...workspaceEventHandlers };
 const provider: ResearchProvider = {
@@ -120,7 +123,7 @@ describe('thread integration', () => {
     expect([...afterReplay.claims.values()].filter((claim) => claim.threadId === firstThreadId)).toEqual(beforeClaims);
 
     // 8. Knowledge surface returns resulting thread structures.
-    const knowledge = handleKnowledgeTool({ action: 'threads', familyId }, afterReplay);
+    const knowledge = handleKnowledgeTool({ action: 'threads', familyId }, { getState: () => afterReplay, queryService: createKnowledgeQueryService(getDb()!), queryEvents });
     const threads = knowledge.threads as { id: string; familyId: string; status: string }[];
     expect(threads).toHaveLength(2);
     expect(threads.map((thread) => thread.id)).toEqual(expect.arrayContaining([firstThreadId, thirdThreadId]));
