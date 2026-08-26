@@ -184,25 +184,60 @@ export function rebuildProjection(
   let validationState: ProjectionState;
   let eventsProcessed: number;
 
+  let validSnapshot: ProjectionState | undefined;
+  let validSnapshotJson: string | undefined;
+
   if (checkpoint?.snapshotJson !== undefined && checkpoint.snapshotJson !== '' &&
       checkpoint.rolledBackRunIds !== undefined && !isCheckpointStale(
         fullRolledBackRuns,
         checkpoint.rolledBackRunIds,
         checkpoint.eventCursor,
       )) {
+    // Validate checkpoint snapshot integrity before trusting it.
+    try {
+      const snapshot = deserializeProjectionState(checkpoint.snapshotJson);
+      const snapshotChecksum = computeProjectionChecksum(snapshot);
+      if (snapshotChecksum !== checkpoint.checksum) {
+        logger.warn(
+          { checkpointId: checkpoint.id, expected: checkpoint.checksum, actual: snapshotChecksum },
+          'store: checkpoint checksum mismatch — ignoring corrupted checkpoint, rebuilding from genesis',
+        );
+      } else if (snapshot.lastAppliedSeq !== checkpoint.eventCursor) {
+        logger.warn(
+          { checkpointId: checkpoint.id, expectedCursor: checkpoint.eventCursor, snapshotCursor: snapshot.lastAppliedSeq },
+          'store: checkpoint cursor mismatch — ignoring corrupted checkpoint, rebuilding from genesis',
+        );
+      } else {
+        validSnapshot = snapshot;
+        validSnapshotJson = checkpoint.snapshotJson;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, checkpointId: checkpoint.id },
+        'store: checkpoint snapshot malformed — ignoring, rebuilding from genesis',
+      );
+    }
+  }
+
+  if (validSnapshot !== undefined && validSnapshotJson !== undefined) {
     // ── Incremental path ──
-    state = deserializeProjectionState(checkpoint.snapshotJson);
+    // checkpoint and snapshotJson are guaranteed defined here because
+    // validSnapshot is only set inside the block that parses snapshotJson.
+    state = validSnapshot;
     state.rolledBackRuns = fullRolledBackRuns;
-    validationState = deserializeProjectionState(checkpoint.snapshotJson);
+    validationState = deserializeProjectionState(validSnapshotJson);
     validationState.rolledBackRuns = fullRolledBackRuns;
 
-    const storedDelta = queryStoredRows({ afterSeq: checkpoint.eventCursor });
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const storedDelta = queryStoredRows({ afterSeq: checkpoint!.eventCursor });
     for (const [i, row] of storedDelta.entries()) {
       if (hashPayload(row.payload) !== row.payload_hash) throw new Error(`Payload hash mismatch at seq ${String(row.seq)}`);
       if (i > 0 && i % 10_000 === 0) logger.info({ checked: i, total: storedDelta.length }, 'store: hash validation progress (incremental)');
     }
-    state.lastAppliedSeq = checkpoint.eventCursor;
-    validationState.lastAppliedSeq = checkpoint.eventCursor;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    state.lastAppliedSeq = checkpoint!.eventCursor;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    validationState.lastAppliedSeq = checkpoint!.eventCursor;
     const deltaEvents = storedDelta.map(rowToEnvelope);
     replayEvents(deltaEvents, handlers, validationState, state);
     eventsProcessed = deltaEvents.length;
@@ -210,7 +245,8 @@ export function rebuildProjection(
     logger.info(
       {
         path: 'incremental',
-        checkpointCursor: checkpoint.eventCursor,
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        checkpointCursor: checkpoint!.eventCursor,
         deltaEvents: deltaEvents.length,
         durationMs: Date.now() - startTime,
       },

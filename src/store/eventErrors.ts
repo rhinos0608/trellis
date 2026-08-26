@@ -10,7 +10,9 @@ export type EventErrorCode =
   | 'EVENT_VERSION_UNSUPPORTED'
   | 'EVENT_PAYLOAD_INVALID'
   | 'EVENT_REFERENCE_INVALID'
-  | 'STALE_PROJECTION';
+  | 'PAYLOAD_TOO_LARGE'
+  | 'STALE_PROJECTION'
+  | 'CURATION_ROLLBACK_BLOCKED';
 
 export class StaleProjectionError extends Error {
   readonly code = 'STALE_PROJECTION' satisfies EventErrorCode;
@@ -53,6 +55,24 @@ export class EventVersionUnsupportedError extends Error {
     this.eventType = eventType;
     this.storedVersion = storedVersion;
     this.latestVersion = latestVersion;
+  }
+}
+
+export class CurationRollbackBlockedError extends Error {
+  readonly code = 'CURATION_ROLLBACK_BLOCKED' satisfies EventErrorCode;
+  constructor(readonly runId: string) {
+    super(`Rollback blocked: run ${runId} contains curation events that cannot be rolled back`);
+    this.name = 'CurationRollbackBlockedError';
+  }
+}
+
+export class PayloadTooLargeError extends Error {
+  readonly code = 'PAYLOAD_TOO_LARGE' satisfies EventErrorCode;
+  constructor(eventType: string, sizeBytes: number, maxBytes: number) {
+    super(
+      `Payload for ${eventType} exceeds ${String(maxBytes)} bytes (${String(sizeBytes)} bytes)`,
+    );
+    this.name = 'PayloadTooLargeError';
   }
 }
 

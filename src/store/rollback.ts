@@ -25,13 +25,16 @@
  */
 
 import { logger } from '../logger.js';
-import { appendEvent, queryEvents } from './events.js';
+import { appendEvents, queryEvents } from './events.js';
+import type { NewEventInput } from './events.js';
 import { getKnowledgeReadModelStatus } from './readModel/integrity.js';
 import { rebuildKnowledgeReadModel } from './readModel/rebuild.js';
 import { rebuildProjection } from './projectionBuilder.js';
 import { ROLLBACK_CLASS } from './eventTypes.js';
+import { CurationRollbackBlockedError } from './eventErrors.js';
 import type {
   EventEnvelope,
+  TrellisEventType,
   RollbackOutcome,
   EntityMergedPayload,
   EntitySplitPayload,
@@ -46,6 +49,15 @@ import type {
 } from './eventTypes.js';
 import type { ProjectionState } from './projectionState.js';
 import type { AppendContext } from './events.js';
+
+// ── Curation event types — rollback BLOCKED per Phase 9 ─────────────
+const CURATION_EVENT_TYPES: ReadonlySet<TrellisEventType> = new Set([
+  'CLAIM_MERGED',
+  'CLAIM_SPLIT',
+  'CLAIM_RETRACTION_SET',
+  'CLAIM_RELATION_CURATED',
+  'EVIDENCE_STANCE_OVERRIDDEN',
+]);
 
 // ── Interference check helpers ──────────────────────────────────────
 
@@ -62,20 +74,15 @@ function hasLaterInterference(
 // ── Compensating event synthesis ────────────────────────────────────
 
 /**
- * Synthesize one or more compensating events for a cross_run_mutation event.
- *
- * Returns `EventEnvelope[]` with at least one element on success,
- * or `null` when later interference makes safe reversal impossible.
- *
- * For most event types the array has exactly one element; for FAMILY_MERGED
- * it may have multiple (one FAMILY_CREATED per merged-away family).
+ * Pure function: compute compensation event inputs for a cross_run_mutation event.
+ * Returns NewEventInput[] on success, null when later interference makes safe reversal impossible.
+ * Does NOT append any events — caller batches them atomically.
  */
-function synthesizeCompensation(
+function buildCompensationInputs(
   original: EventEnvelope,
   state: ProjectionState,
-  context: AppendContext,
-): EventEnvelope[] | null {
-  const rollbackTimestamp = new Date().toISOString();
+  rollbackTimestamp: string,
+): NewEventInput[] | null {
 
   switch (original.eventType) {
     case 'ENTITY_MERGED': {
@@ -125,7 +132,7 @@ function synthesizeCompensation(
         restoredSnapshots,
       };
 
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'ENTITY_SPLIT',
         eventVersion: 1,
@@ -135,8 +142,7 @@ function synthesizeCompensation(
         entityId: p.survivorId,
         entityType: 'entity',
         payload: inversePayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'ENTITY_SPLIT': {
@@ -181,7 +187,7 @@ function synthesizeCompensation(
         mergedSnapshots,
       };
 
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'ENTITY_MERGED',
         eventVersion: 1,
@@ -191,8 +197,7 @@ function synthesizeCompensation(
         entityId: p.originalId,
         entityType: 'entity',
         payload: inversePayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'NODE_RELABELED': {
@@ -205,7 +210,7 @@ function synthesizeCompensation(
         oldLabel: p.newLabel,
         newLabel: p.oldLabel,
       };
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'NODE_RELABELED',
         eventVersion: 1,
@@ -215,8 +220,7 @@ function synthesizeCompensation(
         entityId: p.targetId,
         entityType: 'entity',
         payload: inversePayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'NODE_METADATA_UPDATED':
@@ -232,7 +236,7 @@ function synthesizeCompensation(
         oldValue: p.newValue,
         newValue: p.oldValue,
       };
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: original.eventType,
         eventVersion: 1,
@@ -242,8 +246,7 @@ function synthesizeCompensation(
         entityId: p.targetId,
         entityType: null,
         payload: inversePayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'SOURCE_CHANGED': {
@@ -256,7 +259,7 @@ function synthesizeCompensation(
         oldContentHash: p.newContentHash,
         newContentHash: p.oldContentHash,
       };
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'SOURCE_CHANGED',
         eventVersion: 1,
@@ -266,8 +269,7 @@ function synthesizeCompensation(
         entityId: p.sourceId,
         entityType: 'source',
         payload: inversePayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'SOURCE_RETRACTED': {
@@ -283,7 +285,7 @@ function synthesizeCompensation(
       if (originalAdd === undefined) {
         return null; // can't reconstruct
       }
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'SOURCE_ADDED',
         eventVersion: 1,
@@ -293,8 +295,7 @@ function synthesizeCompensation(
         entityId: p.sourceId,
         entityType: 'source',
         payload: originalAdd.payload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'FAMILY_RENAMED': {
@@ -307,7 +308,7 @@ function synthesizeCompensation(
         oldLabel: p.newLabel,
         newLabel: p.oldLabel,
       };
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'FAMILY_RENAMED',
         eventVersion: 1,
@@ -317,8 +318,7 @@ function synthesizeCompensation(
         entityId: p.targetId,
         entityType: 'family',
         payload: inversePayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'FAMILY_MERGED': {
@@ -336,11 +336,11 @@ function synthesizeCompensation(
       // Recreate each merged-away family as a FAMILY_CREATED event.
       // Using FamilyCreatedPayload shape (snake_case family_id) matching
       // workspace/projectionHandlers.ts's handleFamilyCreated.
-      const events: EventEnvelope[] = [];
+      const compensationInputs: NewEventInput[] = [];
       const snapshots: FamilyMergeSnapshot[] = p.mergedSnapshots;
       for (const mergedId of p.mergedFamilyIds) {
         const snap = snapshots.find((s) => s.id === mergedId);
-        const created = appendEvent({
+        compensationInputs.push({
           timestamp: rollbackTimestamp,
           eventType: 'FAMILY_CREATED',
           eventVersion: 1,
@@ -354,11 +354,9 @@ function synthesizeCompensation(
             label: snap?.label ?? mergedId,
             description: snap?.description,
           },
-        }, context);
-        if (created === null) return null;
-        events.push(created);
+        });
       }
-      return events.length > 0 ? events : null;
+      return compensationInputs.length > 0 ? compensationInputs : null;
     }
 
     case 'FAMILY_RELATION_REMOVED': {
@@ -376,7 +374,7 @@ function synthesizeCompensation(
         relation_type: p.relation_type,
         ...(p.reason !== undefined ? { reason: p.reason } : {}),
       };
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'FAMILY_RELATED',
         eventVersion: 1,
@@ -386,8 +384,7 @@ function synthesizeCompensation(
         entityId: p.family_a,
         entityType: 'family',
         payload: compensatingPayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'CONTRADICTION_RESOLVED': {
@@ -400,7 +397,7 @@ function synthesizeCompensation(
         previousStatus: p.newStatus,
         newStatus: p.previousStatus,
       };
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'CONTRADICTION_RESOLVED',
         eventVersion: 1,
@@ -410,8 +407,7 @@ function synthesizeCompensation(
         entityId: p.contradictionId,
         entityType: 'contradiction',
         payload: inversePayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     case 'GAP_RESOLVED': {
@@ -424,7 +420,7 @@ function synthesizeCompensation(
         previousStatus: p.newStatus,
         newStatus: p.previousStatus,
       };
-      const event = appendEvent({
+      return [{
         timestamp: rollbackTimestamp,
         eventType: 'GAP_RESOLVED',
         eventVersion: 1,
@@ -434,8 +430,7 @@ function synthesizeCompensation(
         entityId: p.gapId,
         entityType: 'gap',
         payload: inversePayload,
-      }, context);
-      return event !== null ? [event] : null;
+      }];
     }
 
     default:
@@ -462,23 +457,31 @@ export function rollbackCrossRunMutation(
     };
   }
 
-  const inverses = synthesizeCompensation(event, state, context);
+  const rollbackTimestamp = new Date().toISOString();
+  const inputs = buildCompensationInputs(event, state, rollbackTimestamp);
 
-  if (inverses === null || inverses.length === 0) {
+  if (inputs === null || inputs.length === 0) {
     return {
       kind: 'blocked',
       reason: `Later interference detected for event ${event.id} (${event.eventType}) — cannot safely reverse without guessing`,
     };
   }
 
-  // synthesizeCompensation guarantees non-empty array when non-null
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  const first: EventEnvelope = inverses[0]!;
+  // Batch-append all compensation events.
+  const envelopes = appendEvents(inputs, context);
+  const first = envelopes[0];
+  if (!first) {
+    return {
+      kind: 'blocked',
+      reason: `Failed to append compensation events for ${event.id} (${event.eventType})`,
+    };
+  }
+
   logger.info(
     {
       originalEventId: event.id,
       eventType: event.eventType,
-      inverseCount: inverses.length,
+      inverseCount: envelopes.length,
       representativeInverseId: first.id,
     },
     'store: cross_run_mutation rollback executed',
@@ -490,6 +493,9 @@ export function rollbackCrossRunMutation(
  * Roll back an entire run. For pure_run_local/audit_only/dynamic_edge:
  * mark in rolledBackRuns (replay-time skip). For cross_run_mutation events
  * in the run: attempt individual compensation.
+ *
+ * Atomic: marker + all compensating events commit in a single transaction,
+ * or none do. Curation streams are rejected before any event append.
  *
  * Idempotent: if the run was already rolled back (RUN_ROLLED_BACK event
  * exists), returns the previous outcome without reprocessing.
@@ -505,10 +511,51 @@ export function rollbackRun(
     return { skipped: 0, executed: 0, blocked: [], readModelRebuilt: getKnowledgeReadModelStatus().status === 'ready' };
   }
 
-  // Persist the rollback as a RUN_ROLLED_BACK event so the projection
-  // builder's pre-scan picks it up on future rebuilds.
-  appendEvent({
-    timestamp: new Date().toISOString(),
+  // PREFLIGHT: reject curation streams before any mutations begin.
+  // Curation events (Phase 9) are BLOCKED from rollback, not silently mislabeled.
+  const runEvents = queryEvents({ runId });
+  const hasCurationEvents = runEvents.some((e) => CURATION_EVENT_TYPES.has(e.eventType));
+  if (hasCurationEvents) {
+    throw new CurationRollbackBlockedError(runId);
+  }
+
+  // Find cross_run_mutation events from this run
+  const crossRunEvents = runEvents.filter(
+    (e) => ROLLBACK_CLASS[e.eventType] === 'cross_run_mutation',
+  );
+
+  // Build all compensation inputs (pure data, no appends).
+  const rollbackTimestamp = new Date().toISOString();
+  const compensationInputs: NewEventInput[] = [];
+  const blocked: { eventId: string; reason: string }[] = [];
+
+  for (const event of crossRunEvents) {
+    const inputs = buildCompensationInputs(event, state, rollbackTimestamp);
+    if (inputs === null) {
+      blocked.push({ eventId: event.id, reason: 'Later interference detected — cannot safely reverse without guessing' });
+    } else {
+      compensationInputs.push(...inputs);
+    }
+  }
+
+  // If ANY cross_run_mutation compensation is blocked, abort the entire rollback
+  // (no marker, no partial compensations — atomic all-or-nothing).
+  if (blocked.length > 0) {
+    logger.warn(
+      { runId, blocked: blocked.length },
+      'store: rollback aborted — some compensations blocked by interference',
+    );
+    return {
+      skipped: runEvents.length - crossRunEvents.length,
+      executed: 0,
+      blocked,
+      readModelRebuilt: getKnowledgeReadModelStatus().status === 'ready',
+    };
+  }
+
+  // Build marker event.
+  const markerEvent: NewEventInput = {
+    timestamp: rollbackTimestamp,
     eventType: 'RUN_ROLLED_BACK',
     eventVersion: 1,
     runId,
@@ -517,31 +564,17 @@ export function rollbackRun(
     entityId: null,
     entityType: null,
     payload: { run_id: runId },
-  }, context);
+  };
+
+  // Atomic batch: marker + all compensations commit together.
+  const allInputs: NewEventInput[] = [markerEvent, ...compensationInputs];
+  appendEvents(allInputs, context);
 
   // Mark the run as rolled back — projectionBuilder will skip on next rebuild
   state.rolledBackRuns.add(runId);
 
-  // Find cross_run_mutation events from this run
-  const runEvents = queryEvents({ runId });
-  const crossRunEvents = runEvents.filter(
-    (e) => ROLLBACK_CLASS[e.eventType] === 'cross_run_mutation',
-  );
-
-  let executed = 0;
-  let skipped = 0;
-  const blocked: { eventId: string; reason: string }[] = [];
-
-  for (const event of crossRunEvents) {
-    const outcome = rollbackCrossRunMutation(event, state, context);
-    if (outcome.kind === 'executed') {
-      executed++;
-    } else {
-      blocked.push({ eventId: event.id, reason: outcome.reason });
-    }
-  }
-
-  skipped = runEvents.length - crossRunEvents.length;
+  const executed = crossRunEvents.length;
+  const skipped = runEvents.length - crossRunEvents.length;
 
   // Event-log rollback is already committed. Rebuild is best effort so a
   // read-model failure cannot report successful rollback as failed.

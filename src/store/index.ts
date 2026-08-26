@@ -1,6 +1,7 @@
 // Event store + projections + checkpoints + rollback
 export { initDb, getDb, closeDb, getDbPath } from './db.js';
 export type { EventCursor } from './eventTypes.js';
+export type { EventRow } from './events.js';
 export { initializeSchema, SCHEMA_VERSION } from './schema.js';
 export { generateUlid, appendEvent, appendEvents, queryEvents, queryStoredEvents, queryStoredRows, countEvents, getLatestEventCursor } from './events.js';
 export type { AppendContext, NewEventInput, QueryEventsOpts } from './events.js';
@@ -12,7 +13,7 @@ export { rollbackCrossRunMutation, rollbackRun } from './rollback.js';
 export { handleRunStarted, handleRunCompleted } from './exampleHandlers.js';
 export { createEmptyProjectionState, serializeProjectionState, deserializeProjectionState, canonicalSerializeProjectionState } from './projectionState.js';
 export { validateProjectionReferences, validateEventReferences, decodeEventPayload } from './eventValidation.js';
-export { StaleProjectionError, EventReferenceInvalidError, EventTypeUnknownError, EventVersionUnsupportedError } from './eventErrors.js';
+export { StaleProjectionError, EventReferenceInvalidError, EventTypeUnknownError, EventVersionUnsupportedError, CurationRollbackBlockedError, PayloadTooLargeError } from './eventErrors.js';
 export type { ProjectionState, EventHandlerRegistry } from './projectionState.js';
 export { rebuildKnowledgeReadModel, getKnowledgeReadModelStatus, verifyKnowledgeReadModel } from './readModel/index.js';
 export type { KnowledgeReadModelStatus } from './readModel/index.js';
