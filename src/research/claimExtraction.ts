@@ -435,7 +435,7 @@ export async function extractClaimsFromSource(
     const groundedFinding = candidateToGroundedFinding(result, input.source, now);
     findings.push({
       ...groundedFinding,
-    } as Omit<GroundedFinding, 'id' | 'createdAt'>);
+    });
   }
 
   return { status: 'extracted', findings, rejected };

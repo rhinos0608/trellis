@@ -152,37 +152,37 @@ export class PipelineStrategy implements ResearchStrategy {
               hits = await ctx.provider.academic(
                 providerCallContext(ctx, { phase: 'gap_acquisition' }),
                 ac.query,
-                searchOpts as import('../../providers/types.js').AcademicOpts,
+                searchOpts,
               );
-            } else if (ac.method === 'reddit' && ctx.provider.capabilities.community?.reddit && ctx.provider.reddit) {
+            } else if (ac.method === 'reddit' && ctx.provider.capabilities.community.reddit && ctx.provider.reddit) {
               hits = await ctx.provider.reddit(
                 providerCallContext(ctx, { phase: 'gap_acquisition' }),
                 ac.query,
-                searchOpts as import('../../providers/types.js').SearchOpts,
+                searchOpts,
               );
-            } else if (ac.method === 'hackernews' && ctx.provider.capabilities.community?.hackernews && ctx.provider.hackernews) {
+            } else if (ac.method === 'hackernews' && ctx.provider.capabilities.community.hackernews && ctx.provider.hackernews) {
               hits = await ctx.provider.hackernews(
                 providerCallContext(ctx, { phase: 'gap_acquisition' }),
                 ac.query,
-                searchOpts as import('../../providers/types.js').SearchOpts,
+                searchOpts,
               );
             } else if (ac.method === 'github' && ctx.provider.capabilities.code) {
               hits = await ctx.provider.search(
                 providerCallContext(ctx, { phase: 'gap_acquisition' }),
                 ac.query + ' site:github.com',
-                searchOpts as import('../../providers/types.js').SearchOpts,
+                searchOpts,
               );
-            } else if (ac.method === 'stackoverflow' && ctx.provider.capabilities.community?.stackoverflow) {
+            } else if (ac.method === 'stackoverflow' && ctx.provider.capabilities.community.stackoverflow) {
               hits = await ctx.provider.search(
                 providerCallContext(ctx, { phase: 'gap_acquisition' }),
                 ac.query + ' site:stackoverflow.com',
-                searchOpts as import('../../providers/types.js').SearchOpts,
+                searchOpts,
               );
             } else if (ac.method === 'search') {
               hits = await ctx.provider.search(
                 providerCallContext(ctx, { phase: 'gap_acquisition' }),
                 ac.query,
-                searchOpts as import('../../providers/types.js').SearchOpts,
+                searchOpts,
               );
             }
 
@@ -198,7 +198,7 @@ export class PipelineStrategy implements ResearchStrategy {
                 }
               })();
 
-              const sourceType: SourceType = ac.method === 'search' ? 'web' : (ac.method as SourceType);
+              const sourceType: SourceType = ac.method === 'search' ? 'web' : (ac.method);
               const sourceEntry: SourceEntry = {
                 id: makeId(),
                 title: hit.title,
@@ -405,7 +405,7 @@ export class PipelineStrategy implements ResearchStrategy {
             query: ctx.state.getState().query,
             subQuestions: ctx.state.getSubQuestions(),
             content: result.content,
-            contentHash: result.contentHash ?? '',
+            contentHash: result.contentHash,
           },
           { ...(ctx.llm !== undefined ? { llm: ctx.llm } : {}), budget: ctx.budget, ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}) },
         );
@@ -418,11 +418,11 @@ export class PipelineStrategy implements ResearchStrategy {
         // Mark extraction status
         if (extractionResult.status === 'extracted') {
           ctx.state.markSourceExtracted(source.id);
-        } else if (extractionResult.status === 'failed') {
-          ctx.state.markSourceFailed(source.id);
         } else if (extractionResult.status === 'unavailable') {
           // No LLM — zero factual claims is correct behavior
           ctx.state.markSourceExtracted(source.id);
+        } else {
+          ctx.state.markSourceFailed(source.id);
         }
       } catch (err) {
         logger.warn({ ...safeErrorLog(err), sourceId: source.id, urlBytes: Buffer.byteLength(source.url, 'utf8') }, 'Extraction failed');

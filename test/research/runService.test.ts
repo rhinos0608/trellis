@@ -14,6 +14,7 @@ import type { EventEnvelope, TrellisEventType } from '../../src/store/eventTypes
 import type { NewEventInput } from '../../src/store/events.js';
 import type { EventHandlerRegistry } from '../../src/store/projectionState.js';
 import { createEmptyProjectionState } from '../../src/store/projectionState.js';
+import { planClaimObservation } from '../../src/graph/claimReconciler.js';
 import { graphEventHandlers } from '../../src/graph/index.js';
 import { workspaceEventHandlers } from '../../src/workspace/index.js';
 import {
@@ -604,5 +605,44 @@ describe('run lifecycle: durable run status', () => {
     expect(status!.claimCount).toBe(5);
     expect(status!.sourceCount).toBe(3);
     expect(status!.evidenceCount).toBe(10);
+  });
+});
+
+describe('durable reconciler: asserted + negated → contradiction classification', () => {
+  it('classifies second observation with opposite polarity as contradiction', () => {
+    const scratch = createEmptyProjectionState();
+    const familyId = 'fam-int';
+    const runId = 'run-int';
+
+    // First observation: asserted
+    const obsA = {
+      id: 'obs_a', familyId, runId, observedAt: new Date().toISOString(),
+      subjectText: 'React', predicate: 'is fast',
+      polarity: 'asserted' as const, hedge: 'certain' as const,
+      evidenceType: 'study' as const, confidence: 0.9,
+      sourceIds: [], extractionVersion: 'v1',
+      canonicalKey: { subject: 'react', predicate: 'is fast' },
+    };
+    const plannedA = planClaimObservation(obsA, scratch);
+    expect(plannedA.reconciliation.classification).toBe('new_claim');
+    graphEventHandlers.CLAIM_OBSERVED(
+      { id: 'evt_a', seq: 0, timestamp: '', eventType: 'CLAIM_OBSERVED', eventVersion: 1, runId, batchId: null, actor: 'system', entityId: null, entityType: null, payload: plannedA, payloadHash: '', actorId: null },
+      scratch,
+    );
+
+    // Second observation: negated — same subject+predicate, opposite polarity
+    const obsB = {
+      id: 'obs_b', familyId, runId, observedAt: new Date().toISOString(),
+      subjectText: 'React', predicate: 'is fast',
+      polarity: 'negated' as const, hedge: 'certain' as const,
+      evidenceType: 'study' as const, confidence: 0.9,
+      sourceIds: [], extractionVersion: 'v1',
+      canonicalKey: { subject: 'react', predicate: 'is fast' },
+    };
+    const plannedB = planClaimObservation(obsB, scratch);
+    // Must be classified as contradiction, not new_claim or same_claim
+    expect(plannedB.reconciliation.classification).toBe('contradiction');
+    // Must have matchedClaimId pointing to the first claim
+    expect(plannedB.reconciliation.matchedClaimId).toBeDefined();
   });
 });

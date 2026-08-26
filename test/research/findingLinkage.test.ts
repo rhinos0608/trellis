@@ -134,3 +134,33 @@ describe('clusterIdByFindingId', () => {
     expect(map.size).toBe(0);
   });
 });
+
+describe('polarity guard — opposite polarity not clustered', () => {
+  it('does not merge findings with differing negation into the same cluster', () => {
+    const f1 = makeFinding('f1', 'React is fast');
+    const f2 = makeFinding('f2', 'React is not fast');
+    const result = buildFindingLinkage([f1, f2], { directThreshold: 0.5 });
+    // jaccard(react is fast, react is not fast) ≈ 0.75 → directThreshold met,
+    // but negation differs → must NOT share a cluster
+    expect(result.clusters).toHaveLength(2);
+    // Edge should be contradicts, not same_claim
+    const contradictionEdges = result.edges.filter((e) => e.relation === 'contradicts');
+    expect(contradictionEdges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still clusters non-negated findings together', () => {
+    const f1 = makeFinding('f1', 'React is fast');
+    const f2 = makeFinding('f2', 'React is fast');
+    const result = buildFindingLinkage([f1, f2], { directThreshold: 0.5 });
+    // Same polarity (both non-negated) — should be merged into one cluster
+    expect(result.clusters).toHaveLength(1);
+  });
+
+  it('clusters negated findings together when both contain negation words', () => {
+    const f1 = makeFinding('f1', 'React is not slow');
+    const f2 = makeFinding('f2', 'React is not slow');
+    const result = buildFindingLinkage([f1, f2], { directThreshold: 0.5 });
+    // Both negated — same polarity → merged into one cluster
+    expect(result.clusters).toHaveLength(1);
+  });
+});

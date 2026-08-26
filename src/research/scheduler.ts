@@ -21,7 +21,7 @@ export interface SchedulerOptions {
 export interface SchedulerDeps {
   getProvider(name: string): Promise<ResearchProvider>;
   appendWithRetry(events: readonly NewEventInput[], context: AppendContext): void;
-  /** Rebuild an AppendContext for a run enqueued by a previous process (resume path). */
+  /** Rebuild an AppendContext for reconciling stale orphaned runs on startup. */
   rebuildAppendContext?(): AppendContext | undefined;
   executeResearch(runId: string, familyId: string, input: StartRunInput, signal: AbortSignal, provider: ResearchProvider, providerCtx: ProviderCallContext, reportProgress: (update: RunProgressUpdate) => Promise<void>): Promise<void>;
   rebuildProjection(): ProjectionState;
@@ -30,7 +30,7 @@ export interface EnqueuedRun {
   runId: string; rootRunId: string; attempt: number; familyId: string; threadId?: string | undefined; sessionId?: string | undefined;
   query: string; topic?: string | undefined; strategy: ResearchStrategy; depth: string; providerName: string;
   idempotencyKey?: string | undefined; requestHash: string; retryPolicy: RunRetryPolicy; deadlineAt: string; queuedAt: string;
-  appendContext: AppendContext; input?: StartRunInput | undefined; retryOf?: string | undefined; followUp?: RunFollowUp | undefined;
+  appendContext: AppendContext; input: StartRunInput; retryOf?: string | undefined; followUp?: RunFollowUp | undefined;
 }
 export class IdempotencyConflictError extends Error { constructor() { super('Idempotency key conflicts with a different request'); this.name = 'IdempotencyConflictError'; } }
 
@@ -61,8 +61,9 @@ export class JobScheduler {
   /**
    * Abort every ACTIVE run and record RUN_INTERRUPTED for each (external
    * termination — NOT user cancellation), then wait for executions to unwind
-   * promptly instead of waiting out their deadlines. QUEUED runs are left
-   * untouched: reconcileOnStartup() re-queues them on next process start.
+   * promptly instead of waiting out their deadlines. QUEUED runs from a
+   * previous process are marked RUN_FAILED (recovery_unsupported) by
+   * reconcileOnStartup() at construction.
    * Callers MUST keep the DB open until this resolves (shutdownCliRuntime
    * ordering: scheduler → provider → transport → DB last).
    */
@@ -88,8 +89,8 @@ export class JobScheduler {
       return { runId: run.runId, familyId: run.familyId, deduplicated: true };
     }
     if (this.stopping) throw new Error('Scheduler is shut down');
-        const run = { ...input, requestHash, queuedAt: input.queuedAt || new Date().toISOString() } as unknown as ResearchRun;
-    this.runs.set(run.runId, run); this.contexts.set(run.runId, input.appendContext); if (input.input) this.inputs.set(run.runId, input.input); this.queue.push(run.runId); this.wake?.();
+        const run = { ...input, requestHash, queuedAt: input.queuedAt || new Date().toISOString(), status: 'queued' } as unknown as ResearchRun;
+    this.runs.set(run.runId, run); this.contexts.set(run.runId, input.appendContext); this.inputs.set(run.runId, input.input); this.queue.push(run.runId); this.wake?.();
     return { runId: run.runId, familyId: run.familyId, deduplicated: false };
   }
   cancel(runId: string): boolean {
@@ -112,22 +113,40 @@ export class JobScheduler {
     for (const run of folded.values()) {
       this.runs.set(run.runId, run);
       if (run.status === 'queued') {
-        // Re-queue BEFORE the context guard: a run queued by a previous
-        // process has no live AppendContext yet, but must still be resumed.
-        if (Date.parse(run.deadlineAt) <= Date.now()) {
-          if (this.context(run.runId) === undefined) continue;
-          this.fail(run, 'deadline exceeded', 'deadline_exceeded');
-        } else {
-          this.queue.push(run.runId);
-        }
+        // Queued runs from a previous process cannot resume — provider/config
+        // context is not durable across process restarts. Mark as RUN_FAILED.
+        const ctx = this.deps.rebuildAppendContext?.();
+        if (!ctx) continue;
+        this.contexts.set(run.runId, ctx);
+        const error: RunError = {
+          code: 'recovery_unsupported',
+          classification: 'permanent',
+          retryable: false,
+          message: 'Queued run cannot resume after process restart because provider/config context is not durable; start a new run.',
+          occurredAt: new Date().toISOString(),
+        };
+        const claimed = this.claimTerminal(run.runId, [
+          { ...envelope('RUN_FAILED', run.runId, { runId: run.runId, error }), eventVersion: 2 },
+        ]);
+        if (claimed) this.runs.set(run.runId, { ...run, status: 'failed', error });
         continue;
       }
-      const context = this.context(run.runId); if (!context) continue;
-      else if (run.status === 'starting' || run.status === 'running') {
-        const stale = !run.heartbeatAt || Date.now() - Date.parse(run.heartbeatAt) > this.opts.heartbeatIntervalMs * 4;
-        if (stale) this.append([envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })], context);
-      } else if (run.status === 'cancelling' && (!run.heartbeatAt || Date.now() - Date.parse(run.heartbeatAt) > this.opts.heartbeatIntervalMs * 4)) {
-        this.append([envelope('RUN_CANCELLED', run.runId, { runId: run.runId })], context);
+      // Only active (non-terminal) states need staleness reconciliation.
+      if (run.status !== 'starting' && run.status !== 'running' && run.status !== 'cancelling') continue;
+      // Check staleness BEFORE rebuilding context — a fresh, non-stale lease
+      // means another live owner may still be executing; never terminate it.
+      const stale = !run.heartbeatAt || Date.now() - Date.parse(run.heartbeatAt) > this.opts.heartbeatIntervalMs * 4;
+      if (!stale) continue;
+      // Rebuild context for stale runs so claimTerminal can append.
+      const ctx = this.deps.rebuildAppendContext?.();
+      if (!ctx) continue;
+      this.contexts.set(run.runId, ctx);
+      if (run.status === 'starting' || run.status === 'running') {
+        this.claimTerminal(run.runId, [envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })]);
+        this.runs.set(run.runId, { ...run, status: 'interrupted' });
+      } else if (run.status === 'cancelling') {
+        this.claimTerminal(run.runId, [envelope('RUN_CANCELLED', run.runId, { runId: run.runId })]);
+        this.runs.set(run.runId, { ...run, status: 'cancelled' });
       }
     }
   }
@@ -150,7 +169,7 @@ export class JobScheduler {
     const reportProgress = async (update: RunProgressUpdate): Promise<void> => { pendingProgress = update; const nowAt = Date.now(); const bypass = (lastPhase !== undefined && update.phase !== lastPhase) || update.providerActivity !== undefined || deadlineExceeded; if (lastProgressAt !== 0 && nowAt - lastProgressAt < this.opts.progressMinIntervalMs && !bypass) return; this.append([envelope('RUN_PROGRESS', runId, { runId, ...update })], context); lastProgressAt = nowAt; lastPhase = update.phase; pendingProgress = undefined; };
     const flushProgress = (): void => { if (pendingProgress) { this.append([envelope('RUN_PROGRESS', runId, { runId, ...pendingProgress })], context); pendingProgress = undefined; } };
     const timer = setTimeout(() => { deadlineExceeded = true; controller.abort(); }, Math.max(0, deadline - Date.now()));
-    try { const provider = await this.deps.getProvider(run.providerName); const input = this.inputs.get(runId) ?? ({ query: run.query, strategy: run.strategy, depth: run.depth, topic: run.topic, sessionId: run.sessionId, threadId: run.threadId, providerName: run.providerName } as unknown as StartRunInput); await this.deps.executeResearch(runId, run.familyId, input, controller.signal, provider, { signal: controller.signal, runId, deadlineAt: deadline, trace: { traceId: runId, spanId: randomUUID().slice(0, 12) } }, reportProgress); flushProgress(); if (controller.signal.aborted) throw Object.assign(new Error('cancelled'), { cancelled: true }); }
+    try { const input = this.inputs.get(runId); if (!input) { this.fail(run, 'Internal error: run input missing at execution time', 'permanent'); return; } const provider = await this.deps.getProvider(run.providerName); await this.deps.executeResearch(runId, run.familyId, input, controller.signal, provider, { signal: controller.signal, runId, deadlineAt: deadline, trace: { traceId: runId, spanId: randomUUID().slice(0, 12) } }, reportProgress); flushProgress(); if (controller.signal.aborted) throw Object.assign(new Error('cancelled'), { cancelled: true }); }
     catch (error) { flushProgress(); if (deadlineExceeded) this.claimTerminal(runId, [envelope('RUN_INTERRUPTED', runId, { runId, interruptedAt: new Date().toISOString(), reason: 'deadline exceeded' })]); else if (controller.signal.aborted) { if (this.stopping) return; /* shutdown owns the terminal event */ this.claimTerminal(runId, [envelope('RUN_CANCELLED', runId, { runId })]); } else { const c = this.context(runId); if (!c) return; this.fail(run, error instanceof Error ? error.message : String(error), classifyError(error) === 'TRANSIENT' ? 'transient' : 'permanent'); } }
     finally { clearInterval(heartbeat); clearTimeout(timer); this.controllers.delete(runId); this.runs.set(runId, this.current(runId) ?? run); }
   }

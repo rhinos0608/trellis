@@ -219,9 +219,9 @@ function sourceTypeToAcqMethod(
   switch (sourceType) {
     case 'academic': return caps.academic ? 'academic' : null;
     case 'github': return caps.code ? 'github' : null;
-    case 'reddit': return caps.community?.reddit ? 'reddit' : null;
-    case 'hackernews': return caps.community?.hackernews ? 'hackernews' : null;
-    case 'stackoverflow': return caps.community?.stackoverflow ? 'stackoverflow' : null;
+    case 'reddit': return caps.community.reddit ? 'reddit' : null;
+    case 'hackernews': return caps.community.hackernews ? 'hackernews' : null;
+    case 'stackoverflow': return caps.community.stackoverflow ? 'stackoverflow' : null;
     default: return null;
   }
 }

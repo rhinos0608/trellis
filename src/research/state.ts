@@ -37,6 +37,23 @@ function makeId(): string {
 
 // ── Similarity helpers ─────────────────────────────────────────────────────
 
+const NEGATE_WORDS = new Set([
+  'not', 'no', 'never', 'cannot', "can't", "won't", "don't", "doesn't",
+  "isn't", "aren't", "hasn't", "haven't", "couldn't", "wouldn't", "shouldn't",
+]);
+
+/** Check whether `text` contains any common negation word. */
+export function hasNegationWord(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/['’]/g, "'");
+  const words = new Set(
+    normalized
+      .split(/\s+/)
+      .map((w) => w.replace(/[^a-z'\u2019]/g, '').trim())
+      .filter((w) => w.length > 0),
+  );
+  return [...NEGATE_WORDS].some((nw) => words.has(nw));
+}
+
 function jaccardSimilarity(a: string, b: string): number {
   const setA = new Set(
     a.toLowerCase().split(/\s+/).filter((w) => w.length > 0),
@@ -52,28 +69,6 @@ function jaccardSimilarity(a: string, b: string): number {
   }
   const union = setA.size + setB.size - intersection;
   return union === 0 ? 0 : intersection / union;
-}
-
-function trigramSimilarity(a: string, b: string): number {
-  const textA = a.toLowerCase().replace(/\s+/g, ' ').trim();
-  const textB = b.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (textA.length < 3 || textB.length < 3) return 0;
-  const trigramsA = new Set<string>();
-  const trigramsB = new Set<string>();
-  for (let i = 0; i <= textA.length - 3; i++) trigramsA.add(textA.slice(i, i + 3));
-  for (let i = 0; i <= textB.length - 3; i++) trigramsB.add(textB.slice(i, i + 3));
-  if (trigramsA.size === 0 && trigramsB.size === 0) return 1;
-  if (trigramsA.size === 0 || trigramsB.size === 0) return 0;
-  let intersection = 0;
-  for (const t of trigramsA) {
-    if (trigramsB.has(t)) intersection++;
-  }
-  const union = trigramsA.size + trigramsB.size - intersection;
-  return union === 0 ? 0 : intersection / union;
-}
-
-function combinedSimilarity(a: string, b: string): number {
-  return Math.max(jaccardSimilarity(a, b), trigramSimilarity(a, b));
 }
 
 // ── ResearchStateEngine ────────────────────────────────────────────────────
@@ -231,12 +226,8 @@ export class ResearchStateEngine {
     ) {
       return '';
     }
-    // Runtime guard: groundings must be nonempty even if TS tuple type catches construction
-    if (!finding.groundings || finding.groundings.length === 0) {
-      throw new Error('GroundedFinding must have at least one grounding');
-    }
     this.budget.incrementStateEntries(1);
-    this.state.findings.push({ ...finding, id, createdAt: nowISO() } as GroundedFinding);
+    this.state.findings.push({ ...finding, id, createdAt: nowISO() });
     return id;
   }
 
@@ -293,10 +284,6 @@ export class ResearchStateEngine {
       ['higher', 'lower'],
       ['grow', 'shrink'],
     ];
-    const negateWords = new Set([
-      'not', 'cannot', "doesn't", "don't", "isn't", "aren't", "won't",
-    ]);
-
     for (const f1 of this.state.findings) {
       for (const f2 of this.state.findings) {
         if (f1.id >= f2.id) continue;
@@ -310,15 +297,13 @@ export class ResearchStateEngine {
 
         const f1Text = f1.claim.toLowerCase();
         const f2Text = f2.claim.toLowerCase();
-        const f1Words = new Set(f1Text.split(/\s+/));
-        const f2Words = new Set(f2Text.split(/\s+/));
 
         let contradictionType: InternalContradictionType | null = null;
         let explanation = '';
 
         // Negation check
-        const f1Negates = [...negateWords].some((w) => f1Words.has(w));
-        const f2Negates = [...negateWords].some((w) => f2Words.has(w));
+        const f1Negates = hasNegationWord(f1Text);
+        const f2Negates = hasNegationWord(f2Text);
         if (
           f1Negates !== f2Negates &&
           sharedSq &&
@@ -529,40 +514,11 @@ export class ResearchStateEngine {
   postProcessFindings(): { merged: number; contradictions: number } {
     if (this.state.findings.length === 0)
       return { merged: 0, contradictions: 0 };
-    const merged = this.deduplicateFindings();
+    // NOTE: destructive deduplication removed — every finding must survive
+    // as an independent observation so the durable reconciler can classify
+    // polarity differences as contradictions.  merged is always 0.
     const contradictionCount = this.detectContradictions().length;
-    return { merged, contradictions: contradictionCount };
-  }
-
-  private deduplicateFindings(): number {
-    const findings = this.state.findings;
-    const toMerge: { keepId: string; absorbId: string }[] = [];
-    const absorbed = new Set<string>();
-
-    for (let i = 0; i < findings.length; i++) {
-      const fi = findings[i];
-      if (fi === undefined || absorbed.has(fi.id)) continue;
-      for (let j = i + 1; j < findings.length; j++) {
-        const fj = findings[j];
-        if (fj === undefined || absorbed.has(fj.id)) continue;
-        const sim = combinedSimilarity(fi.normalizedClaim, fj.normalizedClaim);
-        const sharedSq = fi.subQuestionIds.some((id) =>
-          fj.subQuestionIds.includes(id),
-        );
-        const sharedSource = fi.sourceIds.some((id) =>
-          fj.sourceIds.includes(id),
-        );
-        if (sim >= 0.72 || (sim >= 0.56 && (sharedSq || sharedSource))) {
-          toMerge.push({ keepId: fi.id, absorbId: fj.id });
-          absorbed.add(fj.id);
-        }
-      }
-    }
-
-    for (const { keepId, absorbId } of toMerge) {
-      this.mergeFindings(keepId, absorbId);
-    }
-    return toMerge.length;
+    return { merged: 0, contradictions: contradictionCount };
   }
 
   // ── Serialization ──────────────────────────────────────────────────────

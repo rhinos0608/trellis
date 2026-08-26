@@ -220,7 +220,7 @@ function mapFindingToClaimEvents(
   // Use structured assertion fields when available (GroundedFinding), fall back to legacy fields
   const hasAssertion = 'assertion' in finding;
   const assertion = hasAssertion ? (finding as unknown as { assertion: import('../graph/types.js').ClaimAssertion }).assertion : undefined;
-  const groundings = hasAssertion ? (finding as unknown as { groundings: Array<{ sourceId: string; passageId: string; verbatimSpan: string; alignment: import('../graph/types.js').EvidenceAlignment; contentHash: string }> }).groundings : undefined;
+  const groundings = hasAssertion ? (finding as unknown as { groundings: { sourceId: string; passageId: string; verbatimSpan: string; alignment: import('../graph/types.js').EvidenceAlignment; contentHash: string }[] }).groundings : undefined;
 
   const observation: ClaimObservation = {
     id: `obs_${runId}_${finding.id}`, familyId, ...(threadId !== undefined ? { threadId } : {}), runId, observedAt: finding.lastUpdated || finding.createdAt,
@@ -521,6 +521,15 @@ export function createRunService(): RunService {
   const activeRuns = new Map<string, RunAbort>();
   const runContexts = new Map<string, AppendContext>();
   const runInputs = new Map<string, StartRunInput>();
+  const MAX_RUN_INPUTS = 100;
+  function setRunInput(id: string, input: StartRunInput): void {
+    if (runInputs.size >= MAX_RUN_INPUTS) {
+      // Evict oldest entry (Map preserves insertion order)
+      const oldest = runInputs.keys().next().value;
+      if (oldest !== undefined) runInputs.delete(oldest);
+    }
+    runInputs.set(id, input);
+  }
   const providerByName = new Map<string, ResearchProvider | undefined>();
   const familyLocks = new Map<string, Promise<void>>();
   const MAX_FOLLOW_UP_RUNS_PER_FAMILY = 3;
@@ -578,9 +587,6 @@ export function createRunService(): RunService {
       const findingClaims = new Map<string, string>();
       const claimTextToId = new Map<string, string>();
       for (const finding of result.canonicalFindings ?? []) {
-        // Fail-closed validation: structured assertion must exist
-        if (!finding.assertion) { logger.warn({ findingId: finding.id }, 'runService: skipping finding without assertion'); continue; }
-        if (!finding.groundings || finding.groundings.length === 0) { logger.warn({ findingId: finding.id }, 'runService: skipping finding without groundings'); continue; }
         // Validate source IDs match groundings
         const groundingSourceIds = new Set(finding.groundings.map((g) => g.sourceId));
         const findingSourceIds = new Set(finding.sourceIds);
@@ -722,7 +728,7 @@ export function createRunService(): RunService {
     }
 
     providerByName.set(providerName, input.provider);
-    runInputs.set(runId, { ...input, threadId });
+    setRunInput(runId, { ...input, threadId });
     await scheduler.enqueue({ ...runPayload, appendContext, input });
     return { runId, familyId };
   }
@@ -928,9 +934,10 @@ export function createRunService(): RunService {
     }
     const runId = `run_${randomUUID().slice(0, 12)}`;
     const retryInput = runInputs.get(input.runId);
-    const effectiveRetryInput = retryInput
-      ? original.threadId !== undefined ? { ...retryInput, threadId: original.threadId } : retryInput
-      : undefined;
+    if (!retryInput) {
+      throw new Error(`Cannot retry run: original run input not available (started by a different process?).`);
+    }
+    const effectiveRetryInput = original.threadId !== undefined ? { ...retryInput, threadId: original.threadId } : retryInput;
     const appendContext: AppendContext = { projection: getProjection(), handlers };
     const queuedAt = new Date().toISOString();
     const deadlineAt = new Date(Date.now() + (input.deadlineMs ?? 600_000)).toISOString();
@@ -945,7 +952,7 @@ export function createRunService(): RunService {
     };
     runContexts.set(runId, appendContext);
     appendWithRetry([makeEnvelope('RUN_QUEUED', runId, runPayload, { entityId: runId, entityType: 'run' })], appendContext);
-    return scheduler.enqueue({ ...runPayload, appendContext, ...(effectiveRetryInput ? { input: effectiveRetryInput } : {}) });
+    return scheduler.enqueue({ ...runPayload, appendContext, input: effectiveRetryInput });
   }
 
   async function continueResearch(input: ContinueResearchInput): Promise<ContinueResearchResult> {

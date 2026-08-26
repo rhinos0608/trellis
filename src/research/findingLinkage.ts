@@ -12,10 +12,22 @@ import type {
   FindingClusterRelation,
   FindingClusterEdgeStrength,
 } from './internalTypes.js';
+import { hasNegationWord } from './state.js';
 
 const DEFAULT_LEXICAL_THRESHOLD = 0.58;
 const DEFAULT_DIRECT_THRESHOLD = 0.92;
 const DEFAULT_MAX_EDGES_PER_FINDING = 8;
+
+/** Two findings with opposite polarity must not share a cluster. */
+function samePolarity(a: Finding, b: Finding): boolean {
+  // Prefer structured polarity from GroundedFinding assertion, fall back to text-based detection
+  const aPolarity = 'assertion' in a ? (a as unknown as { assertion: { polarity?: string } }).assertion.polarity : undefined;
+  const bPolarity = 'assertion' in b ? (b as unknown as { assertion: { polarity?: string } }).assertion.polarity : undefined;
+  if (aPolarity !== undefined && bPolarity !== undefined) {
+    return aPolarity === bPolarity;
+  }
+  return hasNegationWord(a.claim) === hasNegationWord(b.claim);
+}
 
 function jaccardSimilarity(a: string, b: string): number {
   const setA = new Set(
@@ -99,15 +111,27 @@ export function buildFindingLinkage(
       const sim = jaccardSimilarity(fi.normalizedClaim, fj.normalizedClaim);
 
       if (sim >= directThreshold) {
-        uf.union(i, j);
-        candidateEdges.push({
-          id: randomUUID().slice(0, 12),
-          fromClusterId: '', // filled below
-          toClusterId: '',
-          relation: 'same_claim',
-          strength: 'strong',
-          score: sim,
-        });
+        if (samePolarity(fi, fj)) {
+          uf.union(i, j);
+          candidateEdges.push({
+            id: randomUUID().slice(0, 12),
+            fromClusterId: '', // filled below
+            toClusterId: '',
+            relation: 'same_claim',
+            strength: 'strong',
+            score: sim,
+          });
+        } else {
+          // Opposite polarity: do not cluster — record as contradiction
+          candidateEdges.push({
+            id: randomUUID().slice(0, 12),
+            fromClusterId: '',
+            toClusterId: '',
+            relation: 'contradicts',
+            strength: 'strong',
+            score: sim,
+          });
+        }
       } else if (sim >= lexicalThreshold) {
         candidateEdges.push({
           id: randomUUID().slice(0, 12),
@@ -180,8 +204,9 @@ export function buildFindingLinkage(
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);
 
-      const relation: FindingClusterRelation =
+      let relation: FindingClusterRelation =
         sim >= directThreshold ? 'same_claim' : 'supports';
+      if (!samePolarity(fi, fj)) relation = 'contradicts';
 
       edges.push({
         id: randomUUID().slice(0, 12),
