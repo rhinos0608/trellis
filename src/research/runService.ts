@@ -180,6 +180,14 @@ function resolveFamilyForRun(
 
 // ── Event emission helpers ────────────────────────────────────────────
 
+/** True when the run already has a terminal interruption/cancellation event
+ *  (e.g. RUN_INTERRUPTED appended by scheduler shutdown) — suppresses a
+ *  duplicate/misleading RUN_CANCELLED from the abort path. */
+function hasTerminalInterruptionEvent(runId: string): boolean {
+  const events = queryEvents({ runId });
+  return events.some((e) => e.eventType === 'RUN_CANCELLED' || e.eventType === 'RUN_INTERRUPTED');
+}
+
 function makeEnvelope(
   eventType: EventEnvelope['eventType'],
   runId: string,
@@ -729,12 +737,15 @@ export function createRunService(): RunService {
       // Execute
       const result = await strategy.analyze(query, strategyCtx);
 
-      if (abortSignal.aborted) {
-        // Cancellation
+      if (abortSignal.aborted && !hasTerminalInterruptionEvent(runId)) {
+        // Cancellation (user intent — shutdown interruption already recorded)
         await reportProgress({ phase: 'cancelled', message: 'Research cancelled' });
         appendWithRetry([
           makeEnvelope('RUN_CANCELLED', runId, { runId }, { entityId: runId, entityType: 'run' }),
         ], context);
+        activeRuns.delete(runId);
+        return;
+      } else if (abortSignal.aborted) {
         activeRuns.delete(runId);
         return;
       }
@@ -744,8 +755,10 @@ export function createRunService(): RunService {
       activeRuns.delete(runId);
     } catch (err: unknown) {
       if (abortSignal.aborted) {
-        await reportProgress({ phase: 'cancelled', message: 'Research cancelled' });
-        if (!queryEvents({ runId, eventType: 'RUN_CANCELLED' }).length) appendWithRetry([makeEnvelope('RUN_CANCELLED', runId, { runId }, { entityId: runId, entityType: 'run' })], context);
+        if (!hasTerminalInterruptionEvent(runId)) {
+          await reportProgress({ phase: 'cancelled', message: 'Research cancelled' });
+          appendWithRetry([makeEnvelope('RUN_CANCELLED', runId, { runId }, { entityId: runId, entityType: 'run' })], context);
+        }
         return;
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -763,6 +776,7 @@ export function createRunService(): RunService {
       ], context);
       activeRuns.delete(runId);
     } finally {
+      activeRuns.delete(runId);
       runContexts.delete(runId);
     }
   }
@@ -770,6 +784,7 @@ export function createRunService(): RunService {
   const scheduler = new JobScheduler({}, {
     getProvider: async (name) => providerByName.get(name) ?? (() => { throw new Error(`Provider not registered: ${name}`); })(),
     appendWithRetry,
+    rebuildAppendContext: () => ({ projection: getProjection(), handlers }),
     rebuildProjection: getProjection,
     executeResearch: (runId, familyId, input, signal, provider, providerCtx, reportProgress) => executeResearch(runId, familyId, { ...input, provider }, signal, providerCtx, reportProgress),
   });
