@@ -42,6 +42,8 @@ import type {
   ClaimReconciliation,
 } from './types.js';
 import { canonicalizeSourceUrl } from './sourceIdentity.js';
+import { classifySourceAuthority } from './sourceAuthority.js';
+import { deriveEpistemicState } from './epistemics.js';
 
 // ── Reverse index helpers ────────────────────────────────────────────────────
 
@@ -204,7 +206,7 @@ const handleClaimObserved: EventHandler = (event, state) => {
     if (!founderRolledBack) throw new EventReferenceInvalidError('CLAIM_OBSERVED', reconciliation.matchedClaimId ?? reconciliation.canonicalClaimId);
     const { id: _id, familyId: _family, threadId: _thread, runId: _run, observedAt: _at, confidence: _conf, sourceIds: _sources, extractionVersion: _version, ...assertion } = observation;
     const claim: Claim = { ...assertion, id: reconciliation.canonicalClaimId, familyId: observation.familyId, ...(observation.threadId !== undefined ? { threadId: observation.threadId } : {}), confidence: observation.confidence, currentObservationId: observation.id, firstSeenRunId: observation.runId, firstSeenAt: observation.observedAt, lastSeenRunId: observation.runId, lastSeenAt: observation.observedAt, contradictionState: 'none', epistemicStatus: 'unknown', observationIds: [observation.id], observationCount: 1, evidenceIds: [], supportingEvidenceCount: 0, opposingEvidenceCount: 0, confidenceHistory: [{ observationId: observation.id, runId: observation.runId, observedAt: observation.observedAt, confidence: observation.confidence }], revisionHistory: [] };
-    state.claims.set(claim.id, claim); addClaimFamilyIndex(state, claim); return;
+    state.claims.set(claim.id, claim); addClaimFamilyIndex(state, claim); recomputeClaim(state, claim); return;
   }
   if (reconciliation.classification === 'same_claim' && matched) {
     matched.observationIds = [...(matched.observationIds ?? []), observation.id];
@@ -215,6 +217,7 @@ const handleClaimObserved: EventHandler = (event, state) => {
     if (observation.objectText !== undefined) matched.objectText = observation.objectText;
     matched.confidence = matched.observationIds.reduce((sum, id) => sum + (state.claimObservations.get(id)?.confidence ?? matched.confidence), 0) / matched.observationIds.length;
     matched.confidenceHistory = [...(matched.confidenceHistory ?? []), { observationId: observation.id, runId: observation.runId, observedAt: observation.observedAt, confidence: observation.confidence }];
+    recomputeClaim(state, matched);
     return;
   }
   if (reconciliation.classification === 'supersedes' && matched) {
@@ -225,6 +228,7 @@ const handleClaimObserved: EventHandler = (event, state) => {
     Object.assign(matched, updatedAssertion, { observationIds: [...(matched.observationIds ?? []), observation.id], observationCount: (matched.observationIds?.length ?? 0) + 1, currentObservationId: observation.id, lastSeenRunId: observation.runId, lastSeenAt: observation.observedAt, confidence: observation.confidence });
     matched.confidenceHistory = [...(matched.confidenceHistory ?? []), { observationId: observation.id, runId: observation.runId, observedAt: observation.observedAt, confidence: observation.confidence }];
     matched.revisionHistory = [...(matched.revisionHistory ?? []), { revision: (matched.revisionHistory?.length ?? 0) + 1, classification: 'supersedes', fromObservationId: supersedes.previousObservationId, toObservationId: observation.id, runId: observation.runId, revisedAt: observation.observedAt, before, after: observation, rationale: reconciliation.rationale }];
+    recomputeClaim(state, matched);
     return;
   }
   const { id: _observationId, familyId: _familyId, threadId: _threadId, runId: _runId, observedAt: _observedAt, confidence: _confidence, sourceIds: _sourceIds, extractionVersion: _extractionVersion, ...assertion } = observation;
@@ -241,20 +245,28 @@ const handleClaimObserved: EventHandler = (event, state) => {
     state.claimRelations.set(relation.id, relation); addClaimRelationIndex(state, relation);
     if (reconciliation.classification === 'contradiction') state.contradictions.set(`contra_${event.id}`, { id: `contra_${event.id}`, familyId: claim.familyId, claimIdA: claim.id, claimIdB: matched.id, contradictionType: 'factual_disagreement', resolutionStatus: 'unresolved', firstSeenRunId: event.runId });
   }
+  recomputeClaim(state, claim);
+  if (matched) recomputeClaim(state, matched);
 };
 
 /** EVIDENCE_LINKED — add an Evidence record. */
 const handleEvidenceLinked: EventHandler = (event, state) => {
   const evidence = event.payload as Evidence;
   const previous = state.evidence.get(evidence.id);
-  if (previous && previous.claimId !== evidence.claimId) state.evidenceByClaimId.get(previous.claimId)?.delete(evidence.id);
+  if (previous && previous.claimId !== evidence.claimId) {
+    state.evidenceByClaimId.get(previous.claimId)?.delete(evidence.id);
+    const prevClaim = state.claims.get(previous.claimId);
+    if (prevClaim) {
+      prevClaim.evidenceIds = (prevClaim.evidenceIds ?? []).filter((id) => id !== evidence.id);
+      recomputeClaim(state, prevClaim);
+    }
+  }
   state.evidence.set(evidence.id, evidence);
   addEvidenceIndex(state, evidence);
   const claim = state.claims.get(evidence.claimId);
   if (claim && !(claim.evidenceIds ?? []).includes(evidence.id)) claim.evidenceIds = [...(claim.evidenceIds ?? []), evidence.id];
   if (claim) {
-    claim.supportingEvidenceCount = countStance(state, claim, 'supports');
-    claim.opposingEvidenceCount = countStance(state, claim, 'opposes');
+    recomputeClaim(state, claim);
   }
 };
 
@@ -262,6 +274,11 @@ const handleEvidenceLinked: EventHandler = (event, state) => {
 const handleContradictionIdentified: EventHandler = (event, state) => {
   const contradiction = event.payload as Contradiction;
   state.contradictions.set(contradiction.id, contradiction);
+  // Re-derive both affected claims
+  const claimA = state.claims.get(contradiction.claimIdA);
+  if (claimA) recomputeClaim(state, claimA);
+  const claimB = state.claims.get(contradiction.claimIdB);
+  if (claimB) recomputeClaim(state, claimB);
 };
 
 /** CONTRADICTION_RESOLVED — update resolution status. */
@@ -271,6 +288,11 @@ const handleContradictionResolved: EventHandler = (event, state) => {
   if (c) {
     c.resolutionStatus = p.newStatus as Contradiction['resolutionStatus'];
     c.resolvedRunId = event.runId;
+    // Re-derive both affected claims
+    const claimA = state.claims.get(c.claimIdA);
+    if (claimA) recomputeClaim(state, claimA);
+    const claimB = state.claims.get(c.claimIdB);
+    if (claimB) recomputeClaim(state, claimB);
   }
 };
 
@@ -313,6 +335,7 @@ const handleSourceObserved: EventHandler = (event, state) => {
   const payload = event.payload as SourceObservedPayload;
   const existing = state.sources.get(payload.sourceId);
   if (!existing) {
+    const authorityClass = payload.authorityClass ?? classifySourceAuthority({ url: payload.url, domain: payload.domain, sourceType: payload.sourceType });
     const source: Source = {
       id: payload.sourceId,
       url: payload.url,
@@ -320,7 +343,7 @@ const handleSourceObserved: EventHandler = (event, state) => {
       ...(payload.title !== undefined ? { title: payload.title } : {}),
       domain: payload.domain,
       sourceType: payload.sourceType,
-      ...(payload.authorityClass !== undefined ? { authorityClass: payload.authorityClass } : {}),
+      authorityClass,
       ...(payload.qualityScore !== undefined ? { qualityScore: payload.qualityScore } : {}),
       isPrimary: payload.isPrimary,
       extractionStatus: payload.extractionStatus,
@@ -333,6 +356,9 @@ const handleSourceObserved: EventHandler = (event, state) => {
     };
     state.sources.set(source.id, source);
     return;
+  }
+  if (existing.authorityClass === undefined) {
+    existing.authorityClass = classifySourceAuthority({ url: payload.url, domain: payload.domain, sourceType: payload.sourceType });
   }
   existing.runCount += 1;
   existing.lastSeenRunId = payload.runId;
@@ -422,7 +448,6 @@ function recomputeClaim(state: ProjectionState, claim: Claim): void {
   const materialized = realObs.length > 0 ? realObs : observations;
   const active = materialized.filter(activeObservation);
   claim.observationCount = active.length;
-  claim.confidence = active.length ? active.reduce((sum, o) => sum + o.confidence, 0) / active.length : 0;
   claim.supportingEvidenceCount = countStance(state, claim, 'supports');
   claim.opposingEvidenceCount = countStance(state, claim, 'opposes');
   const current = active.slice().sort((a, b) => b.observedAt.localeCompare(a.observedAt) || a.id.localeCompare(b.id))[0];
@@ -431,6 +456,13 @@ function recomputeClaim(state: ProjectionState, claim: Claim): void {
     const { id: _id, familyId: _family, threadId: _thread, runId: _run, observedAt: _at, confidence: _confidence, sourceIds: _sources, extractionVersion: _version, curationStatus: _status, lastCuration: _last, ...assertion } = current;
     projectClaimAssertion(claim, assertion);
   } else delete claim.currentObservationId;
+  // Derive epistemic state from observations, evidence, sources, contradictions
+  const asOf = claim.lastSeenAt ?? new Date().toISOString();
+  const derived = deriveEpistemicState(state, claim, asOf);
+  claim.confidence = derived.confidence;
+  claim.epistemicStatus = derived.epistemicStatus;
+  claim.contradictionState = derived.contradictionState;
+  claim.supportLevel = derived.supportLevel;
 }
 /** Evidence counts ignore records whose observation was retracted — retracted
  * observations must not contribute support to the canonical claim. Evidence

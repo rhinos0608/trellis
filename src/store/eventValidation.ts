@@ -99,7 +99,7 @@ export function validateEventReferences(eventType: string, payload: any, state: 
   const entity = (id: string) => { if (!state.entities.has(id)) missing(`entity ${id}`); };
   const thread = (id: string, familyId?: string) => { const t = state.threads.get(id); if (!t) missing(`thread ${id}`); if (familyId && t?.familyId !== familyId) missing(`thread ${id} family`); };
   switch (eventType) {
-    case 'CLAIM_OBSERVED': family(payload.observation.familyId); if (payload.observation.threadId !== undefined) thread(payload.observation.threadId, payload.observation.familyId); if (payload.reconciliation.matchedClaimId !== undefined) claim(payload.reconciliation.matchedClaimId); break;
+    case 'CLAIM_OBSERVED': family(payload.observation.familyId); if (payload.observation.threadId !== undefined) thread(payload.observation.threadId, payload.observation.familyId); if (payload.reconciliation.matchedClaimId !== undefined) claim(payload.reconciliation.matchedClaimId); if (payload.observation.subjectEntityId !== undefined) entity(payload.observation.subjectEntityId); if (payload.observation.objectEntityId !== undefined) entity(payload.observation.objectEntityId); break;
     case 'CLAIM_ACCEPTED': family(payload.familyId); if (payload.threadId !== undefined) thread(payload.threadId, payload.familyId); if (payload.subjectEntityId !== undefined) entity(payload.subjectEntityId); if (payload.objectEntityId !== undefined) entity(payload.objectEntityId); break;
     case 'EVIDENCE_LINKED': claim(payload.claimId); if (!state.sources.has(payload.sourceId)) missing(`source ${payload.sourceId}`); break;
     case 'EDGE_ADDED': claim(payload.fromClaimId); claim(payload.toClaimId); break;

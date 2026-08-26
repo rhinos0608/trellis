@@ -12,7 +12,11 @@ export interface PlannedClaimObservation {
 }
 
 const MAX_CANDIDATES = 5;
-export const RECONCILER_VERSION = 2 as const;
+export const RECONCILER_VERSION = 3 as const;
+
+// Ambiguity guard constants — same values as workspace/familyResolver.ts
+// for cross-module consistency. Defined locally per module policy.
+const AMBIGUITY_MIN_GAP = 0.10;
 
 function normalize(text: string): string {
   return text.toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -68,13 +72,22 @@ function scorePair(observation: ClaimObservation, claim: Claim): number {
   if (sameKey(observation, claim)
     && observation.polarity === claim.polarity
     && numericCompatibility(observation, claim) !== false) return 1;
+  // Entity-equality signal: same subjectEntityId is a strong positive
+  // scope signal but must not short-circuit; predicate/object/polarity
+  // and temporal compatibility still determine the final score.
+  const obsEntity = observation.subjectEntityId;
+  const claimEntity = claim.subjectEntityId;
+  const entityMatch = obsEntity !== undefined && claimEntity !== undefined && obsEntity === claimEntity;
+  const entityMismatch = obsEntity !== undefined && claimEntity !== undefined && obsEntity !== claimEntity;
+  if (entityMismatch) return 0;
   const text = jaccard(assertionText(observation), assertionText(claim));
   const numeric = numericCompatibility(observation, claim);
   // v1 transparent weights: text 70%, numeric 15%, polarity 10%, hedge 5%.
   const numericScore = numeric === undefined ? 0.5 : numeric ? 1 : 0;
   const polarityScore = observation.polarity === claim.polarity ? 1 : 0;
   const hedgeScore = observation.hedge === claim.hedge ? 1 : 0;
-  return Math.max(0, Math.min(1, text * 0.7 + numericScore * 0.15 + polarityScore * 0.1 + hedgeScore * 0.05));
+  const base = Math.max(0, Math.min(1, text * 0.7 + numericScore * 0.15 + polarityScore * 0.1 + hedgeScore * 0.05));
+  return entityMatch ? Math.max(base, 0.85) : base;
 }
 
 function newer(observation: ClaimObservation, claim: Claim): boolean {
@@ -135,7 +148,13 @@ function sameScope(observation: ClaimObservation, claim: Claim): boolean {
   return true;
 }
 
-function classify(observation: ClaimObservation, claim: Claim, score: number): ClaimReconciliation['classification'] {
+function classify(
+  observation: ClaimObservation,
+  claim: Claim,
+  score: number,
+  topScore?: number,
+  secondScore?: number,
+): ClaimReconciliation['classification'] {
   const numeric = numericCompatibility(observation, claim);
   const scoped = sameScope(observation, claim);
   // Polarity/numeric contradictions only when claims share the same scope
@@ -144,7 +163,20 @@ function classify(observation: ClaimObservation, claim: Claim, score: number): C
   if (hasReplacementSignal(observation, claim)) return 'supersedes';
   if (isNarrowing(observation, claim)) return 'qualification';
   if (isElaboration(observation, claim)) return 'elaboration';
-  if (sameKey(observation, claim) || (score >= 0.92 && scoped)) return 'same_claim';
+  // Entity-equality hard negative: different subjectEntityId → never same_claim
+  const obsEntity = observation.subjectEntityId;
+  const claimEntity = claim.subjectEntityId;
+  if (obsEntity && claimEntity && obsEntity !== claimEntity && score >= 0.92) return 'near_duplicate';
+  if (sameKey(observation, claim) || (score >= 0.92 && scoped)) {
+    // Ambiguity downgrade: if top-2 scores are near-tied and neither is an exact
+    // canonical-key or entity-id match, downgrade same_claim → near_duplicate.
+    if (topScore !== undefined && secondScore !== undefined
+      && topScore - secondScore < AMBIGUITY_MIN_GAP
+      && !sameKey(observation, claim)) {
+      return 'near_duplicate';
+    }
+    return 'same_claim';
+  }
   if (score >= 0.78) return 'near_duplicate';
   return 'new_claim';
 }
@@ -173,9 +205,17 @@ function assertionFromClaim({
   return assertion;
 }
 
+export interface PlanClaimObservationOptions {
+  /** Seams for future semantic resolution — not implemented yet. */
+  semanticCandidates?: (obs: ClaimObservation) => Claim[];
+  /** Seams for future semantic adjudication — not implemented yet. */
+  adjudicate?: (obs: ClaimObservation, candidates: Claim[]) => ClaimReconciliation['classification'] | undefined;
+}
+
 export function planClaimObservation(
   observation: ClaimObservation,
   state: ProjectionState,
+  _options?: PlanClaimObservationOptions,
 ): PlannedClaimObservation {
   const claims = [...(state.claimsByFamilyId.get(observation.familyId) ?? [])]
     .map((id) => state.claims.get(id))
@@ -187,20 +227,25 @@ export function planClaimObservation(
   });
   const top = scored.slice(0, MAX_CANDIDATES);
   const best = top[0];
-  const classification = best ? classify(observation, best.claim, best.score) : 'new_claim';
+  const topScore = best?.score;
+  const secondScore = top[1]?.score;
+  const classification = best ? classify(observation, best.claim, best.score, topScore, secondScore) : 'new_claim';
   const createsClaim = classification === 'new_claim' || classification === 'near_duplicate' || classification === 'elaboration' || classification === 'qualification' || classification === 'contradiction';
   const canonicalClaimId = createsClaim ? `claim_${observation.id}` : best?.claim.id ?? `claim_${observation.id}`;
+  const method = best !== undefined && sameKey(observation, best.claim) ? 'canonical_key_exact'
+    : (topScore !== undefined && topScore >= 0.92 && sameScope(observation, best!.claim)) ? 'entity_aware_v3'
+    : 'lexical_rules_v2';
   const reconciliation: ClaimReconciliation = {
     observationId: observation.id,
     classification,
     canonicalClaimId,
     ...(best && classification !== 'new_claim' ? { matchedClaimId: best.claim.id } : {}),
     score: best?.score ?? 0,
-    method: best !== undefined && sameKey(observation, best.claim) ? 'canonical_key_exact' : 'lexical_rules_v2',
+    method,
     rationale: rationale(classification, best?.score ?? 0),
     reconcilerVersion: RECONCILER_VERSION,
     candidates: top.flatMap(({ claim, score }) => {
-      const candidateClassification = classify(observation, claim, score);
+      const candidateClassification = classify(observation, claim, score, topScore, secondScore);
       if (candidateClassification === 'new_claim') return [];
       return [{ claimId: claim.id, classification: candidateClassification, score }];
     }),

@@ -346,7 +346,7 @@ describe('projectionHandlers', () => {
       );
       expect(state.sources.size).toBe(1);
       expect(state.sources.get('src-1')!.url).toBe('https://example.com');
-      expect(state.sources.get('src-1')!.canonicalUrl).toBe('https://example.com/');
+      expect(state.sources.get('src-1')!.canonicalUrl).toBe('https://example.com');
       expect(state.sources.get('src-1')!.lastSeenRunId).toBe('run-1');
       expect(state.sources.get('src-1')!.retrievedAt).toBe('2025-01-01T00:00:00.000Z');
       expect(state.sources.get('src-1')!.runCount).toBe(1);

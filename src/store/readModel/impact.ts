@@ -48,7 +48,8 @@ export const READ_MODEL_IMPACT = {
     };
   },
   EVIDENCE_LINKED: (e) => ({ evidenceIds: ids([p(e).id]), claimIds: ids([p(e).claimId]) }),
-  CONTRADICTION_IDENTIFIED: none, CONTRADICTION_RESOLVED: none,
+  CONTRADICTION_IDENTIFIED: (e) => { const x = p(e); return { claimIds: ids([x.claimIdA, x.claimIdB]) }; },
+  CONTRADICTION_RESOLVED: (e, state) => { const x = p(e); const c = state.contradictions.get(String(x.contradictionId)); return { claimIds: ids(c ? [c.claimIdA, c.claimIdB] : []) }; },
   GAP_OPENED: none, GAP_RESOLVED: none, SYNTHESIS_COMPLETED: none,
   RUN_CANCELLED: none, RUN_QUEUED: none, RUN_STARTING: none, RUN_RUNNING: none,
   RUN_PROGRESS: none, RUN_HEARTBEAT: none, RUN_CANCELLATION_REQUESTED: none, RUN_INTERRUPTED: none,

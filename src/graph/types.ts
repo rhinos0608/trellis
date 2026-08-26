@@ -226,11 +226,11 @@ export type ClaimRelationType =
 
 export type ClaimRelationStrength = 'strong' | 'weak';
 export type ClaimReconciliationKind = 'same_claim' | 'near_duplicate' | 'elaboration' | 'qualification' | 'contradiction' | 'supersedes' | 'new_claim';
-export type ClaimReconciliationMethod = 'canonical_key_exact' | 'lexical_rules_v1' | 'lexical_rules_v2' | 'legacy_import';
+export type ClaimReconciliationMethod = 'canonical_key_exact' | 'lexical_rules_v1' | 'lexical_rules_v2' | 'entity_aware_v3' | 'legacy_import';
 export interface ClaimMatchCandidate { claimId: string; classification: Exclude<ClaimReconciliationKind, 'new_claim'>; score: number; }
 export interface ClaimReconciliation {
   observationId: string; classification: ClaimReconciliationKind; canonicalClaimId: string; matchedClaimId?: string;
-  score: number; method: ClaimReconciliationMethod; rationale: string; reconcilerVersion: 1 | 2;
+  score: number; method: ClaimReconciliationMethod; rationale: string; reconcilerVersion: 1 | 2 | 3;
   candidates: ClaimMatchCandidate[]; supersedes?: { previousObservationId: string; previousAssertion: ClaimAssertion };
 }
 

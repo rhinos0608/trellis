@@ -145,7 +145,7 @@ describe('claim reconciler', () => {
   it('emits canonical_key_exact when canonicalKey matches exactly', () => {
     const r = result(observation('o1'), claim('c1'));
     expect(r.method).toBe('canonical_key_exact');
-    expect(r.reconcilerVersion).toBe(2);
+    expect(r.reconcilerVersion).toBe(3);
   });
 
   it('supersedes.previousAssertion contains only assertion fields, not claim-only fields', () => {
@@ -178,5 +178,94 @@ describe('claim reconciler', () => {
     expect(pa).not.toHaveProperty('revisionHistory');
     expect(pa).not.toHaveProperty('evidenceIds');
     expect(pa).not.toHaveProperty('observationIds');
+  });
+
+  // ── Entity-aware reconciliation (v3) ───────────────────────────────────
+
+  it('same_claim when subjectEntityId matches even with different text', () => {
+    // Two claims about NVIDIA H100 but with slightly different text
+    // Same subjectEntityId → strong positive entity signal → same_claim
+    const existing = claim('c1', {
+      subjectEntityId: 'entity-nvidia-h100',
+      subjectText: 'NVIDIA H100 GPU',
+      objectText: '80GB memory',
+      canonicalKey: { subject: 'nvidia h100', predicate: 'has' },
+    });
+    const obs1 = observation('o1', {
+      subjectEntityId: 'entity-nvidia-h100',
+      subjectText: 'NVIDIA H100',
+      objectText: '80GB memory',
+      canonicalKey: { subject: 'nvidia h100', predicate: 'has' },
+    });
+    expect(result(obs1, existing).classification).toBe('same_claim');
+  });
+
+  it('never same_claim when subjectEntityIds differ regardless of text similarity', () => {
+    // Identical text but different entity IDs — entity signal hard-negates
+    const existing = claim('c1', {
+      subjectEntityId: 'entity-a',
+      subjectText: 'CUDA support',
+      objectText: 'frameworks',
+      canonicalKey: { subject: 'cuda support', predicate: 'has' },
+    });
+    const obs1 = observation('o1', {
+      subjectEntityId: 'entity-b',
+      subjectText: 'CUDA support',
+      objectText: 'frameworks',
+      canonicalKey: { subject: 'cuda support', predicate: 'has' },
+    });
+    expect(result(obs1, existing).classification).not.toBe('same_claim');
+  });
+
+  it('ambiguity downgrade: near-tied text scores without entity confirmation → near_duplicate', () => {
+    // Two existing claims with similar text but neither exact canonical key match.
+    // Top-2 scores are near-tied and low confidence → ambiguity guard downgrades to near_duplicate
+    const existing1 = claim('c1', {
+      subjectText: 'machine learning', predicate: 'requires', objectText: 'data',
+      canonicalKey: { subject: 'machine learning', predicate: 'requires' },
+    });
+    const existing2 = claim('c2', {
+      subjectText: 'deep learning', predicate: 'requires', objectText: 'data',
+      canonicalKey: { subject: 'deep learning', predicate: 'requires' },
+    });
+    // Observation that is very similar to both existing claims but not an exact key match
+    const obs1 = observation('o1', {
+      subjectText: 'machine learning models', predicate: 'needs', objectText: 'training data',
+      canonicalKey: { subject: 'machine learning models', predicate: 'needs' },
+    });
+    const reconciliation = planClaimObservation(obs1, stateWith(existing1, existing2)).reconciliation;
+    // The classification should NOT be same_claim (would have been on text score alone)
+    // because neither exact canonical key nor entity ID confirms it
+    expect(reconciliation.classification).not.toBe('same_claim');
+  });
+
+  it('still same_claim when entity IDs match AND canonical key matches', () => {
+    // Entity ID match + canonical key match → definite same_claim
+    const existing = claim('c1', {
+      subjectEntityId: 'entity-trellis',
+      subjectText: 'Trellis', predicate: 'supports', objectText: 'reconciliation',
+      canonicalKey: { subject: 'trellis', predicate: 'supports' },
+    });
+    const obs1 = observation('o1', {
+      subjectEntityId: 'entity-trellis',
+      subjectText: 'Trellis system', predicate: 'supports', objectText: 'reconciliation',
+      canonicalKey: { subject: 'trellis', predicate: 'supports' },
+    });
+    expect(result(obs1, existing).classification).toBe('same_claim');
+  });
+
+  it('observation with subjectEntityId only uses entity signal for subject', () => {
+    // Only observation has subjectEntityId set (claim doesn't) → entity signal skipped (not both set)
+    const existing = claim('c1', {
+      subjectText: 'Trellis', predicate: 'supports', objectText: 'reconciliation',
+      canonicalKey: { subject: 'trellis', predicate: 'supports' },
+    });
+    const obs1 = observation('o1', {
+      subjectEntityId: 'entity-trellis',
+      subjectText: 'Trellis', predicate: 'supports', objectText: 'reconciliation',
+      canonicalKey: { subject: 'trellis', predicate: 'supports' },
+    });
+    // Without both entity IDs set, falls back to text scoring — canonical key match → same_claim
+    expect(result(obs1, existing).classification).toBe('same_claim');
   });
 });

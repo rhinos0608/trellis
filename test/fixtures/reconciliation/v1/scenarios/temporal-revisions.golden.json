@@ -2,7 +2,7 @@
   "corpusVersion": 1,
   "projectionVersion": 5,
   "reconcilerVersion": 2,
-  "checksum": "sha256:projection-v1:fa392156358620ef9cee2c922957401e53474acd5158631a0fd1a44c9013638f",
+  "checksum": "sha256:projection-v1:2b6b4558dbe2d92ff89b48e044f91ae7ccb622ce47f79c79779ce5955d523fca",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -14,7 +14,7 @@
             "predicate": "supports",
             "subject": "trellis"
           },
-          "confidence": 0.9,
+          "confidence": 0.875,
           "confidenceHistory": [
             {
               "confidence": 0.8,
@@ -42,7 +42,8 @@
             }
           ],
           "contradictionState": "none",
-          "currentObservationId": "t4",
+          "currentObservationId": "t1",
+          "epistemicStatus": "emerging",
           "evidenceIds": [],
           "evidenceType": "study",
           "familyId": "eval-family",
@@ -52,8 +53,8 @@
           "id": "claim-1",
           "lastSeenAt": "2025-01-01T00:00:00.000Z",
           "lastSeenRunId": "eval-run",
-          "objectText": "replaces legacy sync engine entirely",
-          "observationCount": 4,
+          "objectText": "replaces legacy sync engine",
+          "observationCount": 3,
           "observationIds": [
             "obs_legacy_claim-1",
             "t1",
@@ -150,6 +151,7 @@
                 "polarity": "asserted",
                 "predicate": "supports",
                 "subjectText": "Trellis",
+                "supportLevel": "weak",
                 "temporalScope": {
                   "dateConfidence": "exact",
                   "eventDate": "2025-01-01",
@@ -157,7 +159,7 @@
                 }
               },
               "classification": "supersedes",
-              "fromObservationId": "t2",
+              "fromObservationId": "t1",
               "rationale": "Deterministic lexical reconciliation: supersedes (score=0.825).",
               "revisedAt": "2025-01-01T00:00:00.000Z",
               "revision": 2,
@@ -166,10 +168,11 @@
             }
           ],
           "subjectText": "Trellis",
+          "supportLevel": "weak",
           "supportingEvidenceCount": 0,
           "temporalScope": {
             "dateConfidence": "exact",
-            "eventDate": "2026-01-01",
+            "eventDate": "2025-01-01",
             "eventType": "updated"
           }
         }
@@ -192,7 +195,7 @@
           ],
           "contradictionState": "none",
           "currentObservationId": "t3",
-          "epistemicStatus": "unknown",
+          "epistemicStatus": "speculative",
           "evidenceIds": [],
           "evidenceType": "study",
           "familyId": "eval-family",
@@ -212,6 +215,7 @@
           "predicate": "supports",
           "revisionHistory": [],
           "subjectText": "Trellis",
+          "supportLevel": "weak",
           "supportingEvidenceCount": 0,
           "temporalScope": {
             "dateConfidence": "exact",
@@ -378,7 +382,7 @@
           "method": "lexical_rules_v2",
           "observationId": "t1",
           "rationale": "Deterministic lexical reconciliation: supersedes (score=0.692).",
-          "reconcilerVersion": 2,
+          "reconcilerVersion": 3,
           "score": 0.6916666666666667,
           "supersedes": {
             "previousAssertion": {
@@ -418,7 +422,7 @@
           "method": "canonical_key_exact",
           "observationId": "t2",
           "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
-          "reconcilerVersion": 2,
+          "reconcilerVersion": 3,
           "score": 1
         }
       ],
@@ -431,7 +435,7 @@
           "method": "lexical_rules_v2",
           "observationId": "t3",
           "rationale": "Deterministic lexical reconciliation: new_claim (score=0.692).",
-          "reconcilerVersion": 2,
+          "reconcilerVersion": 3,
           "score": 0.6916666666666667
         }
       ],
@@ -456,7 +460,7 @@
           "method": "lexical_rules_v2",
           "observationId": "t4",
           "rationale": "Deterministic lexical reconciliation: supersedes (score=0.825).",
-          "reconcilerVersion": 2,
+          "reconcilerVersion": 3,
           "score": 0.825,
           "supersedes": {
             "previousAssertion": {
@@ -470,13 +474,14 @@
               "polarity": "asserted",
               "predicate": "supports",
               "subjectText": "Trellis",
+              "supportLevel": "weak",
               "temporalScope": {
                 "dateConfidence": "exact",
                 "eventDate": "2025-01-01",
                 "eventType": "updated"
               }
             },
-            "previousObservationId": "t2"
+            "previousObservationId": "t1"
           }
         }
       ]

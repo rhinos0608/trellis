@@ -15,10 +15,10 @@ export type {
   ClaimClusteringResult,
 } from './claimClustering.js';
 export { clusterClaims } from './claimClustering.js';
-export type { PlannedClaimObservation } from './claimReconciler.js';
+export type { PlannedClaimObservation, PlanClaimObservationOptions } from './claimReconciler.js';
 export { planClaimObservation } from './claimReconciler.js';
-export { detectContradictions } from './contradictionDetection.js';
-export type { ContradictionDetectionResult } from './contradictionDetection.js';
+export { resolveClaimEntities, type ResolveClaimEntitiesResult } from './claimEntityResolution.js';
+export { deriveEpistemicState, type DerivedEpistemics } from './epistemics.js';
 export { assessEvidenceAlignment } from './evidenceAlignment.js';
 export type { AssessableFinding } from './evidenceAlignment.js';
 export {

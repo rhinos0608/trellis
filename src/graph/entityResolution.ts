@@ -165,30 +165,40 @@ export function findMergeCandidates(
 
     // Stage 2: Jaccard pre-filter
     const jaccard = labelJaccard(newLabel, entity.label);
-    if (jaccard < threshold * 0.5) continue; // fast reject
+    const hasLlm = typeof options?.llmJudgesSameEntity === 'function';
+    // When LLM is available, use a relaxed threshold (0.5x) so the LLM can
+    // override borderline Jaccard scores. Without LLM, keep the strict filter.
+    const jaccardCutoff = hasLlm ? threshold * 0.3 : threshold * 0.5;
+    if (jaccard < jaccardCutoff) continue; // fast reject
 
     // Also check against entity's canonicalLabel
     const canonicalMatch =
       entity.canonicalLabel !== null &&
-      labelJaccard(newLabel, entity.canonicalLabel) >= threshold * 0.5;
-    if (jaccard < threshold && !canonicalMatch) continue;
+      labelJaccard(newLabel, entity.canonicalLabel) >= jaccardCutoff;
+    if (jaccard < threshold && !canonicalMatch) {
+      // Without LLM, strict reject. With LLM, fall through to let it decide.
+      if (!hasLlm) continue;
+    }
 
     // Stage 3: LLM judgment (if available) or use Jaccard score
     if (options?.llmJudgesSameEntity) {
-      const isSame = options.llmJudgesSameEntity(newLabel, newType, entity.label, entity.entityType);
-      if (typeof isSame === 'boolean') {
-        if (isSame) {
-          candidates.push({
-            fromId: '',
-            intoId: entity.id,
-            reason: `LLM judgment: "${newLabel}" matches existing "${entity.label}"`,
-            confidence: jaccard,
-          });
+      try {
+        const isSame = options.llmJudgesSameEntity(newLabel, newType, entity.label, entity.entityType);
+        if (typeof isSame === 'boolean') {
+          if (isSame) {
+            candidates.push({
+              fromId: '',
+              intoId: entity.id,
+              reason: `LLM judgment: "${newLabel}" matches existing "${entity.label}"`,
+              confidence: jaccard,
+            });
+          }
+          continue;
         }
-        continue;
+      } catch {
+        // LLM threw — treat as non-match for this candidate, continue scanning.
       }
-      // If the function returned a non-boolean (shouldn't happen with sync check above)
-      // treat as non-match for safety
+      // Non-boolean return or exception — skip this candidate.
       continue;
     }
 

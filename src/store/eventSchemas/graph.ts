@@ -138,8 +138,8 @@ const claimReconciliationPayload = z.strictObject({
   classification: z.enum(['same_claim', 'near_duplicate', 'elaboration', 'qualification', 'contradiction', 'supersedes', 'new_claim']),
   canonicalClaimId: z.string(), matchedClaimId: z.string().optional(),
   score: z.number().min(0).max(1),
-  method: z.enum(['canonical_key_exact', 'lexical_rules_v1', 'lexical_rules_v2', 'legacy_import']),
-  rationale: z.string(), reconcilerVersion: z.union([z.literal(1), z.literal(2)]),
+  method: z.enum(['canonical_key_exact', 'lexical_rules_v1', 'lexical_rules_v2', 'entity_aware_v3', 'legacy_import']),
+  rationale: z.string(), reconcilerVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   candidates: z.array(z.strictObject({
     claimId: z.string(), classification: z.enum(['same_claim', 'near_duplicate', 'elaboration', 'qualification', 'contradiction', 'supersedes']), score: z.number().min(0).max(1),
   })).max(5),
@@ -253,6 +253,8 @@ export const gapOpenedPayload = z.strictObject({
   ]),
   status: z.enum(['open', 'in_progress', 'partially_resolved', 'resolved', 'deferred', 'unresolvable']),
   priority: z.number(),
+  missingSourceTypes: z.array(z.string()).optional(),
+  dominantSourceType: z.string().optional(),
   relatedClaimId: z.string().optional(),
   relatedContradictionId: z.string().optional(),
   resolution: z.strictObject({

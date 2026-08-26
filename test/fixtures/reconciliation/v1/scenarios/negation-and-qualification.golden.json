@@ -2,7 +2,7 @@
   "corpusVersion": 1,
   "projectionVersion": 5,
   "reconcilerVersion": 2,
-  "checksum": "sha256:projection-v1:2d0064aaf2daa4bb43b549d0347b06eca0291b9fc52c770015232bc3adb3c994",
+  "checksum": "sha256:projection-v1:b4a08dc679427241f91ded9b3a208c2ce70d6ee77b47468701b6abcabe2329c9",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -14,7 +14,7 @@
             "predicate": "supports",
             "subject": "trellis"
           },
-          "confidence": 0.8500000000000001,
+          "confidence": 0.85,
           "confidenceHistory": [
             {
               "confidence": 0.8,
@@ -29,8 +29,9 @@
               "runId": "eval-run"
             }
           ],
-          "contradictionState": "none",
+          "contradictionState": "contested",
           "currentObservationId": "g3",
+          "epistemicStatus": "contested",
           "evidenceIds": [],
           "evidenceType": "study",
           "familyId": "eval-family",
@@ -41,7 +42,7 @@
           "lastSeenAt": "2025-01-01T00:00:00.000Z",
           "lastSeenRunId": "eval-run",
           "objectText": "claim reconciliation",
-          "observationCount": 2,
+          "observationCount": 1,
           "observationIds": [
             "obs_legacy_claim-1",
             "g3"
@@ -51,6 +52,7 @@
           "predicate": "supports",
           "revisionHistory": [],
           "subjectText": "Trellis",
+          "supportLevel": "conflicting",
           "supportingEvidenceCount": 0
         }
       ],
@@ -76,9 +78,9 @@
               "runId": "eval-run"
             }
           ],
-          "contradictionState": "none",
-          "currentObservationId": "g4",
-          "epistemicStatus": "unknown",
+          "contradictionState": "contested",
+          "currentObservationId": "g1",
+          "epistemicStatus": "contested",
           "evidenceIds": [],
           "evidenceType": "study",
           "familyId": "eval-family",
@@ -99,6 +101,7 @@
           "predicate": "supports",
           "revisionHistory": [],
           "subjectText": "Trellis",
+          "supportLevel": "conflicting",
           "supportingEvidenceCount": 0
         }
       ],
@@ -120,7 +123,7 @@
           ],
           "contradictionState": "none",
           "currentObservationId": "g2",
-          "epistemicStatus": "unknown",
+          "epistemicStatus": "speculative",
           "evidenceIds": [],
           "evidenceType": "study",
           "familyId": "eval-family",
@@ -140,6 +143,7 @@
           "predicate": "supports",
           "revisionHistory": [],
           "subjectText": "Trellis",
+          "supportLevel": "weak",
           "supportingEvidenceCount": 0
         }
       ]
@@ -276,7 +280,7 @@
           "method": "canonical_key_exact",
           "observationId": "g1",
           "rationale": "Deterministic lexical reconciliation: contradiction (score=0.825).",
-          "reconcilerVersion": 2,
+          "reconcilerVersion": 3,
           "score": 0.825
         }
       ],
@@ -301,7 +305,7 @@
           "method": "canonical_key_exact",
           "observationId": "g2",
           "rationale": "Deterministic lexical reconciliation: qualification (score=0.825).",
-          "reconcilerVersion": 2,
+          "reconcilerVersion": 3,
           "score": 0.825
         }
       ],
@@ -331,7 +335,7 @@
           "method": "canonical_key_exact",
           "observationId": "g3",
           "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
-          "reconcilerVersion": 2,
+          "reconcilerVersion": 3,
           "score": 1
         }
       ],
@@ -361,7 +365,7 @@
           "method": "canonical_key_exact",
           "observationId": "g4",
           "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
-          "reconcilerVersion": 2,
+          "reconcilerVersion": 3,
           "score": 1
         }
       ]
