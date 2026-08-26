@@ -113,6 +113,42 @@ const KnowledgeEntitySchema = z.object({
   label: z.string().optional().describe('Entity label (case-insensitive exact match)'),
 });
 
+const KnowledgeBeliefSchema = z.object({
+  action: z.literal('belief'),
+  claimId: z.string().describe('Claim ID'),
+});
+
+const KnowledgeWhySchema = z.object({
+  action: z.literal('why'),
+  claimId: z.string().describe('Claim ID'),
+});
+
+const KnowledgeTimelineSchema = z.object({
+  action: z.literal('timeline'),
+  claimId: z.string().optional().describe('Claim ID'),
+  sourceId: z.string().optional().describe('Source ID'),
+  contradictionId: z.string().optional().describe('Contradiction ID'),
+  gapId: z.string().optional().describe('Gap ID'),
+  limit: z.number().int().min(1).max(1000).optional().describe('Max entries'),
+});
+
+const KnowledgeChangesSchema = z.object({
+  action: z.literal('changes'),
+  sinceSeq: z.number().int().min(0).describe('Sequence number to scan from'),
+  familyId: z.string().optional().describe('Filter to family'),
+  limit: z.number().int().min(1).max(1000).optional().describe('Max events'),
+});
+
+const KnowledgeResearchNextSchema = z.object({
+  action: z.literal('research-next'),
+  familyId: z.string().describe('Family ID'),
+});
+
+const KnowledgeFamilyViewSchema = z.object({
+  action: z.literal('family-view'),
+  familyId: z.string().describe('Family ID'),
+});
+
 export const KnowledgeToolSchema = z.discriminatedUnion('action', [
   KnowledgeFamiliesSchema,
   KnowledgeThreadsSchema,
@@ -121,6 +157,12 @@ export const KnowledgeToolSchema = z.discriminatedUnion('action', [
   KnowledgeContradictionsSchema,
   KnowledgeGapsSchema,
   KnowledgeEntitySchema,
+  KnowledgeBeliefSchema,
+  KnowledgeWhySchema,
+  KnowledgeTimelineSchema,
+  KnowledgeChangesSchema,
+  KnowledgeResearchNextSchema,
+  KnowledgeFamilyViewSchema,
 ]);
 
 export type KnowledgeToolInput = z.infer<typeof KnowledgeToolSchema>;

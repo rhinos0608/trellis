@@ -5,6 +5,7 @@
 
 import type { ProjectionState } from '../store/projectionState.js';
 import type { KnowledgeToolInput } from './schemas.js';
+import { queryEvents } from '../store/events.js';
 import { getFamilyById, listFamilies, getThreadsByFamily } from '../workspace/queries.js';
 import {
   getClaimsByFamily,
@@ -14,6 +15,14 @@ import {
   getEntityById,
   findEntityByLabel,
 } from '../graph/queries.js';
+import {
+  getBelief,
+  getProvenance,
+  getTimeline,
+  getChanges,
+  rankResearchNext,
+  synthesizeFamilyView,
+} from '../query/longitudinal.js';
 
 export function handleKnowledgeTool(
   input: KnowledgeToolInput,
@@ -72,6 +81,54 @@ export function handleKnowledgeTool(
           : { found: false, error: `No entity with label: ${input.label}` };
       }
       return { error: 'Either entityId or label must be provided' };
+    }
+
+    case 'belief': {
+      const belief = getBelief(state, input.claimId);
+      return belief
+        ? { found: true, belief: serialize(belief) }
+        : { found: false, error: `Claim not found: ${input.claimId}` };
+    }
+
+    case 'why': {
+      const provenance = getProvenance(state, input.claimId);
+      return provenance
+        ? { found: true, provenance: serialize(provenance) }
+        : { found: false, error: `Claim not found: ${input.claimId}` };
+    }
+
+    case 'timeline': {
+      const target: { claimId?: string; sourceId?: string; contradictionId?: string; gapId?: string } = {};
+      if (input.claimId?.trim()) target.claimId = input.claimId.trim();
+      if (input.sourceId?.trim()) target.sourceId = input.sourceId.trim();
+      if (input.contradictionId?.trim()) target.contradictionId = input.contradictionId.trim();
+      if (input.gapId?.trim()) target.gapId = input.gapId.trim();
+      if (!target.claimId && !target.sourceId && !target.contradictionId && !target.gapId) {
+        return { error: 'Either claimId, sourceId, contradictionId, or gapId must be provided' };
+      }
+      const timelineOpts = input.limit !== undefined ? { limit: input.limit } : undefined;
+      const entries = getTimeline({ queryEvents }, target, timelineOpts);
+      return { entries };
+    }
+
+    case 'changes': {
+      const changesOpts: { familyId?: string; limit?: number } = {};
+      if (input.familyId !== undefined) changesOpts.familyId = input.familyId;
+      if (input.limit !== undefined) changesOpts.limit = input.limit;
+      const changeSet = getChanges({ queryEvents }, input.sinceSeq, changesOpts);
+      return { changeSet: serialize(changeSet) };
+    }
+
+    case 'research-next': {
+      const ranked = rankResearchNext(state, input.familyId);
+      return { familyId: input.familyId, researchNext: ranked };
+    }
+
+    case 'family-view': {
+      const familyView = synthesizeFamilyView(state, input.familyId);
+      return familyView
+        ? { found: true, familyView: serialize(familyView) }
+        : { found: false, error: `Family not found: ${input.familyId}` };
     }
   }
 }
