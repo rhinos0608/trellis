@@ -12,7 +12,7 @@ interface KeyRow extends PayloadRow { id: string; observed_at: string; last_seen
 export function createKnowledgeQueryService(db: Database) {
   function status(): KnowledgeReadModelStatus {
     const row = db.prepare("SELECT model_version, last_applied_seq, status FROM rm_state WHERE model_name='knowledge'").get() as { model_version: number; last_applied_seq: number; status: 'ready' | 'dirty' } | undefined;
-    if (!row) throw new Error('Knowledge read-model state is missing');
+    if (!row) throw new ReadModelUnavailableError({ version: 0, lastAppliedSeq: 0, status: 'dirty' });
     return { version: row.model_version, lastAppliedSeq: row.last_applied_seq, status: row.status };
   }
 

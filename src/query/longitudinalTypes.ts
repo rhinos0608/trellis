@@ -7,6 +7,7 @@
 import type {
   AuthorityClass,
   ClaimContradictionState,
+  ContradictionResolutionStatus,
   EpistemicStatus,
   EvidenceStance,
   GapCategory,
@@ -95,7 +96,7 @@ export interface RankedGap {
   type: 'gap' | 'contradiction';
   question: string;
   category?: GapCategory | undefined;
-  status: GapStatus | string;
+  status: GapStatus | ContradictionResolutionStatus;
   priority: number;
   score: number;
   familyId: string;

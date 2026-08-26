@@ -344,10 +344,129 @@ describe('getChanges', () => {
       claim('c1', 'fam1', 'A', '2024-01-01T00:00:00.000Z'),
       claim('c2', 'fam2', 'B', '2024-01-01T00:00:00.000Z'),
     );
-    const cs = getChanges({ queryEvents }, 0, { familyId: 'fam1' });
+    const cs = getChanges({ queryEvents, state: liveState }, 0, { familyId: 'fam1' });
     // Should only include events for fam1
     expect(cs.newClaims.length).toBe(1);
     expect(cs.newClaims[0].description).toContain('A');
+  });
+
+  it('excludes evidence from other families when filtering by familyId', () => {
+    append(
+      family('family-A'),
+      family('family-B'),
+      source('src-shared'),
+      source('src-a-only'),
+      source('src-b-only'),
+      claim('claim-a', 'family-A', 'React is great', '2024-01-01T00:00:00.000Z'),
+      claim('claim-b', 'family-B', 'Vue is better', '2024-01-01T00:00:00.000Z'),
+      evidence('ev-a', 'claim-a', 'src-shared', 'obs-a', 'supports'),
+      evidence('ev-b', 'claim-b', 'src-shared', 'obs-b', 'supports'),
+    );
+    const csA = getChanges({ queryEvents, state: liveState }, 0, { familyId: 'family-A' });
+    const csB = getChanges({ queryEvents, state: liveState }, 0, { familyId: 'family-B' });
+    // EVIDENCE_LINKED descriptions contain claimId (e.g. 'Evidence linked to claim claim-a')
+    const descsA = csA.newEvidence.map((e) => e.description);
+    expect(descsA.some((d) => d.includes('claim-a'))).toBe(true);
+    expect(descsA.some((d) => d.includes('claim-b'))).toBe(false);
+    const descsB = csB.newEvidence.map((e) => e.description);
+    expect(descsB.some((d) => d.includes('claim-b'))).toBe(true);
+    expect(descsB.some((d) => d.includes('claim-a'))).toBe(false);
+  });
+
+  it('shared source SOURCE_CHANGED appears in both family feeds', () => {
+    append(
+      family('family-A'),
+      family('family-B'),
+      source('src-shared'),
+      claim('claim-a', 'family-A', 'React is great', '2024-01-01T00:00:00.000Z'),
+      claim('claim-b', 'family-B', 'Vue is better', '2024-01-01T00:00:00.000Z'),
+      evidence('ev-a', 'claim-a', 'src-shared', 'obs-a', 'supports'),
+      evidence('ev-b', 'claim-b', 'src-shared', 'obs-b', 'supports'),
+    );
+    // Record the seq before appending the SOURCE_CHANGED event
+    const beforeSeq = liveState.lastAppliedSeq;
+    append({ ...event('SOURCE_CHANGED', { sourceId: 'src-shared', oldContentHash: 'old', newContentHash: 'new' }, 1), entityId: 'src-shared' });
+    const csA = getChanges({ queryEvents, state: liveState }, beforeSeq, { familyId: 'family-A' });
+    const csB = getChanges({ queryEvents, state: liveState }, beforeSeq, { familyId: 'family-B' });
+    expect(csA.sourcesChanged.length).toBe(1);
+    expect(csB.sourcesChanged.length).toBe(1);
+  });
+
+  it('family-scoped pagination returns matching events behind many non-matching events', () => {
+    append(
+      family('family-A'),
+      family('family-B'),
+      source('src-a'),
+      claim('claim-a', 'family-A', 'React is great', '2024-01-01T00:00:00.000Z'),
+      claim('claim-b', 'family-B', 'Vue is better', '2024-01-01T00:00:00.000Z'),
+    );
+    const beforeSeq = liveState.lastAppliedSeq;
+    // Append many family-B claims so family-A evidence is buried deep in the stream
+    const fillerEvents: import('../../src/store/events.js').NewEventInput[] = [];
+    for (let i = 0; i < 10; i++) {
+      fillerEvents.push(claim(`filler-${i}`, 'family-B', `Filler claim ${i}`, '2024-01-02T00:00:00.000Z'));
+    }
+    // Now append a family-A evidence event
+    fillerEvents.push(evidence('buried-ev', 'claim-a', 'src-a', 'obs-a', 'supports'));
+    append(...fillerEvents);
+    // With limit=5, the evidence event is beyond the first 5 raw events
+    // But there should be at least the buried-ev for family-A
+    const cs = getChanges({ queryEvents, state: liveState }, beforeSeq, { familyId: 'family-A', limit: 5 });
+    // family-A should see its evidence event even though many family-B events precede it
+    expect(cs.newEvidence.length).toBe(1);
+    // EVIDENCE_LINKED description includes claimId, not evidenceId
+    expect(cs.newEvidence[0].description).toContain('claim-a');
+  });
+
+  it('curation event referencing family-A claims appears only in family-A feed', () => {
+    append(
+      family('family-A'),
+      family('family-B'),
+      claim('claim-a1', 'family-A', 'React is great', '2024-01-01T00:00:00.000Z'),
+      claim('claim-a2', 'family-A', 'React scales', '2024-01-01T00:00:00.000Z'),
+      claim('claim-b1', 'family-B', 'Vue is better', '2024-01-01T00:00:00.000Z'),
+    );
+    const beforeSeq = liveState.lastAppliedSeq;
+    // Append a CLAIM_MERGED event referencing family-A claims
+    append({
+      ...event('CLAIM_MERGED', {
+        curation: { commandId: 'cmd-1', reason: 'test merge', expectedSeq: 0 },
+        sourceClaimId: 'claim-a2',
+        survivorClaimId: 'claim-a1',
+        affectedObservationIds: [],
+        affectedEvidenceIds: [],
+        affectedRelationIds: [],
+        affectedContradictionIds: [],
+        affectedGapIds: [],
+      }, 1),
+      entityId: 'claim-a1',
+    });
+    const csA = getChanges({ queryEvents, state: liveState }, beforeSeq, { familyId: 'family-A' });
+    const csB = getChanges({ queryEvents, state: liveState }, beforeSeq, { familyId: 'family-B' });
+    expect(csA.curationEvents.length).toBe(1);
+    expect(csB.curationEvents.length).toBe(0);
+  });
+
+  it('getChanges with familyId but without state excludes non-payload events', () => {
+    append(
+      family('family-A'),
+      family('family-B'),
+      source('src-a'),
+      claim('claim-a', 'family-A', 'React is great', '2024-01-01T00:00:00.000Z'),
+      evidence('ev-a', 'claim-a', 'src-a', 'obs-a', 'supports'),
+    );
+    const beforeSeq = liveState.lastAppliedSeq;
+    append(
+      source('src-new'),
+      claim('claim-b', 'family-B', 'Vue is better', '2024-01-02T00:00:00.000Z'),
+    );
+    // Call without state — payload-local fallback only
+    const cs = getChanges({ queryEvents }, beforeSeq, { familyId: 'family-A' });
+    // SOURCE_CHANGED and EVIDENCE_LINKED require state to resolve family;
+    // only claim/family events with payload-local familyId pass the fallback.
+    expect(cs.newClaims.length).toBe(0);
+    expect(cs.newEvidence.length).toBe(0);
+    expect(cs.sourcesChanged.length).toBe(0);
   });
 });
 

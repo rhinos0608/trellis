@@ -44,7 +44,7 @@ const AUTHORITY_RANK: Record<AuthorityClass, number> = {
 };
 
 function authorityRank(a?: AuthorityClass): number {
-  return a !== undefined ? (AUTHORITY_RANK[a] ?? 10) : 11;
+  return a !== undefined ? AUTHORITY_RANK[a] : AUTHORITY_RANK.unknown + 1;
 }
 
 function evidenceToSummary(e: Evidence, sources: Map<string, Source>): EvidenceSummary {
@@ -83,19 +83,19 @@ function briefEventDescription(eventType: string, payload: Record<string, unknow
       return cls === 'new_claim' ? `New claim: ${text ?? 'unknown'}` : `Updated claim: ${text ?? 'unknown'}`;
     }
     case 'EVIDENCE_LINKED':
-      return `Evidence linked to claim ${(payload as Record<string, unknown>).claimId as string ?? 'unknown'}`;
+      return `Evidence linked to claim ${(payload).claimId as string}`;
     case 'CONTRADICTION_IDENTIFIED':
-      return `Contradiction identified between claims ${(payload as Record<string, unknown>).claimIdA as string ?? '?'} and ${(payload as Record<string, unknown>).claimIdB as string ?? '?'}`;
+      return `Contradiction identified between claims ${(payload).claimIdA as string} and ${(payload).claimIdB as string}`;
     case 'CONTRADICTION_RESOLVED':
-      return `Contradiction resolved: ${(payload as Record<string, unknown>).contradictionId as string ?? 'unknown'}`;
+      return `Contradiction resolved: ${(payload).contradictionId as string}`;
     case 'GAP_OPENED':
-      return `Gap opened: ${((payload as Record<string, unknown>).question as string | undefined)?.slice(0, 80) ?? 'unknown'}`;
+      return `Gap opened: ${((payload).question as string | undefined)?.slice(0, 80) ?? 'unknown'}`;
     case 'GAP_RESOLVED':
-      return `Gap resolved: ${(payload as Record<string, unknown>).gapId as string ?? 'unknown'}`;
+      return `Gap resolved: ${(payload).gapId as string}`;
     case 'SOURCE_CHANGED':
       return 'Source content changed';
     case 'SOURCE_OBSERVED':
-      return `Source observed: ${((payload as Record<string, unknown>).title as string | undefined) ?? ((payload as Record<string, unknown>).domain as string | undefined) ?? 'unknown'}`;
+      return `Source observed: ${((payload).title as string | undefined) ?? ((payload).domain as string | undefined) ?? 'unknown'}`;
     case 'CLAIM_MERGED':
       return 'Claim merged';
     case 'CLAIM_SPLIT':
@@ -178,7 +178,7 @@ export function getProvenance(state: ProjectionState, claimId: string): Provenan
   }
   for (const e of allEvidence) {
     if (e.observationId && !obsIdSet.has(e.observationId)) {
-      if (!result.unattributedEvidence) result.unattributedEvidence = [];
+      result.unattributedEvidence ??= [];
       result.unattributedEvidence.push(evidenceToSummary(e, state.sources));
     }
   }
@@ -201,7 +201,7 @@ export function getTimeline(
     // EVIDENCE_LINKED events: entityId = evidence.id, not claimId
     // Must query broadly and filter by payload.claimId
     const evidenceEvents = qe({ eventType: 'EVIDENCE_LINKED' as TrellisEventType })
-      .filter((ev) => (ev.payload as Record<string, unknown>)?.claimId === target.claimId);
+      .filter((ev) => (ev.payload as Record<string, unknown>).claimId === target.claimId);
     // Dedup by seq
     const seen = new Set<number>();
     events = [...direct, ...evidenceEvents].filter((ev) => {
@@ -228,7 +228,7 @@ export function getTimeline(
       seq: ev.seq,
       description: briefEventDescription(ev.eventType, ev.payload as Record<string, unknown>),
     };
-    if (ev.entityId !== null && ev.entityId !== undefined) entry.entityId = ev.entityId;
+    if (ev.entityId !== null) entry.entityId = ev.entityId;
     return entry;
   });
 
@@ -239,6 +239,185 @@ export function getTimeline(
 }
 
 // ── getChanges ──────────────────────────────────────────────────────
+
+/**
+ * Resolve the owning family/families of an event by following referenced IDs
+ * through the current ProjectionState. Returns undefined (excluded from
+ * family-scoped feed) when the owning family cannot be determined.
+ */
+function resolveEventFamilyIds(
+  ev: { eventType: string; payload: unknown },
+  state: ProjectionState,
+): Set<string> | undefined {
+  const payload = ev.payload as Record<string, unknown>;
+  const families = new Set<string>();
+
+  // Direct/nested familyId (existing extractFamilyId logic)
+  const directFamilyId = extractFamilyId(payload);
+  if (directFamilyId !== undefined) {
+    families.add(directFamilyId);
+  }
+
+  switch (ev.eventType) {
+    case 'EVIDENCE_LINKED': {
+      const claimId = payload.claimId as string | undefined;
+      if (claimId !== undefined) {
+        const claim = state.claims.get(claimId);
+        if (claim !== undefined) families.add(claim.familyId);
+      }
+      break;
+    }
+
+    case 'CONTRADICTION_IDENTIFIED': {
+      // Has direct familyId; also resolve via claim IDs
+      for (const cid of [payload.claimIdA as string | undefined, payload.claimIdB as string | undefined]) {
+        if (cid !== undefined) {
+          const claim = state.claims.get(cid);
+          if (claim !== undefined) families.add(claim.familyId);
+        }
+      }
+      break;
+    }
+
+    case 'CONTRADICTION_RESOLVED': {
+      const contradictionId = payload.contradictionId as string | undefined;
+      if (contradictionId !== undefined) {
+        const contr = state.contradictions.get(contradictionId);
+        if (contr !== undefined) {
+          families.add(contr.familyId);
+          const claimA = state.claims.get(contr.claimIdA);
+          if (claimA !== undefined) families.add(claimA.familyId);
+          const claimB = state.claims.get(contr.claimIdB);
+          if (claimB !== undefined) families.add(claimB.familyId);
+        }
+      }
+      break;
+    }
+
+    case 'GAP_OPENED': {
+      // Has direct familyId; optionally resolve via relatedClaimId
+      const relatedClaimId = payload.relatedClaimId as string | undefined;
+      if (relatedClaimId !== undefined) {
+        const claim = state.claims.get(relatedClaimId);
+        if (claim !== undefined) families.add(claim.familyId);
+      }
+      break;
+    }
+
+    case 'GAP_RESOLVED': {
+      const gapId = payload.gapId as string | undefined;
+      if (gapId !== undefined) {
+        const gap = state.gaps.get(gapId);
+        if (gap !== undefined) families.add(gap.familyId);
+      }
+      break;
+    }
+
+    case 'SOURCE_CHANGED': {
+      // Resolve via every family whose evidence references that source
+      const sourceId = payload.sourceId as string | undefined;
+      if (sourceId !== undefined) {
+        // Build source-to-family index once instead of scanning all evidence per event
+        if (_sourceFamilyIndex === undefined || _sourceFamilyIndexStateId !== state) {
+          const idx = new Map<string, Set<string>>();
+          for (const evIds of state.evidenceByClaimId.values()) {
+            for (const evId of evIds) {
+              const e = state.evidence.get(evId);
+              if (e === undefined) continue;
+              const claim = state.claims.get(e.claimId);
+              if (claim === undefined) continue;
+              let fams = idx.get(e.sourceId);
+              if (fams === undefined) {
+                fams = new Set<string>();
+                idx.set(e.sourceId, fams);
+              }
+              fams.add(claim.familyId);
+            }
+          }
+          _sourceFamilyIndex = idx;
+          _sourceFamilyIndexStateId = state;
+        }
+        const fams = _sourceFamilyIndex.get(sourceId);
+        if (fams !== undefined) {
+          for (const f of fams) families.add(f);
+        }
+      }
+      break;
+    }
+
+    case 'CLAIM_MERGED': {
+      for (const cid of [payload.sourceClaimId as string | undefined, payload.survivorClaimId as string | undefined]) {
+        if (cid !== undefined) {
+          const claim = state.claims.get(cid);
+          if (claim !== undefined) families.add(claim.familyId);
+        }
+      }
+      break;
+    }
+
+    case 'CLAIM_SPLIT': {
+      const sourceClaimId = payload.sourceClaimId as string | undefined;
+      if (sourceClaimId !== undefined) {
+        const claim = state.claims.get(sourceClaimId);
+        if (claim !== undefined) families.add(claim.familyId);
+      }
+      const results = payload.results as Record<string, unknown>[] | undefined;
+      if (results !== undefined) {
+        for (const r of results) {
+          const cid = r.claimId as string | undefined;
+          if (cid !== undefined) {
+            const claim = state.claims.get(cid);
+            if (claim !== undefined) families.add(claim.familyId);
+          }
+        }
+      }
+      break;
+    }
+
+    case 'CLAIM_RETRACTION_SET': {
+      const target = payload.target as Record<string, unknown> | undefined;
+      if (target !== undefined) {
+        if (target.kind === 'claim') {
+          const claim = state.claims.get(target.id as string);
+          if (claim !== undefined) families.add(claim.familyId);
+        } else if (target.kind === 'observation') {
+          const claimId = state.observationToClaimId.get(target.id as string);
+          if (claimId !== undefined) {
+            const claim = state.claims.get(claimId);
+            if (claim !== undefined) families.add(claim.familyId);
+          }
+        }
+      }
+      break;
+    }
+
+    case 'CLAIM_RELATION_CURATED': {
+      for (const snap of [payload.before, payload.after]) {
+        if (snap !== null && snap !== undefined && typeof snap === 'object') {
+          const s = snap as Record<string, unknown>;
+          for (const cid of [s.fromClaimId as string | undefined, s.toClaimId as string | undefined]) {
+            if (cid !== undefined) {
+              const claim = state.claims.get(cid);
+              if (claim !== undefined) families.add(claim.familyId);
+            }
+          }
+        }
+      }
+      break;
+    }
+
+    case 'EVIDENCE_STANCE_OVERRIDDEN': {
+      const claimId = payload.claimId as string | undefined;
+      if (claimId !== undefined) {
+        const claim = state.claims.get(claimId);
+        if (claim !== undefined) families.add(claim.familyId);
+      }
+      break;
+    }
+  }
+
+  return families.size > 0 ? families : undefined;
+}
 
 const CLAIM_RELEVANT_TYPES = new Set<string>([
   'CLAIM_OBSERVED',
@@ -276,26 +455,44 @@ function entryFromEvent(ev: { eventType: string; seq: number; timestamp: string;
 }
 
 export function getChanges(
-  deps: { queryEvents: typeof queryEventsFn },
+  deps: { queryEvents: typeof queryEventsFn; state?: ProjectionState },
   sinceSeq: number,
   opts?: { familyId?: string; limit?: number },
 ): ChangeSet {
-  const { queryEvents: qe } = deps;
+  const { queryEvents: qe, state } = deps;
   const limit = opts?.limit ?? 200;
-  const all = qe({ afterSeq: sinceSeq, limit });
+
+  // Fetch in bounded batches: when family-filtering, we need more raw events
+  // than the requested limit to account for filtering, but cap the fetch
+  // to prevent unbounded reads.
+  const batchSize = opts?.familyId ? Math.max(limit * 5, 200) : limit;
+  let all = qe({ afterSeq: sinceSeq, limit: batchSize });
 
   // Filter to claim-relevant types
   let relevant = all.filter((ev) => CLAIM_RELEVANT_TYPES.has(ev.eventType));
 
-  // Family filter: only filter events that carry a familyId
-  if (opts?.familyId) {
+  // Family filter: resolve owning families via ProjectionState
+  if (opts?.familyId && state !== undefined) {
+    const fid = opts.familyId;
+    relevant = relevant.filter((ev) => {
+      const families = resolveEventFamilyIds(ev, state);
+      return families?.has(fid) === true;
+    });
+  } else if (opts?.familyId) {
+    // Fallback: no state available, use payload-local familyId only.
+    // This excludes events whose family membership can only be resolved
+    // through ProjectionState (e.g. EVIDENCE_LINKED, SOURCE_CHANGED,
+    // curation events) and is not equivalent to the state-backed path.
     relevant = relevant.filter((ev) => {
       const payload = ev.payload as Record<string, unknown>;
       const fid = extractFamilyId(payload);
-      // Include events that have no familyId concept (family-agnostic)
-      if (fid === undefined) return true;
       return fid === opts.familyId;
     });
+  }
+
+  // Apply limit AFTER family filtering (fix pagination-before-filter bug)
+  if (relevant.length > limit) {
+    relevant = relevant.slice(0, limit);
   }
 
   const result: ChangeSet = {
@@ -364,6 +561,10 @@ export function getChanges(
   return result;
 }
 
+// Cache for source-to-family index within getChanges
+let _sourceFamilyIndex: Map<string, Set<string>> | undefined;
+let _sourceFamilyIndexStateId: ProjectionState | undefined;
+
 // ── rankResearchNext ────────────────────────────────────────────────
 
 export function rankResearchNext(state: ProjectionState, familyId: string): RankedGap[] {
@@ -389,7 +590,7 @@ export function rankResearchNext(state: ProjectionState, familyId: string): Rank
         score,
         familyId: gap.familyId,
       };
-      if (gap.category !== undefined) target.category = gap.category;
+      target.category = gap.category;
       if (gap.threadId !== undefined) target.threadId = gap.threadId;
       targets.push(target);
     }
@@ -403,7 +604,7 @@ export function rankResearchNext(state: ProjectionState, familyId: string): Rank
       targets.push({
         id: contradiction.id,
         type: 'contradiction',
-        question: (contradiction.followUpSearchRecommended?.trim() || contradiction.likelyExplanation?.trim()) ?? `Contradiction ${contradiction.id}`,
+        question: (contradiction.followUpSearchRecommended?.trim() || contradiction.likelyExplanation?.trim() || `Contradiction ${contradiction.id}`),
         status: contradiction.resolutionStatus,
         priority: 2,
         score: 2,
@@ -463,7 +664,7 @@ export function synthesizeFamilyView(state: ProjectionState, familyId: string): 
 
   // Simple narrative markdown
   const claimSummaries = beliefs
-    .map((b) => `- ${b.assertion} (confidence: ${b.confidence}, ${b.supportingEvidenceCount} supporting, ${b.opposingEvidenceCount} opposing)`)
+    .map((b) => `- ${b.assertion} (confidence: ${String(b.confidence)}, ${String(b.supportingEvidenceCount)} supporting, ${String(b.opposingEvidenceCount)} opposing)`)
     .join('\n');
   const contradictionSummary = contradictions.length > 0
     ? `\n\n## Contradictions\n${contradictions.map((c) => `- ${c.type}: ${c.status}`).join('\n')}`
@@ -472,7 +673,7 @@ export function synthesizeFamilyView(state: ProjectionState, familyId: string): 
     ? `\n\n## Open Gaps\n${gaps.map((g) => `- [${g.category}] ${g.question}`).join('\n')}`
     : '';
 
-  const narrativeMarkdown = `# ${family.label}\n\n## Claims\n${claimSummaries || '(none)'}${contradictionSummary}${gapSummary}\n\n## Sources: ${sourceIds.length}`;
+  const narrativeMarkdown = `# ${family.label}\n\n## Claims\n${claimSummaries || '(none)'}${contradictionSummary}${gapSummary}\n\n## Sources: ${String(sourceIds.length)}`;
 
   return {
     familyId,
