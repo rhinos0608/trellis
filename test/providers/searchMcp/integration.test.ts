@@ -270,7 +270,7 @@ describe('SearchMcpProvider integration', () => {
     const client = createMockClient(handler);
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    const thread = await provider.redditThread!('https://reddit.com/r/test/abc');
+    const thread = await provider.redditThread!(testCtx, 'https://reddit.com/r/test/abc');
 
     expect(calls[0].name).toBe('reddit');
     expect(calls[0].args.action).toBe('comments');

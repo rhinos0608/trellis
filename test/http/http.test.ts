@@ -7,6 +7,7 @@ import type { ResearchApplicationService } from '../../src/app/researchService.j
 import { InvalidTransitionError } from '../../src/app/errors.js';
 import type { RunEventDto, RunSummaryDto } from '../../src/app/types.js';
 import { createHttpServer } from '../../src/http/server.js';
+import { TRELLIS_VERSION } from '../../src/version.js';
 import { createKnowledgeQueryService } from '../../src/query/service.js';
 import { appendEvents, closeDb, getDb, initDb } from '../../src/store/index.js';
 import type { NewEventInput } from '../../src/store/events.js';
@@ -83,6 +84,19 @@ describe('HTTP adapter routes', () => {
     const response = await request('/v1/research/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'x'.repeat(70_000) }) }); expect(response.status).toBe(413);
     expect((await request('/healthz')).status).toBe(200);
   });
+  it('parses body split across multiple data chunks once', async () => {
+    const target = new URL(`${base}/v1/research/runs`);
+    const response = await new Promise<number>((resolve, reject) => {
+      const req = http.request({ hostname: target.hostname, port: Number(target.port), path: target.pathname, method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      });
+      req.on('error', reject);
+      req.write('{"query":"split ');
+      req.end('body"}');
+    });
+    expect(response).toBe(202);
+  });
   it('enforces loopback Host and Origin without CORS headers', async () => {
     const host = await rawRequest('/healthz', { Host: 'evil.example' }); expect(host).toBe(400);
     const origin = await request('/healthz', { headers: { Origin: 'https://evil.example' } }); expect(origin.status).toBe(400);
@@ -96,5 +110,54 @@ describe('HTTP adapter routes', () => {
   });
   it('keeps MCP entrypoint independent from HTTP server', async () => {
     const mcp = fs.readFileSync(path.resolve('src/mcp/server.ts'), 'utf8'); expect(mcp).not.toContain("from '../http/server.js'"); expect(mcp).not.toContain('createHttpServer');
+  });
+  it('binds to loopback address only (regression test)', async () => {
+    const address = server.start === undefined ? null : null; // server already started in beforeEach
+    // The server in beforeEach is started with port=0; verify it bound to 127.0.0.1
+    // by confirming the base URL uses 127.0.0.1 (set during startup).
+    expect(base).toContain('127.0.0.1');
+    // Additionally verify the source code hardcodes 127.0.0.1
+    const serverSrc = fs.readFileSync(path.resolve('src/http/server.ts'), 'utf8');
+    expect(serverSrc).toContain("'127.0.0.1'");
+  });
+});
+
+describe('GET /readyz', () => {
+  it('returns 200 + ready with version and readModel status when clean', async () => {
+    const response = await request('/readyz');
+    expect(response.status).toBe(200);
+    const body = await response.json() as { status: string; version: string; readModel: { status: string } };
+    expect(body.status).toBe('ready');
+    expect(body.version).toBe(TRELLIS_VERSION);
+    expect(body.readModel.status).toBe('ready');
+  });
+
+  it('returns 503 + not_ready when the read model is dirty', async () => {
+    getDb()!.prepare("UPDATE rm_state SET status='dirty' WHERE model_name='knowledge'").run();
+    const response = await request('/readyz');
+    expect(response.status).toBe(503);
+    const body = await response.json() as { status: string; version: string; readModel: { status: string } };
+    expect(body.status).toBe('not_ready');
+    expect(body.version).toBe(TRELLIS_VERSION);
+    expect(body.readModel.status).toBe('dirty');
+  });
+
+  it('never touches the app/provider during a /readyz request (pure read-only probe)', async () => {
+    // An app whose every method throws — /readyz must not reach it.
+    const touch = (): never => { throw new Error('app touched during /readyz'); };
+    const hostileApp = {
+      startRun: touch, getRun: touch, listRuns: touch, getRunHistory: touch,
+      cancelRun: touch, retryRun: touch, continueResearch: touch, rollbackRun: touch, listRunEvents: touch,
+    } as unknown as ResearchApplicationService;
+    const query = createKnowledgeQueryService(getDb()!);
+    const isolated = createHttpServer({ app: hostileApp, query });
+    const address = await isolated.start(0);
+    try {
+      const response = await fetch(`http://127.0.0.1:${String(address.port)}/readyz`);
+      expect(response.status).toBe(200);
+      expect((await response.json() as { status: string }).status).toBe('ready');
+    } finally {
+      await isolated.stop();
+    }
   });
 });

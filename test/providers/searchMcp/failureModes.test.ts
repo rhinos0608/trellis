@@ -91,7 +91,7 @@ describe('Failure mode: process/client death mid-call', () => {
     });
     const provider = createSearchMcpProviderFromClient(client, FULL_TOOL_NAMES);
 
-    await expect(provider.read('https://example.com')).rejects.toBe('transport died');
+    await expect(provider.read(providerCtx, 'https://example.com')).rejects.toBe('transport died');
   });
 
   it('classifyError: connection-closed message → TRANSIENT', () => {

@@ -342,8 +342,11 @@ describe('trellis CLI', () => {
       });
       expect(status).toBe(200);
 
+      const shutdownStartedAt = Date.now();
       child.kill('SIGTERM');
       const exitCode = await new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+      // Phase 16: shutdown must be bounded — no polling race, no hang.
+      expect(Date.now() - shutdownStartedAt).toBeLessThan(10_000);
       expect(exitCode).toBe(0);
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');

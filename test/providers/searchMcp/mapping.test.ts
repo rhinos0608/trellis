@@ -451,3 +451,93 @@ describe('toTranscriptSegments', () => {
     expect(toTranscriptSegments(raw)).toHaveLength(1);
   });
 });
+
+// ── Response bounding ──────────────────────────────────────────────
+
+describe('response bounding', () => {
+  it('caps search results to 100 items', () => {
+    const hits = Array.from({ length: 500 }, (_, i) => ({
+      url: `https://example.com/${i}`,
+      title: `Result ${i}`,
+    }));
+    const result = toResearchHits(hits);
+    expect(result.length).toBeLessThanOrEqual(100);
+  });
+
+  it('caps crawl results to 100 items', () => {
+    const pages = Array.from({ length: 200 }, (_, i) => ({
+      url: `https://example.com/${i}`,
+      content: `Content ${i}`,
+    }));
+    const result = toCrawlResults(pages);
+    expect(result.length).toBeLessThanOrEqual(100);
+  });
+
+  it('truncates oversized title with ellipsis marker', () => {
+    const bigTitle = 'x'.repeat(5000);
+    const raw = [{ url: 'https://example.com', title: bigTitle }];
+    const hits = toResearchHits(raw);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].title.length).toBeLessThan(5000);
+    expect(hits[0].title).toMatch(/…$/);
+  });
+
+  it('truncates oversized snippet with ellipsis marker', () => {
+    const bigSnippet = 'y'.repeat(30000);
+    const raw = [{ url: 'https://example.com', title: 'Title', snippet: bigSnippet }];
+    const hits = toResearchHits(raw);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].snippet!.length).toBeLessThan(30000);
+    expect(hits[0].snippet).toMatch(/…$/);
+  });
+
+  it('truncates oversized body content in toReadResult', () => {
+    const bigContent = 'z'.repeat(300_000);
+    const raw = { content: bigContent, title: 'Page' };
+    const result = toReadResult(raw, 'https://example.com');
+    expect(result.content.length).toBeLessThan(300_000);
+    expect(result.content).toMatch(/…$/);
+  });
+
+  it('strips NUL bytes from mapped text fields', () => {
+    const raw = [{
+      url: 'https://example.com',
+      title: 'Title Hidden',
+      snippet: 'Snippet Secret',
+    }];
+    const hits = toResearchHits(raw);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].title).not.toContain('\x00');
+    expect(hits[0].snippet).not.toContain('\x00');
+  });
+
+  it('strips NUL bytes from body content', () => {
+    const raw = { content: 'Hello World', title: 'Page' };
+    const result = toReadResult(raw, 'https://example.com');
+    expect(result.content).not.toContain('\x00');
+  });
+
+  it('strips control characters but preserves normal whitespace', () => {
+    const raw = [{
+      url: 'https://example.com',
+      title: 'Title',
+      snippet: 'Line1\nLine2\tTab\rCR',
+    }];
+    const hits = toResearchHits(raw);
+    expect(hits[0].snippet).toContain('\n');
+    expect(hits[0].snippet).toContain('\t');
+    expect(hits[0].snippet).toContain('\r');
+  });
+
+  it('drops toResearchHits with file: URL', () => {
+    const raw = [{ url: 'file:///etc/passwd', title: 'Bad' }];
+    const hits = toResearchHits(raw);
+    expect(hits).toHaveLength(0);
+  });
+
+  it('drops toCrawlResults with javascript: URL', () => {
+    const raw = { pages: [{ url: 'javascript:alert(1)', content: 'x' }] };
+    const results = toCrawlResults(raw);
+    expect(results).toHaveLength(0);
+  });
+});
