@@ -24,6 +24,13 @@ import type {
   TranscriptSegment,
   BrowserExtractPlan,
 } from '../types.js';
+import { validateFetchableUrl } from './urlPolicy.js';
+import {
+  capArray,
+  boundShortField,
+  boundMediumField,
+  boundBodyField,
+} from './bounds.js';
 
 // ── MCP tool call shape ──────────────────────────────────────────────
 
@@ -78,6 +85,7 @@ export function mapSearch(
 }
 
 export function mapRead(url: string): McpToolCall {
+  validateFetchableUrl(url);
   return { name: 'web_crawl', args: { url, maxDepth: 1, maxPages: 1 } };
 }
 
@@ -85,6 +93,7 @@ export function mapCrawl(
   url: string,
   opts?: { maxPages?: number },
 ): McpToolCall {
+  validateFetchableUrl(url);
   const args: Record<string, unknown> = { url };
   if (opts?.maxPages !== undefined) args.maxPages = opts.maxPages;
   return { name: 'web_crawl', args };
@@ -129,6 +138,7 @@ export function mapRedditThread(
   url: string,
   _opts?: { limit?: number },
 ): McpToolCall {
+  validateFetchableUrl(url);
   return { name: 'reddit', args: { action: 'comments', url } };
 }
 
@@ -191,6 +201,7 @@ export function mapBrowserExtract(
   url: string,
   _plan: BrowserExtractPlan,
 ): McpToolCall {
+  validateFetchableUrl(url);
   return { name: 'browser', args: { action: 'navigate', url } };
 }
 
@@ -243,18 +254,25 @@ export function extractDataArray(raw: unknown): unknown[] {
 // ── Response mappers ─────────────────────────────────────────────────
 
 export function toResearchHits(raw: unknown): ResearchHit[] {
-  return extractDataArray(raw)
+  const capped = capArray(extractDataArray(raw));
+  return capped
     .map((item) => {
       if (item === null || typeof item !== 'object') return null;
       const r = item as Record<string, unknown>;
-      const url = typeof r.url === 'string'
+      const rawUrl = typeof r.url === 'string'
         ? r.url
         : typeof r.link === 'string'
           ? r.link
           : undefined;
-      const title = typeof r.title === 'string' ? r.title : undefined;
-      if (!url || !title) return null;
-      const hit: ResearchHit = { url, title };
+      const rawTitle = typeof r.title === 'string' ? r.title : undefined;
+      if (!rawUrl || !rawTitle) return null;
+      // Validate URL — drop hit entirely if URL is unsafe
+      try {
+        validateFetchableUrl(rawUrl);
+      } catch {
+        return null;
+      }
+      const hit: ResearchHit = { url: rawUrl, title: boundShortField(rawTitle) };
       const snippet = typeof r.snippet === 'string'
         ? r.snippet
         : typeof r.abstract === 'string'
@@ -262,7 +280,7 @@ export function toResearchHits(raw: unknown): ResearchHit[] {
           : typeof r.description === 'string'
             ? r.description
             : undefined;
-      if (snippet !== undefined) hit.snippet = snippet;
+      if (snippet !== undefined) hit.snippet = boundMediumField(snippet);
       const pub = typeof r.publishedAt === 'string'
         ? r.publishedAt
         : typeof r.published === 'string'
@@ -270,7 +288,7 @@ export function toResearchHits(raw: unknown): ResearchHit[] {
           : typeof r.date === 'string'
             ? r.date
             : undefined;
-      if (pub !== undefined) hit.publishedAt = pub;
+      if (pub !== undefined) hit.publishedAt = boundShortField(pub);
       const domain = typeof r.domain === 'string'
         ? r.domain
         : typeof r.source === 'string'
@@ -278,7 +296,7 @@ export function toResearchHits(raw: unknown): ResearchHit[] {
           : typeof r.hostname === 'string'
             ? r.hostname
             : undefined;
-      if (domain !== undefined) hit.domain = domain;
+      if (domain !== undefined) hit.domain = boundShortField(domain);
       return hit;
     })
     .filter((h): h is ResearchHit => h !== null);
@@ -304,6 +322,11 @@ export function toReadResult(raw: unknown, url: string): ReadResult {
     if (!title && typeof obj.title === 'string') title = obj.title;
   }
 
+  // Bound fields before flowing into the pipeline
+  content = boundBodyField(content);
+  if (title !== undefined) title = boundShortField(title);
+  if (publishedAt !== undefined) publishedAt = boundShortField(publishedAt);
+
   const contentHash = simpleHash(content);
 
   const result: ReadResult = {
@@ -324,27 +347,35 @@ export function toCrawlResults(raw: unknown): CrawlResult[] {
     else if (Array.isArray(obj.results)) pages = obj.results;
   }
 
-  return pages
+  const capped = capArray(pages);
+  return capped
     .map((item) => {
       if (item === null || typeof item !== 'object') return null;
       const p = item as Record<string, unknown>;
-      const url = typeof p.url === 'string' ? p.url : undefined;
-      const content = typeof p.content === 'string' ? p.content : undefined;
-      if (!url || !content) return null;
+      const rawUrl = typeof p.url === 'string' ? p.url : undefined;
+      const rawContent = typeof p.content === 'string' ? p.content : undefined;
+      if (!rawUrl || !rawContent) return null;
+      // Validate URL — drop entire result if URL is unsafe
+      try {
+        validateFetchableUrl(rawUrl);
+      } catch {
+        return null;
+      }
+      const content = boundBodyField(rawContent);
       const cr: CrawlResult = {
-        url,
+        url: rawUrl,
         content,
         contentHash: simpleHash(content),
         depth: typeof p.depth === 'number' ? p.depth : 0,
       };
-      if (typeof p.title === 'string') cr.title = p.title;
+      if (typeof p.title === 'string') cr.title = boundShortField(p.title);
       return cr;
     })
     .filter((r): r is CrawlResult => r !== null);
 }
 
 export function toGitHubHits(raw: unknown): GitHubHit[] {
-  return extractDataArray(raw)
+  return capArray(extractDataArray(raw))
     .map((item) => {
       if (item === null || typeof item !== 'object') return null;
       const r = item as Record<string, unknown>;
@@ -353,16 +384,22 @@ export function toGitHubHits(raw: unknown): GitHubHit[] {
         : typeof r.repo === 'string'
           ? r.repo
           : undefined;
-      const url = typeof r.html_url === 'string'
+      const rawUrl = typeof r.html_url === 'string'
         ? r.html_url
         : typeof r.url === 'string'
           ? r.url
           : undefined;
-      if (!repo || !url) return null;
-      const hit: GitHubHit = { repo, url };
-      if (typeof r.description === 'string') hit.description = r.description;
-      if (typeof r.snippet === 'string') hit.snippet = r.snippet;
-      if (typeof r.path === 'string') hit.path = r.path;
+      if (!repo || !rawUrl) return null;
+      // Validate URL — drop hit if unsafe
+      try {
+        validateFetchableUrl(rawUrl);
+      } catch {
+        return null;
+      }
+      const hit: GitHubHit = { repo: boundShortField(repo), url: rawUrl };
+      if (typeof r.description === 'string') hit.description = boundMediumField(r.description);
+      if (typeof r.snippet === 'string') hit.snippet = boundMediumField(r.snippet);
+      if (typeof r.path === 'string') hit.path = boundShortField(r.path);
       if (typeof r.stargazers_count === 'number') hit.stars = r.stargazers_count;
       else if (typeof r.stars === 'number') hit.stars = r.stars;
       return hit;
@@ -371,7 +408,7 @@ export function toGitHubHits(raw: unknown): GitHubHit[] {
 }
 
 export function toRedditHits(raw: unknown): RedditHit[] {
-  return extractDataArray(raw)
+  return capArray(extractDataArray(raw))
     .map((item) => {
       if (item === null || typeof item !== 'object') return null;
       const r = item as Record<string, unknown>;
@@ -379,10 +416,16 @@ export function toRedditHits(raw: unknown): RedditHit[] {
       const url = typeof r.url === 'string' ? r.url : undefined;
       const subreddit = typeof r.subreddit === 'string' ? r.subreddit : undefined;
       if (!title || !url || !subreddit) return null;
+      // Validate URL — drop hit entirely if URL is unsafe
+      try {
+        validateFetchableUrl(url);
+      } catch {
+        return null;
+      }
       return {
-        title,
+        title: boundShortField(title),
         url,
-        subreddit,
+        subreddit: boundShortField(subreddit),
         score: typeof r.score === 'number' ? r.score : 0,
         numComments: typeof r.numComments === 'number'
           ? r.numComments
@@ -390,9 +433,9 @@ export function toRedditHits(raw: unknown): RedditHit[] {
             ? r.num_comments
             : 0,
         createdAt: typeof r.createdAt === 'string'
-          ? r.createdAt
+          ? boundShortField(r.createdAt)
           : typeof r.created === 'string'
-            ? r.created
+            ? boundShortField(r.created)
             : new Date().toISOString(),
       } satisfies RedditHit;
     })
@@ -413,20 +456,36 @@ export function toRedditThread(raw: unknown): RedditThread {
     (typeof r.body === 'string' ? r.body : '');
 
   const rawComments = Array.isArray(r.comments) ? r.comments : [];
-  const comments = rawComments
+  const comments = capArray(rawComments)
     .filter((c): c is Record<string, unknown> =>
       c !== null && typeof c === 'object')
     .map((c) => ({
-      author: typeof c.author === 'string' ? c.author : '[unknown]',
-      body: typeof c.body === 'string' ? c.body : '',
+      author: boundShortField(typeof c.author === 'string' ? c.author : '[unknown]'),
+      body: boundMediumField(typeof c.body === 'string' ? c.body : ''),
       score: typeof c.score === 'number' ? c.score : 0,
     }));
 
-  return { title, url, body, comments };
+  const safeUrl = url
+    ? (() => {
+        try {
+          validateFetchableUrl(url);
+          return url;
+        } catch {
+          return '';
+        }
+      })()
+    : '';
+
+  return {
+    title: boundShortField(title),
+    url: safeUrl,
+    body: boundBodyField(body),
+    comments,
+  };
 }
 
 export function toYouTubeHits(raw: unknown): YouTubeHit[] {
-  return extractDataArray(raw)
+  return capArray(extractDataArray(raw))
     .map((item) => {
       if (item === null || typeof item !== 'object') return null;
       const v = item as Record<string, unknown>;
@@ -451,12 +510,20 @@ export function toYouTubeHits(raw: unknown): YouTubeHit[] {
           ? v.published
           : new Date().toISOString();
 
+      const rawUrl = typeof v.url === 'string' ? v.url : `https://www.youtube.com/watch?v=${videoId}`;
+      // Validate URL — drop hit entirely if URL is unsafe
+      try {
+        validateFetchableUrl(rawUrl);
+      } catch {
+        return null;
+      }
+
       const hit: YouTubeHit = {
-        videoId,
-        title,
-        channel: channelTitle,
-        publishedAt,
-        url: typeof v.url === 'string' ? v.url : `https://www.youtube.com/watch?v=${videoId}`,
+        videoId: boundShortField(videoId),
+        title: boundShortField(title),
+        channel: boundShortField(channelTitle),
+        publishedAt: boundShortField(publishedAt),
+        url: rawUrl,
       };
       return hit;
     })
@@ -465,14 +532,14 @@ export function toYouTubeHits(raw: unknown): YouTubeHit[] {
 
 export function toTranscriptSegments(raw: unknown): TranscriptSegment[] {
   if (!Array.isArray(raw)) return [];
-  return raw
+  return capArray(raw)
     .map((item) => {
       if (item === null || typeof item !== 'object') return null;
       const s = item as Record<string, unknown>;
       const text = typeof s.text === 'string' ? s.text : undefined;
       if (!text) return null;
       return {
-        text,
+        text: boundMediumField(text),
         start: typeof s.start === 'number' ? s.start : 0,
         duration: typeof s.duration === 'number' ? s.duration : 0,
       } satisfies TranscriptSegment;

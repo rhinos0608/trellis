@@ -11,7 +11,7 @@ import type { ProjectionState, EventHandlerRegistry } from './projectionState.js
 import { serializeProjectionState, deserializeProjectionState } from './projectionState.js';
 import { EVENT_CODECS } from './eventSchemas/registry.js';
 import { decodeEventPayload, validateEventReferences, validateProjectionReferences } from './eventValidation.js';
-import { EventTypeUnknownError, EventVersionUnsupportedError, StaleProjectionError } from './eventErrors.js';
+import { EventTypeUnknownError, EventVersionUnsupportedError, StaleProjectionError, PayloadTooLargeError } from './eventErrors.js';
 import { syncKnowledgeReadModelBatch } from './readModel/writer.js';
 
 // ── ULID generation ─────────────────────────────────────────────────
@@ -90,6 +90,12 @@ const INSERT_SQL = `
     @actor, @actorId, @entityId, @entityType, @payload, @payloadHash)
 `;
 
+/**
+ * Max payload size for new events: 1 MiB UTF-8.
+ * Forward-looking guard — historical events predating this check still replay.
+ */
+const MAX_EVENT_PAYLOAD_BYTES = 1 * 1024 * 1024;
+
 /** Append multiple events in a single transaction. Returns fully-populated envelopes. */
 export function appendEvents(events: readonly NewEventInput[], context: AppendContext): EventEnvelope[] {
   const db = getDb();
@@ -122,6 +128,10 @@ export function appendEvents(events: readonly NewEventInput[], context: AppendCo
         validateEventReferences(ev.eventType, decoded.payload, working);
         const id = generateUlid();
         const payloadStr = JSON.stringify(decoded.payload);
+        const payloadBytes = Buffer.byteLength(payloadStr, 'utf8');
+        if (payloadBytes > MAX_EVENT_PAYLOAD_BYTES) {
+          throw new PayloadTooLargeError(ev.eventType, payloadBytes, MAX_EVENT_PAYLOAD_BYTES);
+        }
         const payloadHash = hashPayload(payloadStr);
 
         const info = insert.run({

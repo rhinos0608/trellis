@@ -3,9 +3,10 @@
  * Simplified from search-mcp agentStrategy.ts — routes through ResearchProvider.
  */
 
-import { logger } from '../../logger.js';
+import { logger, safeErrorLog } from '../../logger.js';
 import { providerCallContext, type ResearchStrategy, type StrategyContext } from './types.js';
 import type { ResearchResult } from '../internalTypes.js';
+import { validateFetchableUrl } from '../../providers/searchMcp/urlPolicy.js';
 
 // ── Agent response parsing ────────────────────────────────────────────────
 
@@ -98,6 +99,13 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
     execute: async (args) => {
       const url = args.url;
       if (typeof url !== 'string') return { content: 'url must be a string', error: 'invalid_args' };
+      // Validate URL before sending to provider — reject unsafe URLs
+      try {
+        validateFetchableUrl(url);
+      } catch (err) {
+        logger.debug({ ...safeErrorLog(err), urlBytes: Buffer.byteLength(url, 'utf8') }, 'Agent rejected unsafe URL');
+        return { content: `URL rejected: ${err instanceof Error ? err.message : 'validation failed'}`, error: 'invalid_url' };
+      }
       const result = await ctx.provider.read(providerCallContext(ctx, { phase: 'agent_read' }), url);
       ctx.budget.recordToolCall();
       return { content: result.content.slice(0, 8000) };

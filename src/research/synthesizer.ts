@@ -13,6 +13,25 @@ import type {
 } from './internalTypes.js';
 import { buildFindingLinkage, clusterIdByFindingId } from './findingLinkage.js';
 import { classifySourceAuthority } from './provenance.js';
+import { validateFetchableUrl } from '../providers/searchMcp/urlPolicy.js';
+
+/** Escape Markdown metacharacters in untrusted text for safe interpolation. */
+function escapeMarkdown(text: string): string {
+  // Strip embedded newlines/carriage-returns to prevent fake structure injection
+  const cleaned = text.replace(/[\r\n]+/g, ' ');
+  // First: escape backslashes (must be before char-class escaping)
+  let result = cleaned.replace(/\\/g, '\\\\');
+  // Then: escape inline Markdown metacharacters
+  result = result.replace(/[>`#*+_\]]/g, (ch: string) => '\\' + ch);
+  // Escape list markers only at line-start positions
+  result = result.replace(/^[ \t]*([-*+]) /gm, (m: string, ch: string) => m.replace(ch, '\\' + ch));
+  return result;
+}
+
+/** Escape parentheses in a URL for safe use in Markdown link destinations. */
+function escapeLinkDest(url: string): string {
+  return url.replace(/\(/g, '%28').replace(/\)/g, '%29');
+}
 
 function capitalize(s: string): string {
   if (s.length === 0) return s;
@@ -243,7 +262,7 @@ export class ResearchSynthesizer {
     );
     for (const c of unresolved.slice(0, 3)) {
       uncertainties.push(
-        `Sources disagree: "${c.claimA}" vs "${c.claimB}".${c.likelyExplanation ? ` Possible explanation: ${c.likelyExplanation}` : ''}`,
+        `Sources disagree: "${escapeMarkdown(c.claimA)}" vs "${escapeMarkdown(c.claimB)}".${c.likelyExplanation ? ` Possible explanation: ${escapeMarkdown(c.likelyExplanation)}` : ''}`,
       );
     }
     return uncertainties;
@@ -296,7 +315,7 @@ export class ResearchSynthesizer {
     contradictions: InternalContradiction[],
   ): string {
     const parts: string[] = [];
-    parts.push(`# Research Report: ${this.state.query}\n`);
+    parts.push(`# Research Report: ${escapeMarkdown(this.state.query)}\n`);
     parts.push(`## Executive Summary\n${this.buildExecutiveSummary(findings)}\n`);
 
     const sourceIndex = this.buildSourceIndex(findings, sources);
@@ -305,7 +324,7 @@ export class ResearchSynthesizer {
       const sqFindings = findings.filter((f) =>
         f.subQuestionIds.includes(sq.id),
       );
-      parts.push(`## ${sq.text}\n`);
+      parts.push(`## ${escapeMarkdown(sq.text)}\n`);
       if (sqFindings.length === 0) {
         parts.push('*No findings discovered for this sub-question.*\n');
         continue;
@@ -317,7 +336,7 @@ export class ResearchSynthesizer {
         const refs = this.formatSourceRefs(f.sourceIds, sourceIndex);
         const prefix = i === 0 ? '' : i % 2 === 0 ? 'Additionally, ' : 'Sources indicate that ';
         sentences.push(
-          `${prefix}${i === 0 ? capitalize(f.claim) : decapitalize(f.claim)}${refs ? ' ' + refs : ''}.`,
+          `${prefix}${i === 0 ? capitalize(escapeMarkdown(f.claim)) : decapitalize(escapeMarkdown(f.claim))}${refs ? ' ' + refs : ''}.`,
         );
       }
       parts.push(sentences.join(' '));
@@ -327,8 +346,8 @@ export class ResearchSynthesizer {
     if (contradictions.length > 0) {
       parts.push('## Contradictions & Debates\n');
       for (const c of contradictions) {
-        parts.push(`- **${c.claimA}** vs **${c.claimB}**`);
-        if (c.likelyExplanation) parts.push(`  - ${c.likelyExplanation}`);
+        parts.push(`- **${escapeMarkdown(c.claimA)}** vs **${escapeMarkdown(c.claimB)}**`);
+        if (c.likelyExplanation) parts.push(`  - ${escapeMarkdown(c.likelyExplanation)}`);
         parts.push(`  - Status: ${c.resolutionStatus}\n`);
       }
     }
@@ -338,8 +357,17 @@ export class ResearchSynthesizer {
     );
     parts.push('## Sources\n');
     for (const [i, s] of usedSources.entries()) {
+      const escapedTitle = escapeMarkdown(s.title);
+      const escapedDomain = escapeMarkdown(s.domain);
+      let sourceRef: string;
+      try {
+        validateFetchableUrl(s.url);
+        sourceRef = `[${escapedTitle}](${escapeLinkDest(s.url)})`;
+      } catch {
+        sourceRef = escapedTitle;
+      }
       parts.push(
-        `${String(i + 1)}. [${s.title}](${s.url}) (${s.sourceType}, domain: ${s.domain})\n`,
+        `${String(i + 1)}. ${sourceRef} (${s.sourceType}, domain: ${escapedDomain})\n`,
       );
     }
 

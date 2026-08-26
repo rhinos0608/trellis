@@ -7,9 +7,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { logger } from '../../logger.js';
+import { logger, safeErrorLog } from '../../logger.js';
 import { providerCallContext, type ResearchStrategy, type StrategyContext } from './types.js';
 import type { ResearchResult, SubQuestion, Finding, SourceEntry } from '../internalTypes.js';
+import { validateFetchableUrl } from '../../providers/searchMcp/urlPolicy.js';
 import { GapAnalyzer, GapFiller } from '../gapAnalysis.js';
 import { PruningEngine } from '../pruning.js';
 import { ResearchSynthesizer } from '../synthesizer.js';
@@ -142,12 +143,12 @@ export class PipelineStrategy implements ResearchStrategy {
       try {
         this.pruning.enforceStateGuard(ctx.state, ctx.budget);
       } catch (e) {
-        logger.warn({ err: e }, 'Final pruning failed');
+        logger.warn({ ...safeErrorLog(e) }, 'Final pruning failed');
       }
 
       return result;
     } catch (err) {
-      logger.error({ err }, 'Pipeline research failed');
+      logger.error({ ...safeErrorLog(err) }, 'Pipeline research failed');
       ctx.state.transitionTo('complete');
       throw err;
     }
@@ -208,7 +209,7 @@ export class PipelineStrategy implements ResearchStrategy {
           if (addedId === '') break; // capacity reached
         }
       } catch (err) {
-        logger.warn({ err, query: q }, 'Search failed');
+        logger.warn({ ...safeErrorLog(err), query: q }, 'Search failed');
       }
 
       // Also try academic search if available
@@ -266,6 +267,14 @@ export class PipelineStrategy implements ResearchStrategy {
       if (!ctx.budget.recordExtraction()) break;
 
       try {
+        // Validate URL before sending to provider — skip unsafe URLs
+        try {
+          validateFetchableUrl(source.url);
+        } catch (err) {
+          logger.debug({ ...safeErrorLog(err), sourceId: source.id, urlBytes: Buffer.byteLength(source.url, 'utf8') }, 'Skipping URL that failed validation');
+          ctx.state.markSourceFailed(source.id);
+          continue;
+        }
         // Count the read even if it fails — it consumed a call slot.
         ctx.budget.recordToolCall();
         const result = await ctx.provider.read(providerCallContext(ctx, { phase: 'extraction' }), source.url);
@@ -287,7 +296,7 @@ export class PipelineStrategy implements ResearchStrategy {
           ctx.state.addFinding(finding);
         }
       } catch (err) {
-        logger.warn({ err, url: source.url }, 'Extraction failed');
+        logger.warn({ ...safeErrorLog(err), sourceId: source.id, urlBytes: Buffer.byteLength(source.url, 'utf8') }, 'Extraction failed');
         ctx.state.markSourceFailed(source.id);
       }
     }
