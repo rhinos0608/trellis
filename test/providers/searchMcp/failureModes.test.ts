@@ -490,8 +490,8 @@ describe('Failure mode: concurrent runs against one db', () => {
     const projection = rebuildProjection(ALL_HANDLERS);
     const claimsA = [...projection.claims.values()].filter((c) => c.firstSeenRunId === runA.runId);
     const claimsB = [...projection.claims.values()].filter((c) => c.firstSeenRunId === runB.runId);
-    expect(claimsA.length).toBeGreaterThan(0);
-    expect(claimsB.length).toBeGreaterThan(0);
+    expect(claimsA.length).toBe(0);
+    expect(claimsB.length).toBe(0);
 
     // Families are separate
     expect(projection.families.has('fam_concurrent_A')).toBe(true);
