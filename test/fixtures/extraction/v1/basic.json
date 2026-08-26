@@ -1,0 +1,73 @@
+{
+  "sourceText": "React 19 was released on December 5, 2024. It introduces the use() hook for reading resources in render, server components, and server actions. React 19 requires Node.js 18 or later. The new compiler improves performance by up to 40% compared to React 18.",
+  "sourceId": "src_react19",
+  "query": "What is new in React 19?",
+  "subQuestions": [
+    { "id": "sq1", "text": "What are the key features of React 19?" },
+    { "id": "sq2", "text": "What are the performance improvements?" }
+  ],
+  "mockLlmResponse": {
+    "claims": [
+      {
+        "subjectText": "React 19",
+        "predicate": "was released on",
+        "objectText": "December 5, 2024",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "claim",
+        "evidenceDirectness": "direct",
+        "passageId": "passage_src_react19_0",
+        "verbatimSpan": "React 19 was released on December 5, 2024",
+        "confidence": 0.95,
+        "subQuestionIds": ["sq1"],
+        "caveats": [],
+        "freshnessSensitive": false
+      },
+      {
+        "subjectText": "The new compiler",
+        "predicate": "improves performance by",
+        "objectText": "up to 40%",
+        "polarity": "asserted",
+        "hedge": "likely",
+        "evidenceType": "claim",
+        "evidenceDirectness": "direct",
+        "quantifier": {
+          "value": 40,
+          "unit": "percent",
+          "comparisonType": "increase"
+        },
+        "passageId": "passage_src_react19_0",
+        "verbatimSpan": "improves performance by up to 40% compared to React 18",
+        "confidence": 0.8,
+        "subQuestionIds": ["sq2"],
+        "caveats": [],
+        "freshnessSensitive": true
+      },
+      {
+        "subjectText": "React 19",
+        "predicate": "requires",
+        "objectText": "Python 3.12",
+        "polarity": "asserted",
+        "hedge": "certain",
+        "evidenceType": "claim",
+        "evidenceDirectness": "direct",
+        "passageId": "passage_src_react19_0",
+        "verbatimSpan": "React 19 requires Python 3.12 or later",
+        "confidence": 0.9,
+        "subQuestionIds": ["sq1"],
+        "caveats": [],
+        "freshnessSensitive": false
+      }
+    ]
+  },
+  "expected": {
+    "validCount": 2,
+    "rejectedCount": 1,
+    "rejectedReasons": ["span_not_verbatim"],
+    "firstClaimSubject": "React 19",
+    "firstClaimPredicate": "was released on",
+    "firstClaimPolarity": "asserted",
+    "secondClaimHasQuantifier": true,
+    "secondClaimQuantifierValue": 40
+  }
+}
