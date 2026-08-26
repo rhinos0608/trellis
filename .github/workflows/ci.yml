@@ -37,3 +37,78 @@ jobs:
 
       - name: Test
         run: npm test
+
+  perf:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Performance gate
+        run: npm run perf:check
+
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack and verify exclusions
+        run: |
+          npm pack --dry-run --json > pack-manifest.json
+          node -e '
+            const packs = JSON.parse(require("fs").readFileSync("pack-manifest.json", "utf8"));
+            const files = packs.flatMap((p) => (p.files ?? []).map((f) => f.path));
+            const bad = files.filter((p) => /^(src\/|test\/|scripts\/|\.github\/)/.test(p));
+            if (bad.length > 0) {
+              console.error("ERROR: package includes disallowed paths:");
+              for (const p of bad) console.error("  " + p);
+              process.exit(1);
+            }
+            console.log(`Package contents OK (${files.length} files)`);
+          '
+
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t trellis-ci .
+
+      - name: Smoke test — version
+        run: docker run --rm trellis-ci --version
+
+      - name: Smoke test — migrate + doctor
+        run: |
+          docker run --rm -v trellis-smoke:/data trellis-ci migrate
+          docker run --rm -v trellis-smoke:/data trellis-ci doctor
+
+      - name: Cleanup
+        if: always()
+        run: docker volume rm trellis-smoke 2>/dev/null || true

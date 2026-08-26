@@ -12,7 +12,10 @@
     "lint": "eslint src",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "bench:projection": "tsx scripts/bench-projection.ts",
+    "bench:performance": "tsx scripts/bench-performance.ts",
+    "perf:check": "tsx scripts/bench-performance.ts --gate",
     "eval:reconciler": "tsx scripts/eval-reconciler.ts",
+    "prepack": "npm run build",
     "serve": "node dist/cli/main.js serve",
     "serve:http": "tsx src/http/main.ts"
   },
@@ -38,6 +41,13 @@
     "typescript-eslint": "^8.25.0",
     "vitest": "^3.2.0"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CONFIGURATION.md",
+    ".env.example"
+  ],
   "engines": {
     "node": ">=20.16.0"
   }
