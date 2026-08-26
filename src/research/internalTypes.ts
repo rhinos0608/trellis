@@ -6,8 +6,8 @@
  * provider interface and structured output contract.
  */
 
-import type { SourceType } from '../graph/types.js';
-export type { SourceType, AuthorityClass } from '../graph/types.js';
+import type { SourceType, ClaimAssertion } from '../graph/types.js';
+export type { SourceType, AuthorityClass, ClaimAssertion } from '../graph/types.js';
 
 // ── Research phases ────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ export interface SubQuestion {
 
 // ── Source entries ─────────────────────────────────────────────────────────
 
-export type ExtractionStatus = 'pending' | 'extracted' | 'failed';
+export type ExtractionStatus = 'pending' | 'extracted' | 'failed' | 'unavailable';
 export type SourceUsageStatus =
   | 'searched'
   | 'selected'
@@ -117,6 +117,67 @@ export interface Finding {
   clusterId?: string;
 }
 
+// ── Claim extraction types (Stage 1) ───────────────────────────────────
+
+export interface SourcePassage {
+  id: string;
+  text: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+export interface ClaimExtractionInput {
+  source: Pick<SourceEntry, 'id' | 'title' | 'url' | 'sourceType' | 'isPrimary' | 'publishedDate' | 'relevantSubQuestions'>;
+  query: string;
+  subQuestions: readonly Pick<SubQuestion, 'id' | 'text'>[];
+  content: string;
+  contentHash: string;
+}
+
+export interface ExtractedClaimDraft {
+  subjectText: string;
+  predicate: string;
+  objectText?: string;
+  polarity: ClaimAssertion['polarity'];
+  hedge: ClaimAssertion['hedge'];
+  evidenceType: ClaimAssertion['evidenceType'];
+  evidenceDirectness: EvidenceDirectness;
+  quantifier?: ClaimAssertion['quantifier'];
+  temporalScope?: ClaimAssertion['temporalScope'];
+  passageId: string;
+  verbatimSpan: string;
+  confidence: number;
+  subQuestionIds: string[];
+  caveats: string[];
+  freshnessSensitive: boolean;
+}
+
+export interface EvidenceGrounding {
+  sourceId: string;
+  passageId: string;
+  verbatimSpan: string;
+  spanStart: number;
+  spanEnd: number;
+  contentHash: string;
+  alignment: import('../graph/types.js').EvidenceAlignment;
+}
+
+export interface ExtractedClaimCandidate {
+  assertion: ClaimAssertion;
+  grounding: EvidenceGrounding;
+  confidence: number;
+  subQuestionIds: string[];
+  evidenceDirectness: EvidenceDirectness;
+  caveats: string[];
+  freshnessSensitive: boolean;
+}
+
+export interface GroundedFinding extends Finding {
+  assertion: ClaimAssertion;
+  groundings: [EvidenceGrounding, ...EvidenceGrounding[]];
+  extractionVersion: 'llm-grounded-v1';
+}
+
 // ── Contradictions (internal shape — maps to graph/types.ts Contradiction) ─
 
 export type InternalContradictionType =
@@ -172,6 +233,8 @@ export interface GapRecord {
   status: GapStatus;
   suggestedActions: string[];
   priority: number;
+  missingSourceTypes?: string[];
+  dominantSourceType?: string;
 }
 
 // ── Claim edges (internal) ────────────────────────────────────────────────
@@ -298,7 +361,7 @@ export interface ResearchState {
   taxonomy: ResearchTaxonomy;
   subQuestions: SubQuestion[];
   sources: SourceEntry[];
-  findings: Finding[];
+  findings: GroundedFinding[];
   contradictions: InternalContradiction[];
   openQuestions: string[];
   gaps: GapRecord[];
@@ -400,5 +463,5 @@ export interface ResearchProgress {
 export interface ResearchResult {
   report: ResearchReport;
   timeline: ResearchProgress[];
-  canonicalFindings?: Finding[];
+  canonicalFindings?: GroundedFinding[];
 }

@@ -7,6 +7,8 @@ import { logger, safeErrorLog } from '../../logger.js';
 import { providerCallContext, type ResearchStrategy, type StrategyContext } from './types.js';
 import type { ResearchResult } from '../internalTypes.js';
 import { validateFetchableUrl } from '../../providers/searchMcp/urlPolicy.js';
+import { extractClaimsFromSource } from '../claimExtraction.js';
+import { randomUUID } from 'node:crypto';
 
 // ── Agent response parsing ────────────────────────────────────────────────
 
@@ -103,12 +105,67 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
       try {
         validateFetchableUrl(url);
       } catch (err) {
+        ctx.budget.recordToolCall();
         logger.debug({ ...safeErrorLog(err), urlBytes: Buffer.byteLength(url, 'utf8') }, 'Agent rejected unsafe URL');
         return { content: `URL rejected: ${err instanceof Error ? err.message : 'validation failed'}`, error: 'invalid_url' };
       }
-      const result = await ctx.provider.read(providerCallContext(ctx, { phase: 'agent_read' }), url);
+
+      let result: { url: string; title?: string; content: string; contentHash?: string };
+      try {
+        result = await ctx.provider.read(providerCallContext(ctx, { phase: 'agent_read' }), url);
+      } catch (err) {
+        ctx.budget.recordToolCall();
+        return { content: `Read failed: ${err instanceof Error ? err.message : String(err)}`, error: 'read_error' };
+      }
       ctx.budget.recordToolCall();
-      return { content: result.content.slice(0, 8000) };
+
+      // Find-or-create SourceEntry
+      const domain = (() => {
+        try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+      })();
+      const existingSource = ctx.state.getSources().find((s) => s.url === url);
+      const sourceId = existingSource?.id ?? ctx.state.addSource({
+        id: `src_${randomUUID().slice(0, 12)}`,
+        title: result.title ?? url,
+        url,
+        sourceType: 'web',
+        domain,
+        accessDate: new Date().toISOString(),
+        isPrimary: false,
+        relevantSubQuestions: [],
+        extractionStatus: 'pending',
+        subQuestionId: '',
+        ...(result.contentHash !== undefined ? { contentHash: result.contentHash } : {}),
+      });
+      if (!sourceId) return { content: result.content.slice(0, 8000) };
+
+      // Run structured claim extraction on full content
+      const extractionResult = await extractClaimsFromSource(
+        {
+          source: {
+            id: sourceId,
+            title: result.title ?? url,
+            url,
+            sourceType: 'web',
+            isPrimary: false,
+            relevantSubQuestions: [],
+          },
+          query: ctx.state.getState().query,
+          subQuestions: ctx.state.getSubQuestions(),
+          content: result.content,
+          contentHash: result.contentHash ?? '',
+        },
+        { ...(ctx.llm !== undefined ? { llm: ctx.llm } : {}), budget: ctx.budget, ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}) },
+      );
+
+      for (const f of extractionResult.findings) ctx.state.addFinding(f);
+      if (extractionResult.status === 'extracted' || extractionResult.status === 'unavailable') {
+        ctx.state.markSourceExtracted(sourceId);
+      } else {
+        ctx.state.markSourceFailed(sourceId);
+      }
+
+      return { content: result.content.slice(0, 8000) + `\n[Extracted ${String(extractionResult.findings.length)} grounded claims]` };
     },
   });
 
@@ -233,7 +290,6 @@ export class AgentStrategy implements ResearchStrategy {
 
     const systemPrompt = this.buildSystemPrompt();
     let iteration = 0;
-    let finalAnswer: string | null = null;
 
     while (iteration < this.maxIterations) {
       if (ctx.abortSignal?.aborted) break;
@@ -246,7 +302,7 @@ export class AgentStrategy implements ResearchStrategy {
       const parsed = parseAgentResponse(response);
 
       if (parsed.type === 'answer') {
-        finalAnswer = parsed.content ?? 'No answer provided.';
+        // Answer signals completion — findings already in state from web_read
         break;
       }
 
@@ -291,19 +347,8 @@ export class AgentStrategy implements ResearchStrategy {
       }
     }
 
-    finalAnswer ??= await this.synthesizeFallback(query, ctx);
-
-    // Store result as a finding
-    ctx.state.addFinding({
-      claim: finalAnswer.slice(0, 200),
-      normalizedClaim: finalAnswer.slice(0, 200).toLowerCase(),
-      evidenceExcerpt: finalAnswer,
-      evidenceDirectness: 'secondary',
-      claimType: 'primary',
-      sourceIds: [],
-      subQuestionIds: [],
-      lastUpdated: new Date().toISOString(),
-    });
+    // Final answer is a completion signal only — durable findings come from web_read.
+    // No need to persist prose as a Finding.
 
     try {
       await ctx.reportProgress({
@@ -340,9 +385,12 @@ export class AgentStrategy implements ResearchStrategy {
     return `You are an exhaustive research agent. Today's date: ${today}.
 
 RULES:
-1. Search for information before answering. Do NOT answer from memory.
-2. Use AT LEAST 3 different tool types.
-3. When you have enough information, provide your ANSWER.
+1. You MUST search then read at least one source before answering.
+2. You MUST use web_read to extract full content before claiming findings.
+3. Use AT LEAST 3 different tool types before answering.
+4. Durable findings come from web_read, not from your final answer.
+5. Your final answer may summarize existing findings but cannot introduce new evidence.
+6. When you have enough information, provide your ANSWER.
 
 RESPONSE FORMAT:
 THOUGHT: <reasoning>
@@ -434,34 +482,5 @@ ${toolDesc}`;
         error: 'tool error',
       };
     }
-  }
-
-  private async synthesizeFallback(query: string, ctx: StrategyContext): Promise<string> {
-    if (!ctx.llm) return 'Research could not be completed without an LLM.';
-    const sources = ctx.state
-      .getSources()
-      .map((s, i) => `[${String(i + 1)}] ${s.title} — ${s.url}`)
-      .join('\n');
-
-    const resp = await ctx.llm.callOrchestrator({
-      messages: [
-        {
-          role: 'system',
-          content: 'Synthesize research findings into a comprehensive answer with source citations.',
-        },
-        {
-          role: 'user',
-          content: `Research question: ${query}\n\nSources:\n${sources}\n\nSynthesize a comprehensive answer.`,
-        },
-      ],
-      temperature: 0.5,
-      maxTokens: 4000,
-      ...(ctx.providerCtx
-        ? { runId: ctx.providerCtx.runId, traceId: ctx.providerCtx.trace.traceId }
-        : { runId: ctx.runContext.researchRunId }),
-    });
-    ctx.budget.recordToolCall();
-
-    return resp.success ? resp.content : 'Research incomplete.';
   }
 }

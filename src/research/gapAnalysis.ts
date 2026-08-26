@@ -10,6 +10,7 @@ import type {
   SourceType,
   SubQuestionCoverage,
 } from './internalTypes.js';
+import type { ResearchCapabilities, SearchOpts } from '../providers/types.js';
 import { logger } from '../logger.js';
 import type { ResearchStateEngine } from './state.js';
 import type { BudgetTracker } from './budget.js';
@@ -98,6 +99,7 @@ export class GapAnalyzer {
             : []),
         ],
         priority: defaultPriority('missing_source_type'),
+        missingSourceTypes: underrepresented,
       },
     ];
   }
@@ -159,6 +161,7 @@ export class GapAnalyzer {
             'Actively seek alternative viewpoints',
           ],
           priority: defaultPriority('overrepresented_viewpoint'),
+          dominantSourceType: type,
         });
       }
     }
@@ -196,6 +199,161 @@ export class GapAnalyzer {
     }
     return gaps;
   }
+}
+
+// ── Gap acquisition planning ─────────────────────────────────────────────
+
+export interface GapAcquisition {
+  gapId: string;
+  method: 'search' | 'academic' | 'github' | 'reddit' | 'hackernews' | 'stackoverflow';
+  query: string;
+  searchOpts?: { freshness?: SearchOpts['freshness']; limit?: number };
+  targetSubQuestionIds: string[];
+}
+
+/** Map a source type name to the corresponding GapAcquisition method, gated by capabilities. */
+function sourceTypeToAcqMethod(
+  sourceType: string,
+  caps: ResearchCapabilities,
+): GapAcquisition['method'] | null {
+  switch (sourceType) {
+    case 'academic': return caps.academic ? 'academic' : null;
+    case 'github': return caps.code ? 'github' : null;
+    case 'reddit': return caps.community?.reddit ? 'reddit' : null;
+    case 'hackernews': return caps.community?.hackernews ? 'hackernews' : null;
+    case 'stackoverflow': return caps.community?.stackoverflow ? 'stackoverflow' : null;
+    default: return null;
+  }
+}
+
+/**
+ * Pure planner: decides what acquisition SHOULD happen for each gap.
+ * No provider calls, no I/O — returns a list of GapAcquisition instructions
+ * that the strategy layer can dispatch.
+ *
+ * Handles: unanswered_sub_question, missing_recency, single_source_dependency,
+ * thin_coverage, missing_source_type (capability-gated),
+ * overrepresented_viewpoint (routes to non-dominant type).
+ */
+export function planGapAcquisitions(
+  gaps: GapRecord[],
+  state: ResearchStateEngine,
+  caps: ResearchCapabilities,
+): GapAcquisition[] {
+  const sqMap = new Map(state.getState().subQuestions.map((sq) => [sq.id, sq]));
+  const findingMap = new Map(state.getState().findings.map((f) => [f.id, f]));
+  const acquisitions: GapAcquisition[] = [];
+
+  for (const gap of gaps) {
+    switch (gap.category) {
+      case 'unanswered_sub_question': {
+        if (!gap.subQuestionId) break;
+        const sq = sqMap.get(gap.subQuestionId);
+        if (!sq) break;
+        acquisitions.push({
+          gapId: gap.id,
+          method: 'search',
+          query: sq.text,
+          searchOpts: { limit: 10 },
+          targetSubQuestionIds: [gap.subQuestionId],
+        });
+        break;
+      }
+      case 'missing_recency': {
+        if (!gap.relatedFindingId) break;
+        const finding = findingMap.get(gap.relatedFindingId);
+        if (!finding) break;
+        const targetIds = gap.subQuestionId ? [gap.subQuestionId] : [];
+        acquisitions.push({
+          gapId: gap.id,
+          method: 'search',
+          query: finding.claim,
+          searchOpts: { freshness: 'year', limit: 10 },
+          targetSubQuestionIds: targetIds,
+        });
+        break;
+      }
+      case 'single_source_dependency': {
+        if (!gap.subQuestionId) break;
+        const sq = sqMap.get(gap.subQuestionId);
+        if (!sq) break;
+        const method = caps.academic ? 'academic' as const : 'search' as const;
+        acquisitions.push({
+          gapId: gap.id,
+          method,
+          query: sq.text,
+          searchOpts: { limit: 10 },
+          targetSubQuestionIds: [gap.subQuestionId],
+        });
+        break;
+      }
+      case 'thin_coverage': {
+        if (!gap.subQuestionId) break;
+        const sq = sqMap.get(gap.subQuestionId);
+        if (!sq) break;
+        acquisitions.push({
+          gapId: gap.id,
+          method: 'search',
+          query: sq.text,
+          searchOpts: { limit: 15 },
+          targetSubQuestionIds: [gap.subQuestionId],
+        });
+        break;
+      }
+      case 'missing_source_type': {
+        // Parse missing types from suggestedActions "Try: type1, type2, ..."
+        const missingTypes = gap.missingSourceTypes ?? [];
+        if (missingTypes.length === 0) break;
+        const sqQuery = state.getState().taxonomy.originalQuery;
+        for (const missingType of missingTypes) {
+          const method = sourceTypeToAcqMethod(missingType, caps);
+          if (!method) continue;
+          acquisitions.push({
+            gapId: gap.id,
+            method,
+            query: sqQuery,
+            searchOpts: { limit: 10 },
+            targetSubQuestionIds: gap.subQuestionId ? [gap.subQuestionId] : [],
+          });
+        }
+        break;
+      }
+      case 'overrepresented_viewpoint': {
+        // Parse dominant type from description: Source type "X" dominates...
+        const dominantType = gap.dominantSourceType;
+        if (!dominantType) break;
+        // Prefer academic if available and not dominant, else first non-dominant available
+        let chosenMethod: GapAcquisition['method'] | null = null;
+        if (dominantType !== 'academic' && caps.academic) {
+          chosenMethod = 'academic';
+        } else {
+          const candidates: [string, GapAcquisition['method']][] = [
+            ['github', 'github'],
+            ['reddit', 'reddit'],
+            ['hackernews', 'hackernews'],
+            ['stackoverflow', 'stackoverflow'],
+          ];
+          for (const [type, m] of candidates) {
+            if (type !== dominantType && sourceTypeToAcqMethod(type, caps)) {
+              chosenMethod = m;
+              break;
+            }
+          }
+        }
+        if (!chosenMethod) break;
+        acquisitions.push({
+          gapId: gap.id,
+          method: chosenMethod,
+          query: state.getState().taxonomy.originalQuery,
+          searchOpts: { limit: 10 },
+          targetSubQuestionIds: gap.subQuestionId ? [gap.subQuestionId] : [],
+        });
+        break;
+      }
+    }
+  }
+
+  return acquisitions;
 }
 
 export class GapFiller {

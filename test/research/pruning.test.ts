@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { BudgetTracker } from '../../src/research/budget.js';
 import { ResearchStateEngine } from '../../src/research/state.js';
 import { PruningEngine } from '../../src/research/pruning.js';
-import type { SourceEntry, Finding, GapRecord } from '../../src/research/internalTypes.js';
+import type { SourceEntry, GroundedFinding, GapRecord } from '../../src/research/internalTypes.js';
 
 function makeSource(id: string, overrides?: Partial<SourceEntry>): SourceEntry {
   return {
@@ -20,7 +20,7 @@ function makeSource(id: string, overrides?: Partial<SourceEntry>): SourceEntry {
   };
 }
 
-function makeFinding(id: string, sourceIds: string[], overrides?: Partial<Finding>): Finding {
+function makeFinding(id: string, sourceIds: string[], overrides?: Partial<GroundedFinding>): GroundedFinding {
   return {
     id,
     claim: `Finding ${id}`,
@@ -31,6 +31,24 @@ function makeFinding(id: string, sourceIds: string[], overrides?: Partial<Findin
     subQuestionIds: [],
     createdAt: new Date().toISOString(),
     lastUpdated: new Date().toISOString(),
+    assertion: {
+      subjectText: `Subject ${id}`,
+      predicate: 'test predicate',
+      polarity: 'asserted',
+      hedge: 'likely',
+      evidenceType: 'claim',
+      canonicalKey: { subject: `subject ${id}`, predicate: 'test predicate' },
+    },
+    groundings: sourceIds.map((sid) => ({
+      sourceId: sid,
+      passageId: `passage_${sid}_0`,
+      verbatimSpan: `Evidence for ${id} from ${sid}`,
+      spanStart: 0,
+      spanEnd: 30,
+      contentHash: 'test-hash',
+      alignment: { score: 0.5, method: 'lexical_anchor_overlap' as const, matchedTerms: [], missingAnchorTerms: [], explanation: 'test' },
+    })) as [import('../../src/research/internalTypes.js').EvidenceGrounding, ...import('../../src/research/internalTypes.js').EvidenceGrounding[]],
+    extractionVersion: 'llm-grounded-v1',
     ...overrides,
   };
 }

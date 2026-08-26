@@ -10,7 +10,8 @@ import type {
   SubQuestion,
   SubQuestionStatus,
   SourceEntry,
-  Finding,
+  GroundedFinding,
+  EvidenceGrounding,
   InternalContradiction,
   InternalContradictionStatus,
   InternalContradictionType,
@@ -222,7 +223,7 @@ export class ResearchStateEngine {
 
   // ── Findings ───────────────────────────────────────────────────────────
 
-  addFinding(finding: Omit<Finding, 'id' | 'createdAt'>): string {
+  addFinding(finding: Omit<GroundedFinding, 'id' | 'createdAt'>): string {
     const id = makeId();
     if (
       this.state.sources.length + this.state.findings.length + this.state.gaps.length >=
@@ -230,19 +231,23 @@ export class ResearchStateEngine {
     ) {
       return '';
     }
+    // Runtime guard: groundings must be nonempty even if TS tuple type catches construction
+    if (!finding.groundings || finding.groundings.length === 0) {
+      throw new Error('GroundedFinding must have at least one grounding');
+    }
     this.budget.incrementStateEntries(1);
-    this.state.findings.push({ ...finding, id, createdAt: nowISO() });
+    this.state.findings.push({ ...finding, id, createdAt: nowISO() } as GroundedFinding);
     return id;
   }
 
-  getFindings(subQuestionId?: string): Finding[] {
+  getFindings(subQuestionId?: string): GroundedFinding[] {
     if (!subQuestionId) return [...this.state.findings];
     return this.state.findings.filter((f) =>
       f.subQuestionIds.includes(subQuestionId),
     );
   }
 
-  getFinding(id: string): Finding | undefined {
+  getFinding(id: string): GroundedFinding | undefined {
     return this.state.findings.find((f) => f.id === id);
   }
 
@@ -254,6 +259,19 @@ export class ResearchStateEngine {
     keep.subQuestionIds = [
       ...new Set([...keep.subQuestionIds, ...absorb.subQuestionIds]),
     ];
+    // Merge groundings with dedupe by sourceId+passageId+verbatimSpan
+    const mergedGroundings = [...keep.groundings];
+    const groundingKeys = new Set(
+      mergedGroundings.map((g) => `${g.sourceId}::${g.passageId}::${g.verbatimSpan}`),
+    );
+    for (const g of absorb.groundings) {
+      const key = `${g.sourceId}::${g.passageId}::${g.verbatimSpan}`;
+      if (!groundingKeys.has(key)) {
+        mergedGroundings.push(g);
+        groundingKeys.add(key);
+      }
+    }
+    keep.groundings = mergedGroundings as [EvidenceGrounding, ...EvidenceGrounding[]];
     keep.lastUpdated = nowISO();
     this.state.findings = this.state.findings.filter((f) => f.id !== absorbId);
   }

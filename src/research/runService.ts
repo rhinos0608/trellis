@@ -19,6 +19,7 @@ import type { TrellisConfig } from '../config/index.js';
 import type { AuthorityClass, ClaimObservation } from '../graph/types.js';
 import { canonicalizeSourceUrl } from '../graph/sourceIdentity.js';
 import { planClaimObservation } from '../graph/claimReconciler.js';
+import { resolveClaimEntities } from '../graph/claimEntityResolution.js';
 import { createEmptyProjectionState, serializeProjectionState, deserializeProjectionState } from '../store/projectionState.js';
 import type { EventHandlerRegistry } from '../store/projectionState.js';
 import { resolveBudgetProfile } from './budget.js';
@@ -216,13 +217,20 @@ function mapFindingToClaimEvents(
   runId: string,
   threadId?: string,
 ): NewEventInput[] {
+  // Use structured assertion fields when available (GroundedFinding), fall back to legacy fields
+  const hasAssertion = 'assertion' in finding;
+  const assertion = hasAssertion ? (finding as unknown as { assertion: import('../graph/types.js').ClaimAssertion }).assertion : undefined;
+  const groundings = hasAssertion ? (finding as unknown as { groundings: Array<{ sourceId: string; passageId: string; verbatimSpan: string; alignment: import('../graph/types.js').EvidenceAlignment; contentHash: string }> }).groundings : undefined;
+
   const observation: ClaimObservation = {
     id: `obs_${runId}_${finding.id}`, familyId, ...(threadId !== undefined ? { threadId } : {}), runId, observedAt: finding.lastUpdated || finding.createdAt,
-    subjectText: finding.claim, predicate: finding.normalizedClaim || finding.claim, polarity: 'asserted',
-    hedge: (finding.confidence ?? 0.5) > 0.8 ? 'certain' : (finding.confidence ?? 0.5) > 0.5 ? 'likely' : 'possible',
-    evidenceType: finding.claimType === 'primary' ? 'study' : finding.claimType === 'secondary' ? 'claim' : 'anecdote',
+    subjectText: assertion?.subjectText ?? finding.claim,
+    predicate: assertion?.predicate ?? (finding.normalizedClaim || finding.claim),
+    polarity: assertion?.polarity ?? 'asserted',
+    hedge: assertion?.hedge ?? ((finding.confidence ?? 0.5) > 0.8 ? 'certain' : (finding.confidence ?? 0.5) > 0.5 ? 'likely' : 'possible'),
+    evidenceType: assertion?.evidenceType ?? (finding.claimType === 'primary' ? 'study' : finding.claimType === 'secondary' ? 'claim' : 'anecdote'),
     confidence: finding.confidence ?? 0.5, sourceIds: finding.sourceIds, extractionVersion: 'finding-v2',
-    canonicalKey: { subject: finding.claim.slice(0, 200), predicate: (finding.normalizedClaim || finding.claim).slice(0, 200) },
+    canonicalKey: assertion?.canonicalKey ?? { subject: finding.claim.slice(0, 200), predicate: (finding.normalizedClaim || finding.claim).slice(0, 200) },
   };
   const planned = planClaimObservation(observation, createEmptyProjectionState());
   const claimId = planned.reconciliation.canonicalClaimId;
@@ -231,20 +239,39 @@ function mapFindingToClaimEvents(
     makeEnvelope('CLAIM_OBSERVED', runId, planned, { entityId: claimId, entityType: 'claim' }),
   ];
 
-  // Evidence per sourceId
-  for (const sourceId of finding.sourceIds) {
-    const evidence = {
-      id: `evd_${finding.id}_${sourceId}`,
-      claimId,
-      sourceId,
-      excerpt: finding.evidenceExcerpt,
-      observationId: observation.id,
-      stance: 'supports',
-      runId,
-    };
-    events.push(
-      makeEnvelope('EVIDENCE_LINKED', runId, evidence, { entityId: evidence.id, entityType: 'evidence', eventVersion: 2 }),
-    );
+  // Evidence per grounding (structured) or per sourceId (legacy)
+  if (groundings && groundings.length > 0) {
+    for (const grounding of groundings) {
+      const evidence = {
+        id: `evd_${finding.id}_${grounding.sourceId}_${grounding.passageId}`,
+        claimId,
+        sourceId: grounding.sourceId,
+        excerpt: grounding.verbatimSpan,
+        alignment: grounding.alignment,
+        observationId: observation.id,
+        stance: 'supports' as const,
+        runId,
+      };
+      events.push(
+        makeEnvelope('EVIDENCE_LINKED', runId, evidence, { entityId: evidence.id, entityType: 'evidence', eventVersion: 2 }),
+      );
+    }
+  } else {
+    // Legacy fallback
+    for (const sourceId of finding.sourceIds) {
+      const evidence = {
+        id: `evd_${finding.id}_${sourceId}`,
+        claimId,
+        sourceId,
+        excerpt: finding.evidenceExcerpt,
+        observationId: observation.id,
+        stance: 'supports' as const,
+        runId,
+      };
+      events.push(
+        makeEnvelope('EVIDENCE_LINKED', runId, evidence, { entityId: evidence.id, entityType: 'evidence', eventVersion: 2 }),
+      );
+    }
   }
 
   return events;
@@ -334,6 +361,8 @@ function mapGapToEvents(
     category: gap.category,
     status: gap.status,
     priority: gap.priority,
+    ...(gap.missingSourceTypes !== undefined ? { missingSourceTypes: gap.missingSourceTypes } : {}),
+    ...(gap.dominantSourceType !== undefined ? { dominantSourceType: gap.dominantSourceType } : {}),
     firstSeenRunId: runId,
   };
   return [
@@ -549,20 +578,66 @@ export function createRunService(): RunService {
       const findingClaims = new Map<string, string>();
       const claimTextToId = new Map<string, string>();
       for (const finding of result.canonicalFindings ?? []) {
-        const observation: ClaimObservation = { id: `obs_${runId}_${finding.id}`, familyId, ...(threadId !== undefined ? { threadId } : {}), runId, observedAt: finding.lastUpdated || finding.createdAt, subjectText: finding.claim, predicate: finding.normalizedClaim || finding.claim, polarity: 'asserted', hedge: (finding.confidence ?? 0.5) > 0.8 ? 'certain' : (finding.confidence ?? 0.5) > 0.5 ? 'likely' : 'possible', evidenceType: finding.claimType === 'primary' ? 'study' : finding.claimType === 'secondary' ? 'claim' : 'anecdote', confidence: finding.confidence ?? 0.5, sourceIds: finding.sourceIds.map((sourceId) => sourceIdByObservedId.get(sourceId) ?? sourceId), extractionVersion: 'finding-v2', canonicalKey: { subject: finding.claim.slice(0, 200), predicate: (finding.normalizedClaim || finding.claim).slice(0, 200) } };
+        // Fail-closed validation: structured assertion must exist
+        if (!finding.assertion) { logger.warn({ findingId: finding.id }, 'runService: skipping finding without assertion'); continue; }
+        if (!finding.groundings || finding.groundings.length === 0) { logger.warn({ findingId: finding.id }, 'runService: skipping finding without groundings'); continue; }
+        // Validate source IDs match groundings
+        const groundingSourceIds = new Set(finding.groundings.map((g) => g.sourceId));
+        const findingSourceIds = new Set(finding.sourceIds);
+        if (groundingSourceIds.size !== findingSourceIds.size || ![...groundingSourceIds].every((id) => findingSourceIds.has(id))) {
+          logger.warn({ findingId: finding.id }, 'runService: skipping finding — sourceIds mismatch groundings'); continue;
+        }
+        // Validate groundings exist in scratch and contentHash/offsets are consistent
+        let groundingValid = true;
+        for (const g of finding.groundings) {
+          const canonicalSourceId = sourceIdByObservedId.get(g.sourceId) ?? g.sourceId;
+          const src = scratch.sources.get(canonicalSourceId);
+          if (!src) { logger.warn({ findingId: finding.id, sourceId: g.sourceId }, 'runService: skipping finding — grounding source not in scratch'); groundingValid = false; break; }
+          if (src.contentHash !== undefined && g.contentHash !== src.contentHash) { logger.warn({ findingId: finding.id, sourceId: g.sourceId }, 'runService: skipping finding — grounding contentHash mismatch'); groundingValid = false; break; }
+          if (!(0 <= g.spanStart && g.spanStart < g.spanEnd)) { logger.warn({ findingId: finding.id, sourceId: g.sourceId }, 'runService: skipping finding — invalid span offsets'); groundingValid = false; break; }
+        }
+        if (!groundingValid) continue;
+
+        const a = finding.assertion;
+        const observation: ClaimObservation = { id: `obs_${runId}_${finding.id}`, familyId, ...(threadId !== undefined ? { threadId } : {}), runId, observedAt: finding.lastUpdated || finding.createdAt, subjectText: a.subjectText, predicate: a.predicate, polarity: a.polarity, hedge: a.hedge, evidenceType: a.evidenceType, confidence: finding.confidence ?? 0.5, sourceIds: finding.sourceIds.map((sid) => sourceIdByObservedId.get(sid) ?? sid), extractionVersion: 'finding-v2', canonicalKey: a.canonicalKey, ...(a.objectText !== undefined ? { objectText: a.objectText } : {}), ...(a.quantifier !== undefined ? { quantifier: a.quantifier } : {}), ...(a.temporalScope !== undefined ? { temporalScope: a.temporalScope } : {}) };
+        // Entity resolution: resolve subject/object text to canonical entity IDs
+        const entityResult = resolveClaimEntities(observation, scratch, { now: new Date().toISOString(), runId });
+        if (entityResult.subjectEntityId !== undefined) observation.subjectEntityId = entityResult.subjectEntityId;
+        if (entityResult.objectEntityId !== undefined) observation.objectEntityId = entityResult.objectEntityId;
+        // NODE_ADDED must precede CLAIM_OBSERVED in the append batch
+        for (const evt of entityResult.entityEvents) {
+          const envelope = makeEnvelope(evt.eventType as EventEnvelope['eventType'], runId, evt.payload, { entityId: (evt.payload as { id: string }).id, entityType: 'entity' });
+          events.push(envelope);
+          applyScratchEvents([envelope], scratch, handlers);
+        }
         const planned = planClaimObservation(observation, scratch);
         const claimId = planned.reconciliation.canonicalClaimId;
         findingClaims.set(finding.id, claimId); claimTextToId.set(finding.claim, claimId);
         const claimEvent = makeEnvelope('CLAIM_OBSERVED', runId, planned, { entityId: claimId, entityType: 'claim' });
         events.push(claimEvent); applyScratchEvents([claimEvent], scratch, handlers);
-        for (const observedSourceId of finding.sourceIds) { const sourceId = sourceIdByObservedId.get(observedSourceId) ?? observedSourceId; const isContradiction = planned.reconciliation.classification === 'contradiction' && planned.reconciliation.matchedClaimId; if (isContradiction && planned.reconciliation.matchedClaimId) { events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: `evd_${finding.id}_${sourceId}_opposes`, claimId: planned.reconciliation.matchedClaimId, sourceId, observationId: observation.id, stance: 'opposes', excerpt: finding.evidenceExcerpt, runId }, { entityType: 'evidence', eventVersion: 2 })); events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: `evd_${finding.id}_${sourceId}_supports`, claimId, sourceId, observationId: observation.id, stance: 'supports', excerpt: finding.evidenceExcerpt, runId }, { entityType: 'evidence', eventVersion: 2 })); } else { events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: `evd_${finding.id}_${sourceId}`, claimId, sourceId, observationId: observation.id, stance: 'supports', excerpt: finding.evidenceExcerpt, runId }, { entityType: 'evidence', eventVersion: 2 })); } }
+        // EVIDENCE_LINKED per grounding (not per legacy sourceIds)
+        for (const [gIdx, grounding] of finding.groundings.entries()) {
+          const sourceId = sourceIdByObservedId.get(grounding.sourceId) ?? grounding.sourceId;
+          const isContradiction = planned.reconciliation.classification === 'contradiction' && planned.reconciliation.matchedClaimId;
+          if (isContradiction && planned.reconciliation.matchedClaimId) {
+            const opposeId = `evd_${finding.id}_${sourceId}_${String(gIdx)}_opposes`;
+            const supportId = `evd_${finding.id}_${sourceId}_${String(gIdx)}_supports`;
+            events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: opposeId, claimId: planned.reconciliation.matchedClaimId, sourceId, observationId: observation.id, stance: 'opposes', excerpt: grounding.verbatimSpan, alignment: grounding.alignment, runId }, { entityId: opposeId, entityType: 'evidence', eventVersion: 2 }));
+            events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: supportId, claimId, sourceId, observationId: observation.id, stance: 'supports', excerpt: grounding.verbatimSpan, alignment: grounding.alignment, runId }, { entityId: supportId, entityType: 'evidence', eventVersion: 2 }));
+          } else {
+            const evId = `evd_${finding.id}_${sourceId}_${String(gIdx)}`;
+            events.push(makeEnvelope('EVIDENCE_LINKED', runId, { id: evId, claimId, sourceId, observationId: observation.id, stance: 'supports', excerpt: grounding.verbatimSpan, alignment: grounding.alignment, runId }, { entityId: evId, entityType: 'evidence', eventVersion: 2 }));
+          }
+        }
       }
       const clusters = new Map<string, string>();
       for (const cluster of result.report.findingClusters ?? []) { const findingId = cluster.findingIds[0]; const claimId = findingId ? findingClaims.get(findingId) : undefined; if (claimId) clusters.set(cluster.id, claimId); }
       const persisted = new Set(findingClaims.values());
       for (const edge of result.report.findingClusterEdges ?? []) events.push(...mapClusterEdgeToClaimRelationEvents(edge, clusters, persisted, runId));
       for (const contradiction of result.report.contradictions) events.push(...mapContradictionToEvents(contradiction, familyId, runId, claimTextToId));
-      events.push(makeEnvelope('RUN_COMPLETED', runId, { runId, claimCount: result.canonicalFindings?.length ?? 0, sourceCount: stateEngine.getState().sources.length, evidenceCount: (result.canonicalFindings ?? []).reduce((sum, f) => sum + f.sourceIds.length, 0) }, { entityId: runId, entityType: 'run' }));
+      const persistedClaims = persisted.size;
+      const persistedEvidence = events.filter((e) => e.eventType === 'EVIDENCE_LINKED').length;
+      events.push(makeEnvelope('RUN_COMPLETED', runId, { runId, claimCount: persistedClaims, sourceCount: stateEngine.getState().sources.length, evidenceCount: persistedEvidence }, { entityId: runId, entityType: 'run' }));
       try { appendEvents(events, { projection, handlers }); context.projection = projection; return; } catch (error) { if (!(error instanceof StaleProjectionError) || attempt >= MAX_STALE_RETRIES) throw error; }
     }
   }

@@ -138,7 +138,8 @@ describe('delegation: start/get/cancel/continue', () => {
     expect(run.progress.phase).toBe('completed');
     expect(typeof run.startedAt).toBe('string');
     expect(typeof run.completedAt).toBe('string');
-    expect((run.claimCount ?? 0)).toBeGreaterThan(0);
+    // No LLM configured → zero factual claims, but sources are still discovered
+    expect((run.claimCount ?? 0)).toBe(0);
     expect((run.sourceCount ?? 0)).toBeGreaterThan(0);
   });
 

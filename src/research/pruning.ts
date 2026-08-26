@@ -7,7 +7,7 @@ import { logger } from '../logger.js';
 import type { BudgetTracker } from './budget.js';
 import { type ResearchStateEngine } from './state.js';
 import type {
-  Finding,
+  GroundedFinding,
   SourceEntry,
   GapRecord,
   ResearchState,
@@ -17,7 +17,7 @@ function sourceRank(s: SourceEntry): number {
   return (s.qualityScore ?? 0) + (s.relevanceScore ?? 0) + (s.freshnessScore ?? 0);
 }
 
-function findingConfidence(f: Finding): number {
+function findingConfidence(f: GroundedFinding): number {
   let score = 0;
   if (f.evidenceDirectness === 'direct') score += 3;
   else if (f.evidenceDirectness === 'near-direct') score += 1;
@@ -27,14 +27,14 @@ function findingConfidence(f: Finding): number {
 }
 
 export class PruningEngine {
-  tierFindings(findings: Finding[]): {
-    confirmed: Finding[];
-    corroborated: Finding[];
-    unverified: Finding[];
+  tierFindings(findings: GroundedFinding[]): {
+    confirmed: GroundedFinding[];
+    corroborated: GroundedFinding[];
+    unverified: GroundedFinding[];
   } {
-    const confirmed: Finding[] = [];
-    const corroborated: Finding[] = [];
-    const unverified: Finding[] = [];
+    const confirmed: GroundedFinding[] = [];
+    const corroborated: GroundedFinding[] = [];
+    const unverified: GroundedFinding[] = [];
     for (const f of findings) {
       const count = f.sourceIds.length;
       if (count >= 3) confirmed.push(f);
@@ -164,7 +164,7 @@ export class PruningEngine {
     state: ResearchStateEngine,
     snapshot: ResearchState,
     sources: SourceEntry[],
-    findings: Finding[],
+    findings: GroundedFinding[],
     gaps: GapRecord[],
   ): void {
     state.fromJSON({ ...snapshot, sources, findings, gaps });

@@ -3,7 +3,7 @@ import { BudgetTracker } from '../../src/research/budget.js';
 import { ResearchStateEngine } from '../../src/research/state.js';
 import { PipelineStrategy } from '../../src/research/strategies/pipelineStrategy.js';
 import type { StrategyContext } from '../../src/research/strategies/types.js';
-import type { ResearchProvider } from '../../src/providers/types.js';
+import type { ResearchProvider, ProviderCallContext, ResearchHit } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 import type { RunContext } from '../../src/research/types.js';
 
@@ -146,14 +146,16 @@ describe('PipelineStrategy', () => {
     expect(ctx.state.sourceCount()).toBeGreaterThan(0);
   });
 
-  it('findings are extracted from sources', async () => {
+  it('no-LLM pipeline produces zero findings (precision-first)', async () => {
     const strategy = new PipelineStrategy();
     const ctx = makeStrategyCtx();
     const result = await strategy.analyze('Test query', ctx);
 
-    // The mock provider returns content >100 chars, so findings should be created
-    expect(ctx.state.findingCount()).toBeGreaterThan(0);
-    expect(result.canonicalFindings!.length).toBeGreaterThan(0);
+    // Without an LLM, no structured extraction can happen.
+    // Sources are still discovered but zero factual claims are produced.
+    expect(ctx.state.sourceCount()).toBeGreaterThan(0);
+    expect(ctx.state.findingCount()).toBe(0);
+    expect(result.canonicalFindings).toHaveLength(0);
   });
 
   it('timeline contains phase entries', async () => {
@@ -209,6 +211,99 @@ describe('PipelineStrategy', () => {
   it('close() cleans up', async () => {
     const strategy = new PipelineStrategy();
     await expect(strategy.close()).resolves.toBeUndefined();
+  });
+});
+
+// ── Gap acquisition loop tests ──────────────────────────────────────────
+
+type SearchCall = { phase?: string; query: string };
+
+function createRecordingProvider(opts?: {
+  searchResults?: () => ResearchHit[];
+}): { provider: ResearchProvider; searchCalls: SearchCall[] } {
+  const searchCalls: SearchCall[] = [];
+  const getHits = opts?.searchResults;
+
+  const provider: ResearchProvider = {
+    name: 'recording-mock',
+    capabilities: {
+      search: true,
+      read: true,
+      academic: true,
+      code: false,
+      community: { reddit: false, hackernews: false, stackoverflow: false },
+      media: false,
+      reference: false,
+      browser: false,
+    },
+    async search(ctx: ProviderCallContext, query: string, searchOpts?) {
+      searchCalls.push({ phase: ctx.trace.phase, query });
+      if (getHits) return getHits();
+      const limit = searchOpts?.limit ?? 10;
+      return Array.from({ length: Math.min(limit, 5) }, (_, i) => ({
+        url: `https://example.com/${encodeURIComponent(query)}-${i}`,
+        title: `Result ${i} for ${query}`,
+        snippet: `Snippet ${i}`,
+      }));
+    },
+    async read(url: string) {
+      return { url, title: 'Page', content: 'Content '.repeat(50), contentHash: 'abc' };
+    },
+    async academic(ctx: ProviderCallContext, query: string) {
+      searchCalls.push({ phase: ctx.trace.phase, query });
+      return [{ url: `https://arxiv.org/${encodeURIComponent(query)}`, title: `Academic ${query}`, snippet: 'Academic' }];
+    },
+  };
+  return { provider, searchCalls };
+}
+
+describe('Gap acquisition loop', () => {
+  it('produces provider search calls with gap-derived queries', async () => {
+    const { provider, searchCalls } = createRecordingProvider();
+    const strategy = new PipelineStrategy();
+    const ctx = makeStrategyCtx({ provider });
+    await strategy.analyze('What is TypeScript?', ctx);
+
+    const gapCalls = searchCalls.filter((c) => c.phase === 'gap_acquisition');
+    expect(gapCalls.length).toBeGreaterThan(0);
+
+    // Gap queries are derived from sub-question text via planGapAcquisitions
+    for (const call of gapCalls) {
+      expect(call.query).toContain('What is TypeScript?');
+    }
+  });
+
+  it('loop terminates when provider returns zero results (zero-yield guard)', async () => {
+    const { provider, searchCalls } = createRecordingProvider({
+      searchResults: () => [],
+    });
+    const strategy = new PipelineStrategy();
+    const ctx = makeStrategyCtx({ provider });
+    await strategy.analyze('Test query', ctx);
+
+    // Discovery still runs, but gap loop hits zero-yield immediately
+    const discoveryCalls = searchCalls.filter((c) => c.phase === 'discovery');
+    const gapCalls = searchCalls.filter((c) => c.phase === 'gap_acquisition');
+    expect(discoveryCalls.length).toBeGreaterThan(0);
+    // Zero-yield: provider returns empty, so gap loop stops after first round
+    expect(gapCalls.length).toBeGreaterThan(0);
+    expect(gapCalls.length).toBeLessThanOrEqual(5);
+  });
+
+  it('loop respects budget limits', async () => {
+    const { provider, searchCalls } = createRecordingProvider();
+    const strategy = new PipelineStrategy();
+    const ctx = makeStrategyCtx({
+      provider,
+      budgetOverrides: { maxToolCalls: 10, maxGapLoops: 1, maxTimeMs: 999_999_999 },
+    });
+    await strategy.analyze('Test query', ctx);
+
+    // Budget exhausted after limited gap loops
+    expect(ctx.budget.isExhausted()).toBe(true);
+    // Total search calls bounded by budget
+    const gapCalls = searchCalls.filter((c) => c.phase === 'gap_acquisition');
+    expect(gapCalls.length).toBeLessThanOrEqual(3);
   });
 });
 

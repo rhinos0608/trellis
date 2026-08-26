@@ -9,10 +9,12 @@
 import { randomUUID } from 'node:crypto';
 import { logger, safeErrorLog } from '../../logger.js';
 import { providerCallContext, type ResearchStrategy, type StrategyContext } from './types.js';
-import type { ResearchResult, SubQuestion, Finding, SourceEntry } from '../internalTypes.js';
+import type { ResearchResult, SubQuestion, SourceEntry } from '../internalTypes.js';
+import type { SourceType } from '../../graph/types.js';
 import { validateFetchableUrl } from '../../providers/searchMcp/urlPolicy.js';
-import { GapAnalyzer, GapFiller } from '../gapAnalysis.js';
+import { GapAnalyzer, GapFiller, planGapAcquisitions } from '../gapAnalysis.js';
 import { PruningEngine } from '../pruning.js';
+import { extractClaimsFromSource } from '../claimExtraction.js';
 import { ResearchSynthesizer } from '../synthesizer.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -112,14 +114,122 @@ export class PipelineStrategy implements ResearchStrategy {
         'extraction',
       );
 
-      // Phase 4: Gap analysis
+      // Phase 4: Gap analysis — iterative acquisition loop
       ctx.state.transitionTo('gap_analysis');
-      const coverage = ctx.state.computeSubQuestionCoverage();
       const gapAnalyzer = new GapAnalyzer(ctx.state);
       const gapFiller = new GapFiller(ctx.state, ctx.budget);
-      const gaps = gapAnalyzer.analyze(coverage);
-      await gapFiller.fillGaps(gaps);
-      ctx.state.incrementLoop();
+
+      while (gapFiller.shouldContinueLoop()) {
+        const coverage = ctx.state.computeSubQuestionCoverage();
+        const gaps = gapAnalyzer.analyze(coverage);
+
+        // Record gaps into state (gap tracking)
+        await gapFiller.fillGaps(gaps);
+
+        // Plan acquisitions from detected gaps
+        const acquisitions = planGapAcquisitions(gaps, ctx.state, ctx.provider.capabilities);
+        if (acquisitions.length === 0) break;
+
+        // Execute top acquisitions (max 3 per round to bound cost)
+        const toExecute = acquisitions.slice(0, 3);
+        let acquired = 0;
+
+        for (const ac of toExecute) {
+          if (ctx.budget.isExhausted()) break;
+          if (ctx.abortSignal?.aborted) break;
+
+          try {
+            ctx.budget.recordToolCall();
+            let hits: Awaited<ReturnType<typeof ctx.provider.search>> = [];
+
+            const searchOpts = ac.searchOpts
+              ? Object.fromEntries(
+                  Object.entries(ac.searchOpts).filter(([, v]) => v !== undefined),
+                )
+              : {};
+
+            if (ac.method === 'academic' && ctx.provider.capabilities.academic) {
+              hits = await ctx.provider.academic(
+                providerCallContext(ctx, { phase: 'gap_acquisition' }),
+                ac.query,
+                searchOpts as import('../../providers/types.js').AcademicOpts,
+              );
+            } else if (ac.method === 'reddit' && ctx.provider.capabilities.community?.reddit && ctx.provider.reddit) {
+              hits = await ctx.provider.reddit(
+                providerCallContext(ctx, { phase: 'gap_acquisition' }),
+                ac.query,
+                searchOpts as import('../../providers/types.js').SearchOpts,
+              );
+            } else if (ac.method === 'hackernews' && ctx.provider.capabilities.community?.hackernews && ctx.provider.hackernews) {
+              hits = await ctx.provider.hackernews(
+                providerCallContext(ctx, { phase: 'gap_acquisition' }),
+                ac.query,
+                searchOpts as import('../../providers/types.js').SearchOpts,
+              );
+            } else if (ac.method === 'github' && ctx.provider.capabilities.code) {
+              hits = await ctx.provider.search(
+                providerCallContext(ctx, { phase: 'gap_acquisition' }),
+                ac.query + ' site:github.com',
+                searchOpts as import('../../providers/types.js').SearchOpts,
+              );
+            } else if (ac.method === 'stackoverflow' && ctx.provider.capabilities.community?.stackoverflow) {
+              hits = await ctx.provider.search(
+                providerCallContext(ctx, { phase: 'gap_acquisition' }),
+                ac.query + ' site:stackoverflow.com',
+                searchOpts as import('../../providers/types.js').SearchOpts,
+              );
+            } else if (ac.method === 'search') {
+              hits = await ctx.provider.search(
+                providerCallContext(ctx, { phase: 'gap_acquisition' }),
+                ac.query,
+                searchOpts as import('../../providers/types.js').SearchOpts,
+              );
+            }
+
+            const limit = ac.searchOpts?.limit ?? 10;
+            for (const hit of hits.slice(0, limit)) {
+              if (ctx.budget.isExhausted()) break;
+
+              const domain = (() => {
+                try {
+                  return new URL(hit.url).hostname.replace(/^www\./, '');
+                } catch {
+                  return hit.url;
+                }
+              })();
+
+              const sourceType: SourceType = ac.method === 'search' ? 'web' : (ac.method as SourceType);
+              const sourceEntry: SourceEntry = {
+                id: makeId(),
+                title: hit.title,
+                url: hit.url,
+                sourceType,
+                domain,
+                accessDate: nowISO(),
+                ...(('publishedAt' in hit && (hit as { publishedAt?: string }).publishedAt !== undefined) ? { publishedDate: (hit as { publishedAt: string }).publishedAt } : {}),
+                isPrimary: ac.method === 'academic',
+                relevantSubQuestions: ac.targetSubQuestionIds,
+                extractionStatus: 'pending',
+                subQuestionId: '',
+              };
+
+              const addedId = ctx.state.addSource(sourceEntry);
+              if (addedId === '') break;
+              acquired++;
+            }
+          } catch {
+            // non-fatal, continue
+          }
+        }
+
+        if (acquired === 0) break; // zero-yield round → stop (prevents spin)
+
+        ctx.state.incrementLoop();
+      }
+
+      // Extract findings from gap-acquired sources
+      await this.extractFindings(subQuestions, ctx);
+
       await this.reportProgress(ctx, 65, 'Gap analysis complete', 'gap_analysis');
 
       // Phase 5: Post-processing — dedup + contradiction detection
@@ -280,20 +390,39 @@ export class PipelineStrategy implements ResearchStrategy {
         const result = await ctx.provider.read(providerCallContext(ctx, { phase: 'extraction' }), source.url);
         ctx.state.markSourceExtracted(source.id);
 
-        // Simple extraction: create one finding per source
-        // Real extraction would use LLM for structured claim extraction
-        if (result.content.length > 100) {
-          const finding: Omit<Finding, 'id' | 'createdAt'> = {
-            claim: result.title ?? source.title,
-            normalizedClaim: (result.title ?? source.title).toLowerCase(),
-            evidenceExcerpt: result.content.slice(0, 500),
-            evidenceDirectness: 'secondary',
-            claimType: 'secondary',
-            sourceIds: [source.id],
-            subQuestionIds: source.relevantSubQuestions,
-            lastUpdated: nowISO(),
-          };
-          ctx.state.addFinding(finding);
+        // Run structured claim extraction
+        const extractionResult = await extractClaimsFromSource(
+          {
+            source: {
+              id: source.id,
+              title: source.title,
+              url: source.url,
+              sourceType: source.sourceType,
+              isPrimary: source.isPrimary,
+              ...(source.publishedDate !== undefined ? { publishedDate: source.publishedDate } : {}),
+              relevantSubQuestions: source.relevantSubQuestions,
+            },
+            query: ctx.state.getState().query,
+            subQuestions: ctx.state.getSubQuestions(),
+            content: result.content,
+            contentHash: result.contentHash ?? '',
+          },
+          { ...(ctx.llm !== undefined ? { llm: ctx.llm } : {}), budget: ctx.budget, ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}) },
+        );
+
+        // Add grounded findings to state
+        for (const f of extractionResult.findings) {
+          ctx.state.addFinding(f);
+        }
+
+        // Mark extraction status
+        if (extractionResult.status === 'extracted') {
+          ctx.state.markSourceExtracted(source.id);
+        } else if (extractionResult.status === 'failed') {
+          ctx.state.markSourceFailed(source.id);
+        } else if (extractionResult.status === 'unavailable') {
+          // No LLM — zero factual claims is correct behavior
+          ctx.state.markSourceExtracted(source.id);
         }
       } catch (err) {
         logger.warn({ ...safeErrorLog(err), sourceId: source.id, urlBytes: Buffer.byteLength(source.url, 'utf8') }, 'Extraction failed');
