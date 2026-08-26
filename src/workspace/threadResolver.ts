@@ -68,6 +68,19 @@ function threadScore(queryTokens: string[], thread: Thread): number {
 
 const THREAD_MATCH_THRESHOLD = 0.3;
 
+// ── Anti-false-merge guards (mirrors familyResolver) ─────────────────────
+
+/**
+ * Ambiguity guard: reject near-tied matches when neither score is
+ * clearly confident. See familyResolver for full rationale.
+ */
+const AMBIGUITY_MIN_GAP = 0.10;
+const AMBIGUITY_CONFIDENT_SCORE = 0.50;
+
+/** Short-query threshold boost. */
+const SHORT_QUERY_MIN_TOKENS = 2;
+const SHORT_QUERY_THRESHOLD_BOOST = 0.15;
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 export interface ThreadResolution {
@@ -78,7 +91,8 @@ export interface ThreadResolution {
 /**
  * Resolve which Thread within a Family owns an incoming research query.
  *
- * - If any open thread scores above the threshold, reuse it.
+ * - If any open thread scores above the threshold, and the match is
+ *   unambiguous, reuse it.
  * - Otherwise create a new Thread scoped to this family.
  *
  * Only considers threads with status 'open' — resolved/stale threads are
@@ -96,26 +110,39 @@ export function resolveThread(
 
   const queryTokens = tokenize(query);
 
-  // Only match against open threads in this family
+  // Boost threshold for short queries — same rationale as familyResolver.
+  const effectiveThreshold =
+    queryTokens.length <= SHORT_QUERY_MIN_TOKENS
+      ? threshold + SHORT_QUERY_THRESHOLD_BOOST
+      : threshold;
+
+  // Score all open threads and sort for ambiguity check
   const openThreads = existingThreads.filter(
     (t) => t.familyId === familyId && t.status === 'open',
   );
 
-  let bestScore = 0;
-  let bestThread: Thread | null = null;
-  for (const thread of openThreads) {
-    const score = threadScore(queryTokens, thread);
-    if (score > bestScore) {
-      bestScore = score;
-      bestThread = thread;
+  const scored = openThreads.map((thread) => ({
+    thread,
+    score: threadScore(queryTokens, thread),
+  }));
+  scored.sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  if (best !== undefined && best.score >= effectiveThreshold) {
+    // Ambiguity guard: same logic as familyResolver.
+    const secondBest = scored[1];
+    if (
+      secondBest !== undefined &&
+      best.score - secondBest.score < AMBIGUITY_MIN_GAP &&
+      best.score < AMBIGUITY_CONFIDENT_SCORE
+    ) {
+      // Ambiguous — fall through to create-new thread.
+    } else {
+      return { thread: best.thread, isNew: false };
     }
   }
 
-  if (bestThread !== null && bestScore >= threshold) {
-    return { thread: bestThread, isNew: false };
-  }
-
-  // Create new thread
+  // No strong match (or ambiguous) — create new thread
   const id = generateId();
   const label = deriveThreadLabel(query);
   const thread: Thread = {

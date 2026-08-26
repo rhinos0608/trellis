@@ -229,6 +229,144 @@ describe('resolveFamily', () => {
 
     expect(result.candidates).toBeUndefined();
   });
+
+  // ── Ambiguity guard ───────────────────────────────────────────────
+
+  it('creates a new family when two candidates are near-tied and ambiguous', () => {
+    // Two families with similar scope — both will score similarly for a generic query
+    const famA = makeFamily({
+      id: 'fam-a',
+      label: 'Testing Strategies',
+      manifest: {
+        scopeQuery: 'testing strategies and best practices',
+        tags: ['testing', 'strategies'],
+      },
+    });
+    const famB = makeFamily({
+      id: 'fam-b',
+      label: 'Testing Patterns',
+      manifest: {
+        scopeQuery: 'testing patterns and approaches',
+        tags: ['testing', 'patterns'],
+      },
+    });
+    // Generic query overlaps heavily with both families
+    const result = resolveFamily('testing strategies patterns', [famA, famB], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+    // Near-tied scores should trigger ambiguity guard → create new
+    expect(result.isNew).toBe(true);
+    expect(result.family.id).not.toBe('fam-a');
+    expect(result.family.id).not.toBe('fam-b');
+  });
+
+  it('reuses when one candidate is clearly ahead despite a close second', () => {
+    const famClose = makeFamily({
+      id: 'fam-close',
+      label: 'Vitest Setup',
+      manifest: {
+        scopeQuery: 'vitest setup configuration',
+        tags: ['vitest', 'setup'],
+      },
+    });
+    const famDistant = makeFamily({
+      id: 'fam-distant',
+      label: 'JavaScript Web Development',
+      manifest: {
+        scopeQuery: 'javascript web development',
+        tags: ['javascript', 'web'],
+      },
+    });
+    const result = resolveFamily('vitest testing setup configuration', [famClose, famDistant], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+    // vitest-setup scores much higher than javascript-web — clear winner
+    expect(result.isNew).toBe(false);
+    expect(result.family.id).toBe('fam-close');
+  });
+
+  it('reuses when best score exceeds confident threshold despite close second', () => {
+    const famA = makeFamily({
+      id: 'fam-a',
+      label: 'Vitest Configuration Testing',
+      manifest: {
+        scopeQuery: 'vitest configuration and testing',
+        scopeSummary: 'How to configure and use vitest for testing',
+        tags: ['vitest', 'testing', 'config'],
+      },
+    });
+    const famB = makeFamily({
+      id: 'fam-b',
+      label: 'Vitest Setup Configuration',
+      manifest: {
+        scopeQuery: 'vitest setup and configuration',
+        scopeSummary: 'Setting up vitest configuration for projects',
+        tags: ['vitest', 'setup', 'config'],
+      },
+    });
+    const result = resolveFamily('vitest testing configuration setup', [famA, famB], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+    // Best score should exceed 0.50 (confident), so reuse despite close second
+    expect(result.isNew).toBe(false);
+  });
+
+  // ── Short query guard ───────────────────────────────────────────────
+
+  it('creates new for a short generic query even if a single token overlaps', () => {
+    const existing = makeFamily({
+      id: 'fam-1',
+      label: 'React Testing Patterns',
+      manifest: {
+        scopeQuery: 'react testing patterns',
+        tags: ['react', 'testing', 'patterns'],
+      },
+    });
+    // "testing" is 1 token — should need higher threshold to match
+    const result = resolveFamily('testing', [existing], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+    expect(result.isNew).toBe(true);
+  });
+
+  it('reuses when a short specific query has a strong match', () => {
+    const existing = makeFamily({
+      id: 'fam-1',
+      label: 'Vitest',
+      manifest: {
+        scopeQuery: 'vitest',
+        tags: ['vitest'],
+      },
+    });
+    // "vitest" (1 token) vs a manifest that IS vitest — should match
+    const result = resolveFamily('vitest', [existing], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+    expect(result.isNew).toBe(false);
+    expect(result.family.id).toBe('fam-1');
+  });
+
+  it('creates new for a 2-token generic query against a broad family', () => {
+    const existing = makeFamily({
+      id: 'fam-1',
+      label: 'React Testing Patterns',
+      manifest: {
+        scopeQuery: 'react testing patterns',
+        tags: ['react', 'testing', 'patterns'],
+      },
+    });
+    // "web testing" is 2 tokens — generic, should not spuriously match
+    const result = resolveFamily('web testing', [existing], {
+      idGenerator: makeId,
+      now: FIXED_TIME,
+    });
+    expect(result.isNew).toBe(true);
+  });
 });
 
 // ── projection handler tests ──────────────────────────────────────────────

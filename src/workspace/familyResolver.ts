@@ -85,6 +85,38 @@ function manifestScore(queryTokens: string[], manifest: FamilyManifest): number 
 /** Minimum score to reuse an existing family vs. creating a new one. */
 const MATCH_THRESHOLD = 0.25;
 
+// ── Anti-false-merge guards ───────────────────────────────────────────────
+//
+// A false merge is worse than a duplicate — duplicates can be curated
+// together later, a bad merge corrupts history. These guards bias toward
+// creating new families when confidence is low.
+
+/**
+ * Ambiguity guard: when the best match is not comfortably ahead of the
+ * second-best candidate AND neither score is clearly confident, prefer
+ * creating a new family. This catches cases where two plausible families
+ * tie within a narrow band (e.g. both at ~0.35 for a generic query).
+ *
+ * The match is rejected (falls through to create-new) when BOTH:
+ *   1. The margin between best and second-best is below this gap, AND
+ *   2. The best score is below AMBIGUITY_CONFIDENT_SCORE
+ *
+ * If either condition fails, the match proceeds: a large gap means a
+ * clear winner; a high score means the match is strong enough to trust
+ * even with a close second.
+ */
+const AMBIGUITY_MIN_GAP = 0.10;
+const AMBIGUITY_CONFIDENT_SCORE = 0.50;
+
+/**
+ * Short-query guard: very short queries (≤2 meaningful tokens) produce
+ * unreliable Jaccard overlap — a single generic token can score
+ * spuriously high against a small manifest. Require a higher effective
+ * threshold for such queries.
+ */
+const SHORT_QUERY_MIN_TOKENS = 2;
+const SHORT_QUERY_THRESHOLD_BOOST = 0.15;
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 export interface FamilyResolution {
@@ -100,7 +132,8 @@ export interface FamilyResolution {
  * Resolve which Family owns an incoming research query.
  *
  * - Scores every existing family's manifest against the query.
- * - If the best score exceeds MATCH_THRESHOLD, reuses that family.
+ * - If the best score exceeds MATCH_THRESHOLD (boosted for short queries),
+ *   and the match is unambiguous, reuses that family.
  * - Otherwise creates a new Family (caller emits FAMILY_CREATED event).
  *
  * `now` parameter is for testability; pass `new Date().toISOString()` in
@@ -117,6 +150,14 @@ export function resolveFamily(
 
   const queryTokens = tokenize(query);
 
+  // Boost threshold for short queries — single-token overlaps against small
+  // manifests produce spuriously high Jaccard scores that don't reflect
+  // genuine topical overlap.
+  const effectiveThreshold =
+    queryTokens.length <= SHORT_QUERY_MIN_TOKENS
+      ? threshold + SHORT_QUERY_THRESHOLD_BOOST
+      : threshold;
+
   // Score all families and track candidates
   const scored = existingFamilies.map((family) => ({
     family,
@@ -128,13 +169,26 @@ export function resolveFamily(
   const candidates = scored.slice(0, 5).map(({ family, score }) => ({ familyId: family.id, score }));
 
   const best = scored[0];
-  if (best !== undefined && best.score >= threshold) {
-    // Update lastActivity on match
-    best.family.lastActivity = now;
-    return { family: best.family, isNew: false, score: best.score, candidates };
+  if (best !== undefined && best.score >= effectiveThreshold) {
+    // Ambiguity guard: if two candidates are nearly tied and neither is
+    // clearly confident, prefer creating new over an uncertain merge.
+    // A false merge corrupts history; a duplicate is curable.
+    const secondBest = scored[1];
+    if (
+      secondBest !== undefined &&
+      best.score - secondBest.score < AMBIGUITY_MIN_GAP &&
+      best.score < AMBIGUITY_CONFIDENT_SCORE
+    ) {
+      // Ambiguous — fall through to create-new. Callers can inspect
+      // candidates[] to see the near-tie that triggered this.
+    } else {
+      // Clear match — reuse existing family
+      best.family.lastActivity = now;
+      return { family: best.family, isNew: false, score: best.score, candidates };
+    }
   }
 
-  // No strong match — create new family
+  // No strong match (or ambiguous) — create new family
   const id = generateId();
   const family: Family = {
     id,
