@@ -5,6 +5,9 @@ import type { RetryRunInput, ContinueResearchInput } from '../research/runServic
 import type { ListClaimsInput, ListSourcesInput } from '../query/types.js';
 import type { KnowledgeQueryService } from '../query/service.js';
 import { RunNotFoundError } from '../app/errors.js';
+import { getKnowledgeReadModelStatus } from '../store/readModel/index.js';
+import type { KnowledgeReadModelStatus } from '../store/readModel/index.js';
+import { TRELLIS_VERSION } from '../version.js';
 import { mapError, validationError } from './errors.js';
 import { claimsQuerySchema, continueSchema, eventQuerySchema, evidenceQuerySchema, observationsQuerySchema, relationsQuerySchema, retryRunSchema, runsQuerySchema, sourcesQuerySchema, startRunSchema } from './schemas.js';
 import { streamRunEvents } from './sse.js';
@@ -16,7 +19,20 @@ function params(url: URL): Record<string, string> { return Object.fromEntries(ur
 export async function handleRequest(req: IncomingMessage, res: ServerResponse, body: unknown, deps: HandlerDeps): Promise<void> {
   const method = req.method ?? 'GET'; const url = new URL(req.url ?? '/', 'http://localhost'); const path = url.pathname;
   try {
-    if (method === 'GET' && path === '/healthz') { json(res, 200, { status: 'ok' }); return; }
+    if (method === 'GET' && path === '/healthz') { json(res, 200, { status: 'ok', version: TRELLIS_VERSION }); return; }
+    if (method === 'GET' && path === '/readyz') {
+      // Pure read-only readiness probe: never touches the provider, never
+      // triggers migrations/rebuild/self-heal.
+      let readModel: KnowledgeReadModelStatus;
+      try {
+        readModel = getKnowledgeReadModelStatus();
+      } catch {
+        readModel = { version: 0, lastAppliedSeq: -1, status: 'dirty' };
+      }
+      const ready = readModel.status === 'ready';
+      json(res, ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready', version: TRELLIS_VERSION, readModel });
+      return;
+    }
     if (method === 'POST' && path === '/v1/research/runs') { json(res, 202, { ...(await deps.app.startRun(parsed(startRunSchema, body))), status: 'queued' }); return; }
     let m: RegExpMatchArray | null;
     if (method === 'GET' && path === '/v1/research/runs') { json(res, 200, { items: deps.app.listRuns(parsed(runsQuerySchema, params(url))) }); return; }
