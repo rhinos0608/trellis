@@ -3,8 +3,8 @@
  * Reconciliation evaluation runner — Phase 12 Stage B.
  *
  * Runs the versioned gold-label corpus, the sequence scenarios (B³), and the
- * golden-projection replays against the CURRENT claim reconciler. Not part of
- * CI; run manually:
+ * golden-projection replays against the CURRENT claim reconciler. Runs in CI
+ * as a gate. Also runnable locally:
  *   npm run eval:reconciler           # human-readable scorecard
  *   npm run eval:reconciler -- --json # machine-readable output
  *
