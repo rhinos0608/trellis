@@ -9,7 +9,7 @@
 import type { ProjectionState } from '../store/projectionState.js';
 import type { KnowledgeToolInput } from './schemas.js';
 import type { KnowledgeQueryService } from '../query/service.js';
-import type { queryEvents as queryEventsFn } from '../store/events.js';
+import type { queryEvents as queryEventsFn, queryEvidenceLinkedEventsByClaimId as queryEvidenceLinkedEventsByClaimIdFn } from '../store/events.js';
 import { ReadModelUnavailableError } from '../query/errors.js';
 import { getFamilyById, listFamilies, getThreadsByFamily } from '../workspace/queries.js';
 import {
@@ -34,6 +34,7 @@ export interface KnowledgeToolDeps {
   getState(): ProjectionState;
   queryService: KnowledgeQueryService;
   queryEvents: typeof queryEventsFn;
+  queryEvidenceLinkedEventsByClaimId?: typeof queryEvidenceLinkedEventsByClaimIdFn;
 }
 
 // ── SQL adapters (drain paginated results to flat arrays) ─────────
@@ -197,7 +198,7 @@ export function handleKnowledgeTool(
         return { error: 'Either claimId, sourceId, contradictionId, or gapId must be provided' };
       }
       const timelineOpts = input.limit !== undefined ? { limit: input.limit } : undefined;
-      const entries = getTimeline({ queryEvents: deps.queryEvents }, target, timelineOpts);
+      const entries = getTimeline({ queryEvents: deps.queryEvents, ...(deps.queryEvidenceLinkedEventsByClaimId !== undefined ? { queryEvidenceLinkedEventsByClaimId: deps.queryEvidenceLinkedEventsByClaimId } : {}) }, target, timelineOpts);
       return { entries };
     }
 

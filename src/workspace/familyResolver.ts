@@ -183,7 +183,6 @@ export function resolveFamily(
       // candidates[] to see the near-tie that triggered this.
     } else {
       // Clear match — reuse existing family
-      best.family.lastActivity = now;
       return { family: best.family, isNew: false, score: best.score, candidates };
     }
   }

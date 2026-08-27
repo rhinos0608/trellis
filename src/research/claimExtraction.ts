@@ -11,6 +11,7 @@ import type { ClaimAssertion, EvidenceAlignment, TemporalScope } from '../graph/
 import {
   assessEvidenceAlignment,
 } from '../graph/evidenceAlignment.js';
+import { selectRelevantPassages } from './passageSelection.js';
 import type {
   SourcePassage,
   ClaimExtractionInput,
@@ -351,7 +352,12 @@ export async function extractClaimsFromSource(
     return { status: 'unavailable', findings: [], rejected: [] };
   }
 
-  const passages = selectExtractionPassages(input.content, input.source.id);
+  const passages = selectRelevantPassages({
+    content: input.content,
+    sourceId: input.source.id,
+    query: input.query,
+    subQuestions: input.subQuestions.map((sq) => sq.text),
+  });
   if (passages.length === 0) {
     return { status: 'extracted', findings: [], rejected: [] };
   }

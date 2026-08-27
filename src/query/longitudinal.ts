@@ -5,7 +5,7 @@
  */
 
 import type { ProjectionState } from '../store/projectionState.js';
-import type { queryEvents as queryEventsFn } from '../store/events.js';
+import type { queryEvents as queryEventsFn, queryEvidenceLinkedEventsByClaimId as queryEvidenceLinkedEventsByClaimIdFn } from '../store/events.js';
 import type { TrellisEventType } from '../store/eventTypes.js';
 import type { Evidence, Source, AuthorityClass } from '../graph/types.js';
 import {
@@ -188,7 +188,7 @@ export function getProvenance(state: ProjectionState, claimId: string): Provenan
 // ── getTimeline ─────────────────────────────────────────────────────
 
 export function getTimeline(
-  deps: { queryEvents: typeof queryEventsFn },
+  deps: { queryEvents: typeof queryEventsFn; queryEvidenceLinkedEventsByClaimId?: typeof queryEvidenceLinkedEventsByClaimIdFn },
   target: { claimId?: string; sourceId?: string; contradictionId?: string; gapId?: string },
   opts?: { limit?: number },
 ): TimelineEntry[] {
@@ -198,10 +198,11 @@ export function getTimeline(
   if (target.claimId) {
     // Direct events where entityId = claimId
     const direct = qe({ entityId: target.claimId });
-    // EVIDENCE_LINKED events: entityId = evidence.id, not claimId
-    // Must query broadly and filter by payload.claimId
-    const evidenceEvents = qe({ eventType: 'EVIDENCE_LINKED' as TrellisEventType })
-      .filter((ev) => (ev.payload as Record<string, unknown>).claimId === target.claimId);
+    // EVIDENCE_LINKED events: use indexed join when available, else broad scan + JS filter
+    const evidenceEvents = deps.queryEvidenceLinkedEventsByClaimId
+      ? deps.queryEvidenceLinkedEventsByClaimId(target.claimId)
+      : qe({ eventType: 'EVIDENCE_LINKED' as TrellisEventType })
+          .filter((ev) => (ev.payload as Record<string, unknown>).claimId === target.claimId);
     // Dedup by seq
     const seen = new Set<number>();
     events = [...direct, ...evidenceEvents].filter((ev) => {
