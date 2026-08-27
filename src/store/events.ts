@@ -285,7 +285,7 @@ export function queryEvidenceLinkedEventsByClaimId(claimId: string): EventEnvelo
   const rows = db.prepare(`
     SELECT e.* FROM events e
     JOIN rm_evidence r ON r.id = e.entity_id
-    WHERE r.claim_id = @claimId
+    WHERE r.claim_id = @claimId AND e.event_type = 'EVIDENCE_LINKED'
     ORDER BY e.seq ASC
   `).all({ claimId }) as EventRow[];
   return rows.map(rowToEnvelope);

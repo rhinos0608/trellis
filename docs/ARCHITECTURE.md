@@ -342,7 +342,7 @@ Full per-file classification (portable-core / search-coupling / utility-coupling
 
 ## 8. Decisions — resolved
 
-1. **Repo location**: `/Users/rhinesharar/trellis` — confirmed.
+1. **Repo location**: repository root (`trellis/`) — confirmed.
 2. **Rollback compensation**: advisory-only for `cross_run_mutation` events, with executable compensation where snapshots are available. Curation events (Phase 9) carry full before/after snapshots enabling the rollback executor to synthesize compensation. Later-run interference detection blocks unsafe rollback (see `src/store/rollback.ts`).
 3. **search-mcp adapter for v1**: in-process `SearchMcpProvider` wrapping `createResearchTools()` via stdio child process (`src/providers/searchMcp/`). Swappable for out-of-process MCP-client adapter later with zero research-core changes.
 4. **Implementation complete** — all 9 worker scopes delivered. Remaining gaps are tracked in `docs/research-roadmap.md`.

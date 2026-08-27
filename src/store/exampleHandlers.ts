@@ -36,7 +36,7 @@ export function handleRunStarted(event: EventEnvelope, state: ProjectionState): 
     familyId: p.familyId,
     status: 'running',
     query: p.query,
-    strategy: p.strategy as 'agent',
+    strategy: (p.strategy === 'agent' ? 'agent' : 'agent') as 'agent',
     rootRunId: p.runId,
     attempt: 1,
     depth: 'standard',

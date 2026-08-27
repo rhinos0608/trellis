@@ -418,6 +418,33 @@ CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingF
     }
 
     // ── Phase 3: Output parity — post-process, audit, synthesize ────────
+    if (ctx.abortSignal?.aborted) {
+      logger.info('Agent research aborted, skipping post-processing');
+      return {
+        report: {
+          query,
+          classification: 'explainer',
+          depth: 'standard',
+          degradationMode: 'source_note_synthesis',
+          executiveSummary: '',
+          narrativeMarkdown: '',
+          themes: [],
+          contradictions: [],
+          uncertainties: [],
+          sourceNotes: [],
+          openQuestions: [],
+          limitations: [],
+          sourceCount: 0,
+          sourceTypeCount: 0,
+          sourceDiversity: [],
+          findingCount: 0,
+          evidenceSources: [],
+        },
+        timeline: [{ phase: 'aborted' }],
+        canonicalFindings: [],
+      };
+    }
+
     try {
       await ctx.reportProgress({
         phase: 'agent_complete',
@@ -516,7 +543,7 @@ Output ONLY the JSON object.`;
     if (!resp.success) return null;
 
     const parsed = parseJsonFromText<ResearchPlan>(resp.content);
-    if (parsed === undefined || typeof parsed.scope !== 'string' || !Array.isArray(parsed.perspectives) || parsed.perspectives.length === 0) {
+    if (parsed == null || typeof parsed.scope !== 'string' || !Array.isArray(parsed.perspectives) || parsed.perspectives.length === 0) {
       logger.warn('Agent plan LLM returned invalid structure, proceeding without plan');
       return null;
     }

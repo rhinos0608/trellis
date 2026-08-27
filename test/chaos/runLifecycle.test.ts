@@ -29,9 +29,12 @@ import type { TrellisConfig } from '../../src/config/index.js';
 
 // Mock LlmClient so agent strategy doesn't need real LLM config
 vi.mock('../../src/research/llm/client.js', () => {
-  const mockResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const planResponse = { success: true, content: 'THOUGHT: planning\nPLAN: {"scope": "test", "perspectives": [{"name": "s", "question": "q"}]}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const searchResponse = { success: true, content: 'THOUGHT: search\nACTION: search_web\nARGUMENTS: {"query": "test"}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const answerResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  let callCount = 0;
   return {
-    LlmClient: class { callOrchestrator = async () => mockResponse; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    LlmClient: class { _callCount = 0; callOrchestrator = async () => { this._callCount++; if (this._callCount === 1) return planResponse; return searchResponse; }; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); reset() { this._callCount = 0; } },
     parseJsonFromText: (s) => { try { return JSON.parse(s); } catch { return undefined; } },
   };
 });

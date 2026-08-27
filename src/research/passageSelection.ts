@@ -31,8 +31,8 @@ const STOP_WORDS = new Set([
 
 function tokenize(text: string): string[] {
   return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, ' ')
+    .toLocaleLowerCase('en-US')
+    .replace(/[^\p{L}\p{N}\s-]+/gu, ' ')
     .split(/\s+/)
     .filter((t) => t.length > 1 && !STOP_WORDS.has(t));
 }
@@ -86,7 +86,9 @@ export function segmentSourceContent(
 ): SourcePassage[] {
   if (content.length === 0) return [];
 
-  const windowSize = options?.windowSize ?? DEFAULT_WINDOW_SIZE;
+  const rawWindow = options?.windowSize ?? DEFAULT_WINDOW_SIZE;
+  if (!Number.isFinite(rawWindow) || rawWindow <= 0) return [];
+  const windowSize = Math.min(rawWindow, MAX_TOTAL_CHARS);
   const passages: SourcePassage[] = [];
   let offset = 0;
   let idx = 0;
@@ -165,8 +167,10 @@ export function selectRelevantPassages(
   const selected = new Set<number>();
   let totalChars = 0;
 
+  // Reserve at least one slot for neighbor context
+  const maxSeeds = Math.max(1, MAX_PASSAGES - 1);
   for (const s of scored) {
-    if (selected.size >= MAX_PASSAGES) break;
+    if (selected.size >= maxSeeds) break;
     if (totalChars + s.seg.text.length > MAX_TOTAL_CHARS) continue;
     selected.add(s.idx);
     totalChars += s.seg.text.length;

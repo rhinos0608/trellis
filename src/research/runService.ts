@@ -761,6 +761,7 @@ export function createRunService(): RunService {
     // Build strategy context — construct LlmClient when baseUrl+model are
     // configured (apiToken optional: local OpenAI-compatible servers). Token
     // spend flows into the run's BudgetTracker via the client's TokenBudget.
+    let planRevisionCount = 0;
     const llmCfg = input.config.llm;
     const strategyCtx: StrategyContext = {
       state: stateEngine,
@@ -800,7 +801,8 @@ export function createRunService(): RunService {
         if (kind === 'created') {
           appendWithRetry([makeEnvelope('RESEARCH_PLAN_CREATED', runId, { runId, query: input.query, plan, createdAt: now }, { entityId: runId, entityType: 'run' })], ctx);
         } else {
-          appendWithRetry([makeEnvelope('RESEARCH_PLAN_REVISED', runId, { runId, query: input.query, revisionReason: reason ?? '', plan, revisedAt: now, revisionNumber: 1 }, { entityId: runId, entityType: 'run' })], ctx);
+          planRevisionCount++;
+          appendWithRetry([makeEnvelope('RESEARCH_PLAN_REVISED', runId, { runId, query: input.query, revisionReason: reason ?? '', plan, revisedAt: now, revisionNumber: planRevisionCount }, { entityId: runId, entityType: 'run' })], ctx);
         }
       },
     };

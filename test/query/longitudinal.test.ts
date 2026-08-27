@@ -349,9 +349,8 @@ describe('getTimeline', () => {
     expect(indexedCalls).toBe(1);
     expect(broadScanCalls).toBe(0);
     // Correctness: should include c1's evidence but not c2's
-    expect(entries.some((e) => e.eventType === 'EVIDENCE_LINKED')).toBe(true);
-    const c2Ev = entries.filter((e) => e.eventType === 'EVIDENCE_LINKED' && e.description.includes('e2'));
-    expect(c2Ev.length).toBe(0);
+    expect(entries.some((e) => e.eventType === 'EVIDENCE_LINKED' && e.entityId === 'e1')).toBe(true);
+    expect(entries.some((e) => e.eventType === 'EVIDENCE_LINKED' && e.entityId === 'e2')).toBe(false);
   });
 });
 

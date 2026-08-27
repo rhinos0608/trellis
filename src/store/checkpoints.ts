@@ -144,7 +144,7 @@ export function createCheckpoint(
       if (retainRows.length > 0) {
         const ids = retainRows.map((r) => r.id);
         const placeholders = ids.map(() => '?').join(',');
-        db.prepare(`DELETE FROM projection_checkpoints WHERE id NOT IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM projection_checkpoints WHERE id NOT IN (${placeholders}) AND compatible = 1 AND projection_version = @projectionVersion`).run(...ids, { projectionVersion: CURRENT_PROJECTION_VERSION });
       }
 
       return row;

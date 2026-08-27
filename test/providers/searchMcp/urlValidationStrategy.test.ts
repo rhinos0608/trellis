@@ -43,6 +43,7 @@ describe('URL validation (agentStrategy)', () => {
     let reads = 0;
     const provider = urlTestProvider('https://safe.example', () => { reads++; });
     const llm = { callOrchestrator: vi.fn()
+      .mockResolvedValueOnce({ success: true, content: 'THOUGHT: search\nACTION: search_web\nARGUMENTS: {"query":"test"}' })
       .mockResolvedValueOnce({ success: true, content: 'THOUGHT: read\nACTION: web_read\nARGUMENTS: {"url":"file:///etc/passwd"}' })
       .mockResolvedValueOnce({ success: true, content: 'THOUGHT: done\nANSWER: finished' }) };
     const ctx = strategyContext(provider, llm);

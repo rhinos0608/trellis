@@ -155,10 +155,16 @@ describe('selectRelevantPassages', () => {
   });
 
   it('boosts segments starting with headings', () => {
-    const headingContent = '## Deep Learning Results\n' + 'deep learning accuracy benchmark results '.repeat(200);
-    const plainContent = 'deep learning accuracy benchmark results '.repeat(200);
-    // Heading segment should score higher and be preferred
-    const segments = [plainContent, headingContent];
+    const topic = 'deep learning accuracy benchmark results ';
+    const headingContent = '## Deep Learning Results\n' + topic.repeat(200);
+    const plainContent = topic.repeat(200);
+    // Create 7+ segments so scoring and heading-boost logic executes (MAX_PASSAGES=6)
+    const segments = [
+      plainContent, headingContent,
+      plainContent, plainContent,
+      plainContent, plainContent,
+      plainContent,
+    ];
     const content = segments.join('\n\n');
     const result = selectRelevantPassages({
       content,
@@ -166,8 +172,11 @@ describe('selectRelevantPassages', () => {
       query: 'deep learning results accuracy',
       subQuestions: ['benchmark results'],
     });
-    const joined = result.map((p) => p.text).join('');
-    expect(joined).toContain('## Deep Learning Results');
+    // Heading-prefixed segment should be selected
+    const selectedTexts = result.map((p) => p.text);
+    expect(selectedTexts.some((t) => t.includes('## Deep Learning Results'))).toBe(true);
+    // Verify not all segments are returned (exclusion happened)
+    expect(result.length).toBeLessThan(segments.length);
   });
 
   it('handles empty content', () => {

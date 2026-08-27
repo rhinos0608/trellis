@@ -12,7 +12,7 @@ Source of truth for search-mcp: `src/tools/standalone/deepResearch.ts` (tool des
 | **Strategy selection** | `agent`, `pipeline`, `tree` | Agent-only (LLM-driven ReAct with plan generation) |
 | **Max runtime override** | `maxTimeMs` (10s–45min) | `deadlineMs` on `start` action (MCP) or `idempotencyKey`+`deadlineMs` on retry (HTTP) |
 | **Deterministic mode** | `deterministic` flag (no LLM calls) | Not applicable — agent strategy requires LLM |
-| **Auto-save to disk** | `save` flag, writes to `~/.cache/search-mcp/research-results/` | Not applicable — event store is authoritative; no JSON file export |
+| **Auto-save to disk** | `save` flag, writes to `~/.cache/search-mcp/research-results/` | No automatic research-result or narrative JSON save — event store is authoritative; `export` action provides event-log JSON export only |
 | **Job listing** | `list` returns all known job summaries | `list` action — returns paginated run summaries with status/family filter |
 | **Run history** | Not available | `history` action — lifecycle event log for a specific run |
 | **Retry** | Not available | `retry` action — re-execute a failed run with new idempotency key |

@@ -36,8 +36,8 @@ Trellis's post-audit architecture is event-sourced, SQLite-backed, with lexical-
 - No graph DB backend — single SQLite; no Cypher traversal.
 
 **Recommendation:**
-- Add `valid_at`/`expired_at` columns to `rm_claims`/`rm_claim_relations` in `src/store/readModel/`. **Effort: small.**
-- Point-in-time query in `src/query/longitudinal.ts`: add `WHERE` clause filtering on validity windows. **Effort: small.**
+- Add `invalid_at` (valid-time end) column to `rm_claims`/`rm_claim_relations` in `src/store/readModel/`, mapping system-time start to existing `created_at` and valid-time start to `observedAt`/event-sequence. **Effort: small.**
+- Point-in-time query in `src/query/longitudinal.ts`: add `WHERE` clause filtering on `invalid_at` and `created_at` so expired facts are representable before scheduling a full migration. **Effort: small.**
 - Contradiction-driven invalidation in `src/graph/claimReconciler.ts`: write `EXPIRED` event on `supersedes`. **Effort: medium.**
 - Graph backend: defer. **Effort: large.**
 
@@ -221,14 +221,13 @@ Trellis's post-audit architecture is event-sourced, SQLite-backed, with lexical-
 - Progressive disclosure: `system/` always in context; rest discoverable via file tree + `[[path]]` synapses. ([blog](https://www.letta.com/blog/context-repositories/))
 
 **Gap vs Trellis:**
-- No user-facing "why do you think that" / provenance drill-down — memory is opaque read-model rows.
+- Provenance drill-down exists: `knowledge.why` MCP tool action and `getTimeline` with `claimId` provide evidence-chain drill-down (see README.md and `docs/EQUIVALENCE_NOTES.md`).
 - No background consolidation — `src/store/checkpoints.ts` retains 3 checkpoints but doesn't reflect or reorganize.
 - No agent-controlled context assembly — fixed top-K in `passageSelection.ts`.
 
 **Recommendation:**
 - Agent-authored memory files in new `src/memory/` module — Markdown summaries per Family/Thread. **Effort: small.**
 - Background consolidation subagent in new `src/research/consolidation.ts`. **Effort: medium.**
-- `explain(claimId)` endpoint in `src/query/longitudinal.ts` — full evidence chain + confidence breakdown. **Effort: small.**
 
 ---
 

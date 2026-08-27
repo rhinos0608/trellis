@@ -256,6 +256,29 @@ describe('AgentStrategy', () => {
     expect(result.report.query).toBe('TypeScript?');
   });
 
+  it('stops after MAX_IDLE_CHECKS consecutive idle checks (no gaps, no answer)', async () => {
+    const lastLlmPrompts: string[] = [];
+    const searchAction = 'THOUGHT: searching\nACTION: search_web\nARGUMENTS: {"query": "TypeScript"}';
+    // 1 plan + 8 tool actions (no answer) → 2 gap checks → idle stop
+    const calls: LlmCallFn[] = [
+      () => llmResponse(VALID_PLAN_JSON),
+      ...Array.from({ length: 8 }, () => (opts) => {
+        lastLlmPrompts.push(opts.messages.map((m) => m.content).join('\n'));
+        return llmResponse(searchAction);
+      }),
+    ];
+    const llm = makeMockLlm(calls);
+    const ctx = makeAgentStrategyCtx({ llm, budgetOverrides: { maxToolCalls: 20 } });
+    const strategy = new AgentStrategy(ctx);
+    const result = await strategy.analyze('What is TypeScript?', ctx);
+
+    // Loop exited without ANSWER — result exists, report synthesized
+    expect(result.report).toBeDefined();
+    expect(result.canonicalFindings).toBeDefined();
+    // At least one prompt received COVERAGE GAPS context (after gap check)
+    expect(lastLlmPrompts.some((p) => p.includes('COVERAGE GAPS'))).toBe(true);
+  });
+
   it('close() cleans up', async () => {
     const ctx = makeAgentStrategyCtx();
     const strategy = new AgentStrategy(ctx);

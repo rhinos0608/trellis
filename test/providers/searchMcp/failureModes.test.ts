@@ -11,13 +11,12 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-let _fmMockCallCount = 0;
 vi.mock('../../../src/research/llm/client.js', () => {
   const planResponse = { success: true, content: '{"scope":"test","assumptions":[],"perspectives":[{"name":"s","question":"q"}],"falsificationQuestions":[]}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
   const searchResponse = { success: true, content: 'THOUGHT: search\nACTION: search_web\nARGUMENTS: {"query":"test"}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
   const answerResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
   return {
-    LlmClient: class { callOrchestrator = async () => { _fmMockCallCount++; if (_fmMockCallCount === 1) return planResponse; if (_fmMockCallCount === 2) return searchResponse; return answerResponse; }; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    LlmClient: class { _callCount = 0; callOrchestrator = async () => { this._callCount++; if (this._callCount === 1) return planResponse; if (this._callCount === 2) return searchResponse; return answerResponse; }; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
     parseJsonFromText: (s: string) => { try { return JSON.parse(s); } catch { return undefined; } },
   };
 });
@@ -332,7 +331,6 @@ describe('Failure mode: cancellation mid-read', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    _fmMockCallCount = 0;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-fail-cancel-'));
   });
 
@@ -410,7 +408,6 @@ describe('Failure mode: concurrent runs against one db', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    _fmMockCallCount = 0;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-fail-concurrent-'));
   });
 
@@ -520,7 +517,6 @@ describe('Failure mode: restart mid-run', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    _fmMockCallCount = 0;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-fail-restart-'));
   });
 
