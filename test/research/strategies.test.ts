@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { BudgetTracker } from '../../src/research/budget.js';
 import { ResearchStateEngine } from '../../src/research/state.js';
-import { PipelineStrategy } from '../../src/research/strategies/pipelineStrategy.js';
-import type { StrategyContext } from '../../src/research/strategies/types.js';
-import type { ResearchProvider, ProviderCallContext, ResearchHit } from '../../src/providers/types.js';
+import { AgentStrategy } from '../../src/research/strategies/agentStrategy.js';
+import type { StrategyContext, ResearchPlan } from '../../src/research/strategies/types.js';
+import type { ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 import type { RunContext } from '../../src/research/types.js';
+import type { LlmClient, LlmResponse } from '../../src/research/llm/client.js';
 
 // ── Mock provider ────────────────────────────────────────────────────────
 
@@ -67,7 +68,51 @@ function makeRunContext(): RunContext {
   };
 }
 
-function makeStrategyCtx(overrides?: {
+// ── AgentStrategy tests ────────────────────────────────────────────────
+
+type LlmCallFn = (opts: { messages: { role: string; content: string }[] }) => Promise<LlmResponse>;
+
+function makeMockLlm(calls: LlmCallFn[]): LlmClient {
+  let callIndex = 0;
+  const fake: Record<string, unknown> = {
+    callOrchestrator: async (opts: { messages: { role: string; content: string }[] }) => {
+      const fn = calls[Math.min(callIndex, calls.length - 1)]!;
+      callIndex++;
+      return fn(opts);
+    },
+    callWorker: async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated' as const, attempts: 1, durationMs: 0 }),
+  };
+  return fake as unknown as LlmClient;
+}
+
+function llmResponse(content: string): LlmResponse {
+  return {
+    success: true,
+    content,
+    model: 'test',
+    tokensUsed: 15,
+    tokensSource: 'provider_usage' as const,
+    promptTokens: 10,
+    completionTokens: 5,
+    attempts: 1,
+    durationMs: 100,
+  };
+}
+
+const VALID_PLAN_JSON = JSON.stringify({
+  scope: 'Investigate TypeScript features and ecosystem.',
+  assumptions: ['TypeScript is widely used'],
+  perspectives: [
+    { name: 'implementer', question: 'How does TypeScript improve developer productivity?' },
+    { name: 'skeptic', question: 'What are the costs of adopting TypeScript?' },
+  ],
+  falsificationQuestions: ['Would any evidence show TypeScript reduces productivity?'],
+});
+
+function makeAgentStrategyCtx(overrides?: {
+  llm?: LlmClient;
+  persistPlan?: StrategyContext['persistPlan'];
+  getPriorKnowledge?: StrategyContext['getPriorKnowledge'];
   provider?: ResearchProvider;
   budgetOverrides?: Record<string, number>;
 }): StrategyContext {
@@ -88,269 +133,132 @@ function makeStrategyCtx(overrides?: {
     state,
     budget,
     provider: overrides?.provider ?? createMockProvider(),
+    llm: overrides?.llm,
     config: makeConfig(),
     runContext: makeRunContext(),
     reportProgress: async () => {},
     depth: 'standard',
+    ...(overrides?.persistPlan !== undefined ? { persistPlan: overrides.persistPlan } : {}),
+    ...(overrides?.getPriorKnowledge !== undefined ? { getPriorKnowledge: overrides.getPriorKnowledge } : {}),
   };
 }
 
-describe('PipelineStrategy', () => {
-  it('returns ResearchResult with report, timeline, and canonicalFindings', async () => {
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx();
-    const result = await strategy.analyze('What is React?', ctx);
-
-    // Validate the contract shape
-    expect(result).toHaveProperty('report');
-    expect(result).toHaveProperty('timeline');
-    expect(result).toHaveProperty('canonicalFindings');
-
-    const { report } = result;
-    expect(report.query).toBe('What is React?');
-    expect(report.classification).toBe('explainer');
-    expect(typeof report.degradationMode).toBe('string');
-    expect(typeof report.executiveSummary).toBe('string');
-    expect(typeof report.narrativeMarkdown).toBe('string');
-    expect(Array.isArray(report.themes)).toBe(true);
-    expect(Array.isArray(report.contradictions)).toBe(true);
-    expect(Array.isArray(report.uncertainties)).toBe(true);
-    expect(Array.isArray(report.sourceNotes)).toBe(true);
-    expect(Array.isArray(report.openQuestions)).toBe(true);
-    expect(Array.isArray(report.limitations)).toBe(true);
-    expect(typeof report.sourceCount).toBe('number');
-    expect(typeof report.findingCount).toBe('number');
-    expect(Array.isArray(report.sourceDiversity)).toBe(true);
-    expect(Array.isArray(report.evidenceSources)).toBe(true);
+describe('AgentStrategy', () => {
+  it('returns empty result when no LLM', async () => {
+    const ctx = makeAgentStrategyCtx();
+    const strategy = new AgentStrategy(ctx);
+    const result = await strategy.analyze('Test query', ctx);
+    expect(result.report.query).toBe('Test query');
+    expect(result.report.degradationMode).toBe('source_note_synthesis');
+    expect(result.report.limitations).toContain('Agent strategy requires an LLM.');
   });
 
-  it('report is structured (not narrative prose as source)', async () => {
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx();
-    const result = await strategy.analyze('What is React?', ctx);
+  it('generates plan via LLM and persists it', async () => {
+    const persistCalls: { plan: ResearchPlan; kind: string }[] = [];
+    const llm = makeMockLlm([
+      // First call: plan generation
+      () => llmResponse(VALID_PLAN_JSON),
+      // Second call: answer immediately
+      () => llmResponse('THOUGHT: Found enough info\nANSWER: TypeScript is great.'),
+    ]);
+    const ctx = makeAgentStrategyCtx({
+      llm,
+      persistPlan: async (plan, kind) => { persistCalls.push({ plan, kind }); },
+    });
+    const strategy = new AgentStrategy(ctx);
+    await strategy.analyze('What is TypeScript?', ctx);
 
-    // Structured output: findings are separate from report
+    expect(persistCalls).toHaveLength(1);
+    expect(persistCalls[0]!.kind).toBe('created');
+    expect(persistCalls[0]!.plan.scope).toContain('TypeScript');
+    expect(persistCalls[0]!.plan.perspectives.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('calls postProcessFindings, markAudited, and synthesizes', async () => {
+    const llm = makeMockLlm([
+      () => llmResponse(VALID_PLAN_JSON),
+      () => llmResponse('THOUGHT: need to search\nACTION: search_web\nARGUMENTS: {"query": "TypeScript"}'),
+      () => llmResponse('THOUGHT: enough data\nANSWER: TypeScript is great.'),
+    ]);
+    const ctx = makeAgentStrategyCtx({ llm });
+    const strategy = new AgentStrategy(ctx);
+    const result = await strategy.analyze('What is TypeScript?', ctx);
+
+    // Output parity: report is synthesized, audit flag is set
+    expect(result.report).toBeDefined();
+    expect(result.report.query).toBe('What is TypeScript?');
+    expect(result.report.narrativeMarkdown).toContain('Research Report');
+    expect(ctx.state.isAudited()).toBe(true);
     expect(result.canonicalFindings).toBeDefined();
     expect(Array.isArray(result.canonicalFindings)).toBe(true);
-
-    // report.findingCount matches canonicalFindings length
-    expect(result.report.findingCount).toBe(result.canonicalFindings!.length);
   });
 
-  it('sources are discovered via provider', async () => {
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx();
-    await strategy.analyze('Test query', ctx);
-
-    // State should have sources from the mock provider
-    expect(ctx.state.sourceCount()).toBeGreaterThan(0);
-  });
-
-  it('no-LLM pipeline produces zero findings (precision-first)', async () => {
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx();
-    const result = await strategy.analyze('Test query', ctx);
-
-    // Without an LLM, no structured extraction can happen.
-    // Sources are still discovered but zero factual claims are produced.
-    expect(ctx.state.sourceCount()).toBeGreaterThan(0);
-    expect(ctx.state.findingCount()).toBe(0);
-    expect(result.canonicalFindings).toHaveLength(0);
-  });
-
-  it('timeline contains phase entries', async () => {
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx();
-    const result = await strategy.analyze('Test query', ctx);
-
-    expect(result.timeline.length).toBeGreaterThan(0);
-    const phases = result.timeline.map((p) => p.phase);
-    expect(phases).toContain('decomposition');
-    expect(phases).toContain('discovery');
-  });
-
-  it('handles budget exhaustion gracefully', async () => {
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx({
-      budgetOverrides: { maxToolCalls: 1, maxTimeMs: 999_999_999 },
+  it('includes prior knowledge in planning prompt', async () => {
+    const priorClaims = ['TypeScript 5.0 introduced decorators', 'TypeScript is maintained by Microsoft'];
+    const priorGaps = ['Missing coverage of TypeScript performance benchmarks'];
+    let planningPrompt = '';
+    const llm = makeMockLlm([
+      (opts) => {
+        planningPrompt = opts.messages.map((m) => m.content).join('\n');
+        return llmResponse(VALID_PLAN_JSON);
+      },
+      () => llmResponse('THOUGHT: done\nANSWER: Answer.'),
+    ]);
+    const ctx = makeAgentStrategyCtx({
+      llm,
+      getPriorKnowledge: async () => ({ knownClaims: priorClaims, knownGaps: priorGaps }),
     });
-    // Pre-exhaust budget
-    ctx.budget.recordToolCall();
-    const result = await strategy.analyze('Test query', ctx);
-    // Should still return a valid report (partial synthesis)
-    expect(result.report).toBeDefined();
-    expect(result.report.query).toBe('Test query');
+    const strategy = new AgentStrategy(ctx);
+    await strategy.analyze('TypeScript?', ctx);
+
+    expect(planningPrompt).toContain('PRIOR KNOWLEDGE');
+    expect(planningPrompt).toContain(priorClaims[0]!);
+    expect(planningPrompt).toContain(priorGaps[0]!);
   });
 
-  it('sub-questions are generated during decomposition', async () => {
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx();
-    await strategy.analyze('Test query', ctx);
+  it('sets sub-questions from plan perspectives', async () => {
+    const llm = makeMockLlm([
+      () => llmResponse(VALID_PLAN_JSON),
+      () => llmResponse('THOUGHT: done\nANSWER: Answer.'),
+    ]);
+    const ctx = makeAgentStrategyCtx({ llm });
+    const strategy = new AgentStrategy(ctx);
+    await strategy.analyze('TypeScript?', ctx);
 
     const sqs = ctx.state.getSubQuestions();
-    expect(sqs.length).toBe(5); // fixed dimensions
-    expect(sqs[0]!.text).toContain('Test query');
+    expect(sqs.length).toBe(2);
+    expect(sqs[0]!.text).toContain('developer productivity');
+    expect(sqs[1]!.text).toContain('costs of adopting');
   });
 
-  it('provider.read is called for extraction', async () => {
-    const readCalls: string[] = [];
-    const provider = createMockProvider();
-    const originalRead = provider.read;
-    provider.read = async (url: string) => {
-      readCalls.push(url);
-      return originalRead(url);
-    };
+  it('works without persistPlan callback', async () => {
+    const llm = makeMockLlm([
+      () => llmResponse(VALID_PLAN_JSON),
+      () => llmResponse('THOUGHT: done\nANSWER: Answer.'),
+    ]);
+    const ctx = makeAgentStrategyCtx({ llm });
+    const strategy = new AgentStrategy(ctx);
+    // No persistPlan set — should not throw
+    const result = await strategy.analyze('TypeScript?', ctx);
+    expect(result.report).toBeDefined();
+  });
 
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx({ provider });
-    await strategy.analyze('Test query', ctx);
-
-    expect(readCalls.length).toBeGreaterThan(0);
+  it('handles invalid plan JSON gracefully', async () => {
+    const llm = makeMockLlm([
+      () => llmResponse('This is not JSON at all'),
+      () => llmResponse('THOUGHT: done\nANSWER: Answer.'),
+    ]);
+    const ctx = makeAgentStrategyCtx({ llm });
+    const strategy = new AgentStrategy(ctx);
+    const result = await strategy.analyze('TypeScript?', ctx);
+    // Should still produce a valid result
+    expect(result.report).toBeDefined();
+    expect(result.report.query).toBe('TypeScript?');
   });
 
   it('close() cleans up', async () => {
-    const strategy = new PipelineStrategy();
+    const ctx = makeAgentStrategyCtx();
+    const strategy = new AgentStrategy(ctx);
     await expect(strategy.close()).resolves.toBeUndefined();
-  });
-});
-
-// ── Gap acquisition loop tests ──────────────────────────────────────────
-
-type SearchCall = { phase?: string; query: string };
-
-function createRecordingProvider(opts?: {
-  searchResults?: () => ResearchHit[];
-}): { provider: ResearchProvider; searchCalls: SearchCall[] } {
-  const searchCalls: SearchCall[] = [];
-  const getHits = opts?.searchResults;
-
-  const provider: ResearchProvider = {
-    name: 'recording-mock',
-    capabilities: {
-      search: true,
-      read: true,
-      academic: true,
-      code: false,
-      community: { reddit: false, hackernews: false, stackoverflow: false },
-      media: false,
-      reference: false,
-      browser: false,
-    },
-    async search(ctx: ProviderCallContext, query: string, searchOpts?) {
-      searchCalls.push({ phase: ctx.trace.phase, query });
-      if (getHits) return getHits();
-      const limit = searchOpts?.limit ?? 10;
-      return Array.from({ length: Math.min(limit, 5) }, (_, i) => ({
-        url: `https://example.com/${encodeURIComponent(query)}-${i}`,
-        title: `Result ${i} for ${query}`,
-        snippet: `Snippet ${i}`,
-      }));
-    },
-    async read(url: string) {
-      return { url, title: 'Page', content: 'Content '.repeat(50), contentHash: 'abc' };
-    },
-    async academic(ctx: ProviderCallContext, query: string) {
-      searchCalls.push({ phase: ctx.trace.phase, query });
-      return [{ url: `https://arxiv.org/${encodeURIComponent(query)}`, title: `Academic ${query}`, snippet: 'Academic' }];
-    },
-  };
-  return { provider, searchCalls };
-}
-
-describe('Gap acquisition loop', () => {
-  it('produces provider search calls with gap-derived queries', async () => {
-    const { provider, searchCalls } = createRecordingProvider();
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx({ provider });
-    await strategy.analyze('What is TypeScript?', ctx);
-
-    const gapCalls = searchCalls.filter((c) => c.phase === 'gap_acquisition');
-    expect(gapCalls.length).toBeGreaterThan(0);
-
-    // Gap queries are derived from sub-question text via planGapAcquisitions
-    for (const call of gapCalls) {
-      expect(call.query).toContain('What is TypeScript?');
-    }
-  });
-
-  it('loop terminates when provider returns zero results (zero-yield guard)', async () => {
-    const { provider, searchCalls } = createRecordingProvider({
-      searchResults: () => [],
-    });
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx({ provider });
-    await strategy.analyze('Test query', ctx);
-
-    // Discovery still runs, but gap loop hits zero-yield immediately
-    const discoveryCalls = searchCalls.filter((c) => c.phase === 'discovery');
-    const gapCalls = searchCalls.filter((c) => c.phase === 'gap_acquisition');
-    expect(discoveryCalls.length).toBeGreaterThan(0);
-    // Zero-yield: provider returns empty, so gap loop stops after first round
-    expect(gapCalls.length).toBeGreaterThan(0);
-    expect(gapCalls.length).toBeLessThanOrEqual(5);
-  });
-
-  it('loop respects budget limits', async () => {
-    const { provider, searchCalls } = createRecordingProvider();
-    const strategy = new PipelineStrategy();
-    const ctx = makeStrategyCtx({
-      provider,
-      budgetOverrides: { maxToolCalls: 10, maxGapLoops: 1, maxTimeMs: 999_999_999 },
-    });
-    await strategy.analyze('Test query', ctx);
-
-    // Budget exhausted after limited gap loops
-    expect(ctx.budget.isExhausted()).toBe(true);
-    // Total search calls bounded by budget
-    const gapCalls = searchCalls.filter((c) => c.phase === 'gap_acquisition');
-    expect(gapCalls.length).toBeLessThanOrEqual(3);
-  });
-});
-
-describe('StrategyRegistry', () => {
-  it('registers and creates strategies', async () => {
-    const { StrategyRegistry } = await import('../../src/research/strategies/registry.js');
-    const registry = new StrategyRegistry();
-    registry.register('pipeline', (ctx) => {
-      const s = new PipelineStrategy();
-      return s;
-    });
-
-    expect(registry.has('pipeline')).toBe(true);
-    expect(registry.has('agent')).toBe(false);
-
-    const ctx = makeStrategyCtx();
-    const strategy = registry.create('pipeline', ctx);
-    expect(strategy.name).toBe('pipeline');
-  });
-
-  it('throws for unknown strategy', async () => {
-    const { StrategyRegistry } = await import('../../src/research/strategies/registry.js');
-    const registry = new StrategyRegistry();
-    const ctx = makeStrategyCtx();
-    expect(() => registry.create('nonexistent', ctx)).toThrow('Unknown strategy');
-  });
-
-  it('selectDefault returns pipeline when no LLM', async () => {
-    const { StrategyRegistry } = await import('../../src/research/strategies/registry.js');
-    const registry = new StrategyRegistry();
-    const ctx = makeStrategyCtx();
-    expect(registry.selectDefault(ctx)).toBe('pipeline');
-  });
-
-  it('selectDefault returns pipeline for deterministic mode', async () => {
-    const { StrategyRegistry } = await import('../../src/research/strategies/registry.js');
-    const registry = new StrategyRegistry();
-    const ctx = makeStrategyCtx();
-    ctx.deterministic = true;
-    expect(registry.selectDefault(ctx)).toBe('pipeline');
-  });
-
-  it('selectDefault returns tree for tree depth', async () => {
-    const { StrategyRegistry } = await import('../../src/research/strategies/registry.js');
-    const registry = new StrategyRegistry();
-    const ctx = makeStrategyCtx();
-    ctx.depth = 'tree';
-    expect(registry.selectDefault(ctx)).toBe('tree');
   });
 });

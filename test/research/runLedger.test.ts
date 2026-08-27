@@ -35,7 +35,7 @@ function queued(runId = 'r', followUp?: RunFollowUp): EventEnvelope {
     rootRunId: runId,
     familyId: 'f',
     query: 'q',
-    strategy: 'pipeline',
+    strategy: 'agent',
     depth: 'standard',
     providerName: 'p',
     requestHash: 'h',
@@ -183,7 +183,7 @@ describe('RunLedger', () => {
         runId: 'old',
         familyId: 'f',
         query: 'q',
-        strategy: 'pipeline',
+        strategy: 'agent',
       }),
     ]).get('old');
 
@@ -197,7 +197,7 @@ describe('RunLedger', () => {
         runId: 'r',
         familyId: 'f',
         query: 'q',
-        strategy: 'pipeline',
+        strategy: 'agent',
       }),
       e('RUN_FAILED', 'r', { runId: 'r', error: 'bad' }, 1),
     ]).get('r');
@@ -222,7 +222,7 @@ describe('RunLedger', () => {
         error: { code: 'legacy', classification: 'internal', message: 'bad', retryable: false, occurredAt: '1970-01-01T00:00:00.000Z' },
       });
       const run = foldRunLedger([
-        e('RUN_STARTED', 'r', { runId: 'r', familyId: 'f', query: 'q', strategy: 'pipeline' }),
+        e('RUN_STARTED', 'r', { runId: 'r', familyId: 'f', query: 'q', strategy: 'agent' }),
         ...replayed,
       ]).get('r');
       expect(run?.error?.message).toBe('bad');

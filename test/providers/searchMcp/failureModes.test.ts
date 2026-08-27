@@ -9,7 +9,18 @@
  * 5. Restart mid-run — event persistence survives simulated crash
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+let _fmMockCallCount = 0;
+vi.mock('../../../src/research/llm/client.js', () => {
+  const planResponse = { success: true, content: '{"scope":"test","assumptions":[],"perspectives":[{"name":"s","question":"q"}],"falsificationQuestions":[]}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const searchResponse = { success: true, content: 'THOUGHT: search\nACTION: search_web\nARGUMENTS: {"query":"test"}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const answerResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  return {
+    LlmClient: class { callOrchestrator = async () => { _fmMockCallCount++; if (_fmMockCallCount === 1) return planResponse; if (_fmMockCallCount === 2) return searchResponse; return answerResponse; }; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    parseJsonFromText: (s: string) => { try { return JSON.parse(s); } catch { return undefined; } },
+  };
+});
 
 const providerCtx = { signal: new AbortController().signal, runId: 'test', deadlineAt: Date.now() + 300_000, trace: { traceId: 'test', spanId: 'test' } };
 const callOptions = { signal: new AbortController().signal, deadlineAt: Date.now() + 300_000 };
@@ -65,7 +76,7 @@ function createFailingClient(errorFn: () => never): SearchMcpClient {
 function makeConfig(dbPath: string): TrellisConfig {
   return {
     storage: { dbPath },
-    llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
+    llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
     searchProvider: { command: 'echo', args: [] },
     logLevel: 'silent',
   };
@@ -321,6 +332,7 @@ describe('Failure mode: cancellation mid-read', () => {
   let tmpDir: string;
 
   beforeEach(() => {
+    _fmMockCallCount = 0;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-fail-cancel-'));
   });
 
@@ -363,7 +375,7 @@ describe('Failure mode: cancellation mid-read', () => {
       query: 'Cancellation mid-read test',
       provider: slowProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
     });
 
     // Let pipeline reach the first provider.search() call before cancelling.
@@ -398,6 +410,7 @@ describe('Failure mode: concurrent runs against one db', () => {
   let tmpDir: string;
 
   beforeEach(() => {
+    _fmMockCallCount = 0;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-fail-concurrent-'));
   });
 
@@ -439,14 +452,14 @@ describe('Failure mode: concurrent runs against one db', () => {
         query: 'Concurrent run A query',
         provider: fastProvider,
         config,
-        strategy: 'pipeline',
+        strategy: 'agent',
         explicitFamilyId: 'fam_concurrent_A',
       }),
       svc.startRun({
         query: 'Concurrent run B query',
         provider: fastProvider,
         config,
-        strategy: 'pipeline',
+        strategy: 'agent',
         explicitFamilyId: 'fam_concurrent_B',
       }),
     ]);
@@ -507,6 +520,7 @@ describe('Failure mode: restart mid-run', () => {
   let tmpDir: string;
 
   beforeEach(() => {
+    _fmMockCallCount = 0;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-fail-restart-'));
   });
 
@@ -547,7 +561,7 @@ describe('Failure mode: restart mid-run', () => {
       query: 'Restart mid-run test',
       provider: slowProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: 'fam_restart_mid',
     });
 
@@ -632,7 +646,7 @@ describe('Failure mode: restart mid-run', () => {
         actor: 'system',
         entityId: runId,
         entityType: 'run',
-        payload: { runId, familyId: 'fam_partial', query: 'partial query', strategy: 'pipeline' },
+        payload: { runId, familyId: 'fam_partial', query: 'partial query', strategy: 'agent' },
       },
       // No RUN_COMPLETED — simulating crash before completion
     ], { projection: rebuildProjection(ALL_HANDLERS), handlers: ALL_HANDLERS });

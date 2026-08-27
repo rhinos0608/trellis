@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { NewEventInput } from '../../src/store/events.js';
 import { appendEvents, closeDb, createEmptyProjectionState, getDb, initDb, queryEvents } from '../../src/store/index.js';
+import { queryEvidenceLinkedEventsByClaimId } from '../../src/store/events.js';
 import { graphEventHandlers } from '../../src/graph/projectionHandlers.js';
 import { workspaceEventHandlers } from '../../src/workspace/projectionHandlers.js';
 import type { EventHandlerRegistry, ProjectionState } from '../../src/store/projectionState.js';
@@ -314,6 +315,43 @@ describe('getTimeline', () => {
     );
     const entries = getTimeline({ queryEvents }, { claimId: 'c1' }, { limit: 1 });
     expect(entries.length).toBe(1);
+  });
+
+  it('uses indexed queryEvidenceLinkedEventsByClaimId instead of broad scan', () => {
+    append(
+      family('fam1'),
+      claim('c1', 'fam1', 'Test claim', '2024-01-01T00:00:00.000Z'),
+      source('s1'),
+      evidence('e1', 'c1', 's1', 'obs-c1', 'supports'),
+      claim('c2', 'fam1', 'Other claim', '2024-01-02T00:00:00.000Z'),
+      evidence('e2', 'c2', 's1', 'obs-c2', 'supports'),
+    );
+
+    let broadScanCalls = 0;
+    let indexedCalls = 0;
+
+    const spyQueryEvents: typeof queryEvents = (opts) => {
+      if (opts.eventType === 'EVIDENCE_LINKED') broadScanCalls++;
+      return queryEvents(opts);
+    };
+
+    const indexedQuery = (claimId: string) => {
+      indexedCalls++;
+      return queryEvidenceLinkedEventsByClaimId(claimId);
+    };
+
+    const entries = getTimeline(
+      { queryEvents: spyQueryEvents, queryEvidenceLinkedEventsByClaimId: indexedQuery },
+      { claimId: 'c1' },
+    );
+
+    // Indexed path used, broad scan not used
+    expect(indexedCalls).toBe(1);
+    expect(broadScanCalls).toBe(0);
+    // Correctness: should include c1's evidence but not c2's
+    expect(entries.some((e) => e.eventType === 'EVIDENCE_LINKED')).toBe(true);
+    const c2Ev = entries.filter((e) => e.eventType === 'EVIDENCE_LINKED' && e.description.includes('e2'));
+    expect(c2Ev.length).toBe(0);
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -36,6 +36,15 @@ import { ResearchStateEngine } from '../../src/research/state.js';
 import { BudgetTracker } from '../../src/research/budget.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 
+// Mock LlmClient so agent strategy doesn't need real LLM config
+vi.mock('../../src/research/llm/client.js', () => {
+  const mockResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  return {
+    LlmClient: class { callOrchestrator = async () => mockResponse; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    parseJsonFromText: (s) => { try { return JSON.parse(s); } catch { return undefined; } },
+  };
+});
+
 // ── Mock provider ────────────────────────────────────────────────────
 
 const mockProvider: ResearchProvider = {
@@ -53,7 +62,7 @@ const mockProvider: ResearchProvider = {
 
 const mockConfig: TrellisConfig = {
   storage: { dbPath: ':memory:' },
-  llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
+  llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
   searchProvider: { command: 'echo', args: [] },
   logLevel: 'silent',
 };
@@ -380,7 +389,7 @@ describe('run lifecycle: start → persist → queryable', () => {
       query: 'What is the best TypeScript framework?',
       provider: mockProvider,
       config: mockConfig,
-      strategy: 'pipeline',
+      strategy: 'agent',
     });
 
     expect(runId).toBeTruthy();
@@ -485,7 +494,7 @@ describe('run lifecycle: concurrent runs do not cross-contaminate', () => {
       makeEvent({ eventType: 'FAMILY_CREATED', runId: 'runA', payload: { family_id: 'famA', label: 'Family A' } }),
       makeEvent({
         eventType: 'RUN_STARTED', runId: 'runA',
-        payload: { runId: 'runA', familyId: 'famA', query: 'query A', strategy: 'pipeline' },
+        payload: { runId: 'runA', familyId: 'famA', query: 'query A', strategy: 'agent' },
       }),
       makeEvent({
         eventType: 'CLAIM_ACCEPTED', runId: 'runA', entityId: 'clmA1', entityType: 'claim',
@@ -511,7 +520,7 @@ describe('run lifecycle: concurrent runs do not cross-contaminate', () => {
       makeEvent({ eventType: 'FAMILY_CREATED', runId: 'runB', payload: { family_id: 'famB', label: 'Family B' } }),
       makeEvent({
         eventType: 'RUN_STARTED', runId: 'runB',
-        payload: { runId: 'runB', familyId: 'famB', query: 'query B', strategy: 'pipeline' },
+        payload: { runId: 'runB', familyId: 'famB', query: 'query B', strategy: 'agent' },
       }),
       makeEvent({
         eventType: 'CLAIM_ACCEPTED', runId: 'runB', entityId: 'clmB1', entityType: 'claim',
@@ -563,7 +572,7 @@ describe('run lifecycle: FAMILY_RESOLVED event payload', () => {
       query: 'TypeScript framework comparison',
       provider: mockProvider,
       config: mockConfig,
-      strategy: 'pipeline',
+      strategy: 'agent',
     });
 
     // Wait for background execution to persist events
@@ -589,7 +598,7 @@ describe('run lifecycle: durable run status', () => {
     appendEvents([
       makeEvent({
         eventType: 'RUN_STARTED', runId: 'runX',
-        payload: { runId: 'runX', familyId: 'famX', query: 'query X', strategy: 'pipeline' },
+        payload: { runId: 'runX', familyId: 'famX', query: 'query X', strategy: 'agent' },
       }),
       makeEvent({
         eventType: 'RUN_COMPLETED', runId: 'runX',

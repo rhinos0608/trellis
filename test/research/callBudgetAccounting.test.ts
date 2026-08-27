@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { BudgetTracker } from '../../src/research/budget.js';
 import { ResearchStateEngine } from '../../src/research/state.js';
-import { PipelineStrategy } from '../../src/research/strategies/pipelineStrategy.js';
+import { AgentStrategy } from '../../src/research/strategies/agentStrategy.js';
 import type { StrategyContext } from '../../src/research/strategies/types.js';
 import type { ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 import type { RunContext } from '../../src/research/types.js';
+import type { LlmClient, LlmResponse } from '../../src/research/llm/client.js';
 
 function makeConfig(): TrellisConfig {
   return {
@@ -20,7 +21,18 @@ function makeRunContext(): RunContext {
   return { familyId: 'fam-test', researchRunId: 'run-test' };
 }
 
-function makeStrategyCtx(provider: ResearchProvider, signal?: AbortSignal): StrategyContext {
+function llmResponse(content: string): LlmResponse {
+  return {
+    success: true, content, model: 'test', tokensUsed: 15, tokensSource: 'provider_usage' as const,
+    promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100,
+  };
+}
+
+function makeStrategyCtx(
+  provider: ResearchProvider,
+  signal?: AbortSignal,
+  llmOverride?: LlmClient,
+): StrategyContext {
   const budget = new BudgetTracker({
     depth: 'standard',
     maxSources: 70,
@@ -42,6 +54,7 @@ function makeStrategyCtx(provider: ResearchProvider, signal?: AbortSignal): Stra
     ...(signal !== undefined ? { abortSignal: signal } : {}),
     reportProgress: async () => {},
     depth: 'standard',
+    llm: llmOverride,
   };
 }
 
@@ -71,11 +84,23 @@ describe('call-budget accounting (per logical provider call, not per hit)', () =
       async academic() { throw new Error('academic must not be called'); },
     };
 
-    const ctx = makeStrategyCtx(provider, controller.signal);
-    await new PipelineStrategy().analyze('What is React?', ctx);
+    // Agent: plan → LLM decides search_web → search aborts → next iteration sees abort → exit
+    let callIdx = 0;
+    const llm: LlmClient = {
+      callOrchestrator: async (opts) => {
+        callIdx++;
+        if (callIdx === 1) return llmResponse('{"scope":"test","assumptions":[],"perspectives":[],"falsificationQuestions":[]}'); // plan
+        if (callIdx === 2) return llmResponse('THOUGHT: search\nACTION: search_web\nARGUMENTS: {"query":"React"}'); // search
+        return llmResponse('THOUGHT: done\nANSWER: Immediate answer.');
+      },
+      callWorker: async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated' as const, attempts: 1, durationMs: 0 }),
+    } as unknown as LlmClient;
+    const ctx = makeStrategyCtx(provider, controller.signal, llm);
+    await new AgentStrategy(ctx).analyze('What is React?', ctx);
 
+    // Agent strategy: plan LLM call (1) + ReAct LLM call to decide search (1) + search tool call (1) = 3
     expect(searchCalls).toBe(1);
-    expect(ctx.budget.snapshot().toolCallsUsed).toBe(1);
+    expect(ctx.budget.snapshot().toolCallsUsed).toBe(3);
   });
 
   it('a FAILED call still consumes exactly one call slot', async () => {
@@ -96,14 +121,26 @@ describe('call-budget accounting (per logical provider call, not per hit)', () =
       async academic() { return []; },
     };
 
-    const ctx = makeStrategyCtx(provider);
+    // Agent: plan → searches fail (caught by agent tool) → agent answers immediately
+    let callIdx = 0;
+    const llm: LlmClient = {
+      callOrchestrator: async (opts) => {
+        callIdx++;
+        if (callIdx === 1) return llmResponse('plan text'); // plan call (fails JSON parse → null plan)
+        if (callIdx === 2) return llmResponse('THOUGHT: search\nACTION: search_web\nARGUMENTS: {"query":"React"}'); // search (will throw)
+        return llmResponse('THOUGHT: done\nANSWER: Immediate answer.');
+      },
+      callWorker: async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated' as const, attempts: 1, durationMs: 0 }),
+    } as unknown as LlmClient;
+    const ctx = makeStrategyCtx(provider, undefined, llm);
 
-    // Pipeline catches per-query failures and continues; all 5 sub-question
-    // searches fail, plus gap-filling loop may attempt additional searches.
-    await new PipelineStrategy().analyze('What is React?', ctx);
+    // Agent catches per-query failures in tool execution and continues; with mock LLM
+    // returning immediate answer, only 1 search attempt happens.
+    await new AgentStrategy(ctx).analyze('What is React?', ctx);
 
-    expect(attempts).toBeGreaterThanOrEqual(5);
-    expect(ctx.budget.snapshot().toolCallsUsed).toBeGreaterThanOrEqual(5);
+    // 1 plan LLM + 1 search attempt = 2 tool call slots (search failure still counted)
+    expect(attempts).toBeGreaterThanOrEqual(1);
+    expect(ctx.budget.snapshot().toolCallsUsed).toBeGreaterThanOrEqual(2);
   });
 
   it('failed reads are counted too (one slot per extraction attempt)', async () => {
@@ -131,13 +168,24 @@ describe('call-budget accounting (per logical provider call, not per hit)', () =
       async academic() { return []; },
     };
 
-    const ctx = makeStrategyCtx(provider);
-    await new PipelineStrategy().analyze('What is React?', ctx);
+    // Agent: plan → search_web → web_read (fails) → agent tries again → answer
+    let callIndex = 0;
+    const llm: LlmClient = {
+      callOrchestrator: async (opts) => {
+        callIndex++;
+        if (callIndex === 1) return llmResponse('{"scope":"test","assumptions":[],"perspectives":[],"falsificationQuestions":[]}'); // plan
+        if (callIndex === 2) return llmResponse('THOUGHT: need to search\nACTION: search_web\nARGUMENTS: {"query":"React"}'); // search first
+        if (callIndex <= 4) return llmResponse('THOUGHT: need to read\nACTION: web_read\nARGUMENTS: {"url":"https://example.com/a-1"}'); // try reads
+        return llmResponse('THOUGHT: done\nANSWER: Answer.'); // stop
+      },
+      callWorker: async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated' as const, attempts: 1, durationMs: 0 }),
+    } as unknown as LlmClient;
+    const ctx = makeStrategyCtx(provider, undefined, llm);
+    await new AgentStrategy(ctx).analyze('What is React?', ctx);
 
-    // 5 sub-question searches + gap-filling loop searches; budget not exhausted
-    // so additional gap-driven searches occur. Core assertion: failed reads counted.
-    expect(searches).toBeGreaterThanOrEqual(5);
-    expect(failedReadUrls.length).toBeGreaterThanOrEqual(10);
-    expect(ctx.budget.snapshot().toolCallsUsed).toBeGreaterThanOrEqual(15);
+    // At least 1 search + some reads attempted; budget accounts for all calls
+    expect(searches).toBeGreaterThanOrEqual(1);
+    expect(failedReadUrls.length).toBeGreaterThanOrEqual(1);
+    expect(ctx.budget.snapshot().toolCallsUsed).toBeGreaterThanOrEqual(4); // plan + search + read(s)
   });
 });

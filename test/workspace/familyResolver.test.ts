@@ -1,10 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { resolveFamily } from '../../src/workspace/familyResolver.js';
 import { createEmptyProjectionState } from '../../src/store/projectionState.js';
 import { workspaceEventHandlers } from '../../src/workspace/projectionHandlers.js';
+import { graphEventHandlers } from '../../src/graph/index.js';
+import { initDb, closeDb, appendEvents, rebuildProjection } from '../../src/store/index.js';
+import type { NewEventInput } from '../../src/store/events.js';
 import type { Family, FamilyRelation } from '../../src/workspace/types.js';
 import type { EventEnvelope } from '../../src/store/eventTypes.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -127,7 +133,7 @@ describe('resolveFamily', () => {
     expect(result.family.id).toBe('fam-high');
   });
 
-  it('updates lastActivity on match', () => {
+  it('does not mutate lastActivity (projection handler owns it)', () => {
     const later = '2025-06-01T00:00:00.000Z';
     const existing = makeFamily({
       id: 'fam-1',
@@ -141,7 +147,7 @@ describe('resolveFamily', () => {
       now: later,
     });
 
-    expect(existing.lastActivity).toBe(later);
+    expect(existing.lastActivity).toBe('2025-01-01T00:00:00.000Z');
   });
 
   it('returns score 0 when creating new family', () => {
@@ -366,6 +372,55 @@ describe('resolveFamily', () => {
       now: FIXED_TIME,
     });
     expect(result.isNew).toBe(true);
+  });
+});
+
+// ── Projection rebuild regression test ───────────────────────────────────
+
+describe('FAMILY_RESOLVED lastActivity survives projection rebuild', () => {
+  let tmpDir: string;
+
+  const ALL_HANDLERS = { ...graphEventHandlers, ...workspaceEventHandlers };
+
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-resolved-rebuild-')); });
+  afterEach(() => { closeDb(); try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ } });
+
+  it('rebuild from genesis preserves lastActivity set by FAMILY_RESOLVED', () => {
+    initDb(path.join(tmpDir, 'test.db'));
+
+    const now = '2025-07-01T12:00:00.000Z';
+    const familyId = 'fam-resolved-test';
+    const runId = 'run-resolved-1';
+
+    const mk = (eventType: string, payload: Record<string, unknown>, overrides?: Partial<NewEventInput>): NewEventInput => ({
+      timestamp: now, eventType, eventVersion: 1, runId,
+      batchId: null, actor: 'system', entityId: null, entityType: null,
+      payload, ...overrides,
+    });
+
+    // 1) Live projection: append FAMILY_CREATED then FAMILY_RESOLVED
+    const liveProjection = rebuildProjection(ALL_HANDLERS);
+    appendEvents([
+      mk('FAMILY_CREATED', { family_id: familyId, label: 'Test Family' }, { entityType: 'family' }),
+      mk('FAMILY_RESOLVED', { familyId, query: 'test query', isNew: false }, { runId }),
+    ], { projection: liveProjection, handlers: ALL_HANDLERS });
+
+    const liveFamily = liveProjection.families.get(familyId);
+    expect(liveFamily).toBeDefined();
+    const liveLastActivity = liveFamily!.lastActivity;
+    // FAMILY_RESOLVED handler sets lastActivity to the event timestamp
+    expect(liveLastActivity).toBe(now);
+
+    // 2) Rebuild projection from genesis (simulates server restart)
+    const rebuilt = rebuildProjection(ALL_HANDLERS, { forceGenesis: true });
+    const rebuiltFamily = rebuilt.families.get(familyId);
+    expect(rebuiltFamily).toBeDefined();
+
+    // THIS is the assertion that catches the audit_only regression:
+    // with audit_only, the FAMILY_RESOLVED handler is never called during
+    // rebuild, so lastActivity would revert to the FAMILY_CREATED timestamp.
+    // With pure_run_local, the handler IS called and lastActivity stays correct.
+    expect(rebuiltFamily!.lastActivity).toBe(liveLastActivity);
   });
 });
 

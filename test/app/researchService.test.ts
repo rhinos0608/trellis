@@ -3,7 +3,7 @@
  * Uses a real file-backed SQLite db and the real RunService/scheduler end to end.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -22,6 +22,19 @@ import { LIFECYCLE_EVENT_TYPES } from '../../src/research/runLedger.js';
 import { queryEvents } from '../../src/store/events.js';
 import type { ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
+
+// Mock LlmClient so agent strategy doesn't need real LLM config
+let _mockLlmCallCount = 0;
+vi.mock('../../src/research/llm/client.js', () => {
+  const planResponse = { success: true, content: '{"scope":"test","assumptions":[],"perspectives":[{"name":"searcher","question":"what is this"}],"falsificationQuestions":[]}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const searchResponse = { success: true, content: 'THOUGHT: search\nACTION: search_web\nARGUMENTS: {"query":"test"}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const readResponse = { success: true, content: 'THOUGHT: read\nACTION: web_read\nARGUMENTS: {"url":"https://example.com/result1"}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const answerResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  return {
+    LlmClient: class { callOrchestrator = async () => { _mockLlmCallCount++; if (_mockLlmCallCount === 1) return planResponse; if (_mockLlmCallCount === 2) return searchResponse; if (_mockLlmCallCount === 3) return readResponse; return answerResponse; }; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    parseJsonFromText: (s: string) => { try { return JSON.parse(s); } catch { return undefined; } },
+  };
+});
 
 // ── Mock provider ────────────────────────────────────────────────────
 
@@ -53,7 +66,7 @@ const mockProvider: ResearchProvider = {
 function makeConfig(dbPath: string): TrellisConfig {
   return {
     storage: { dbPath },
-    llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
+    llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
     searchProvider: { command: 'echo', args: [] },
     logLevel: 'silent',
   };
@@ -71,6 +84,7 @@ let tmpDir: string;
 const liveServices: { svc: ReturnType<typeof createRunService> }[] = [];
 
 beforeEach(() => {
+  _mockLlmCallCount = 0;
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-app-'));
 });
 
@@ -203,7 +217,7 @@ describe('listRuns', () => {
       expect(Object.keys(run).sort()).toEqual(
         ['completedAt', 'createdAt', 'familyId', 'query', 'runId', 'status', 'strategy'],
       );
-      expect(run.strategy).toBe('pipeline');
+      expect(run.strategy).toBe('agent');
     }
 
     const byFamily = app.listRuns({ familyId: FAMILY });
@@ -308,7 +322,7 @@ describe('listRunEvents', () => {
     for (const forbidden of ['providerName', 'requestHash', 'retryPolicy', 'deadlineAt', 'idempotencyKey', 'sessionId']) {
       expect(queued.payload).not.toHaveProperty(forbidden);
     }
-    expect(queued.payload).toMatchObject({ runId, familyId, query: 'Safe events test', strategy: 'pipeline' });
+    expect(queued.payload).toMatchObject({ runId, familyId, query: 'Safe events test', strategy: 'agent' });
 
     const completed = events.find((e) => e.eventType === 'RUN_COMPLETED')!;
     expect(completed.payload).toHaveProperty('claimCount');
@@ -330,7 +344,7 @@ describe('listRunEvents', () => {
       mk('FAMILY_CREATED', { family_id: 'fam_hb', label: 'Heartbeat family' }, 'family'),
       mk('RUN_QUEUED', {
         runId: 'run_heartbeat_fixture', rootRunId: 'run_heartbeat_fixture', familyId: 'fam_hb',
-        query: 'Heartbeat fixture', strategy: 'pipeline', depth: 'standard',
+        query: 'Heartbeat fixture', strategy: 'agent', depth: 'standard',
         providerName: 'mock', requestHash: 'hb-hash', retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1000, maxBackoffMs: 30000 },
         deadlineAt: new Date(Date.now() + 60_000).toISOString(), attempt: 1, queuedAt: now,
       }),
@@ -423,5 +437,69 @@ describe('rollbackRun', () => {
     expect(result.skipped).toBeGreaterThanOrEqual(0);
     expect(Array.isArray(result.blocked)).toBe(true);
     void familyId;
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Idempotency: same idempotencyKey + same input → same run, no ghost events
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('startRun idempotency', () => {
+  it('same idempotencyKey + identical input returns the same runId with one RUN_QUEUED event', async () => {
+    const { app } = makeFixture();
+    const key = 'idem-dedupe-key';
+    const query = 'Idempotency dedupe test';
+
+    // Simulate different Date.now() ticks between calls
+    const realDateNow = Date.now;
+    let tick = 0;
+    Date.now = () => realDateNow() + (tick++);
+    try {
+      const result1 = await app.startRun({ query, idempotencyKey: key });
+      const result2 = await app.startRun({ query, idempotencyKey: key });
+
+      // (a) Both calls return the same runId
+      expect(result1.runId).toBe(result2.runId);
+      expect(result1.familyId).toBe(result2.familyId);
+
+      // (b) Only one RUN_QUEUED event exists
+      const events = queryEvents({ runId: result1.runId });
+      const queuedEvents = events.filter((e) => e.eventType === 'RUN_QUEUED');
+      expect(queuedEvents.length).toBe(1);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  it('same idempotencyKey + different query throws IDEMPOTENCY_CONFLICT', async () => {
+    const { app } = makeFixture();
+    const key = 'idem-conflict-key';
+
+    await app.startRun({ query: 'First query', idempotencyKey: key });
+
+    await expect(
+      app.startRun({ query: 'Different query', idempotencyKey: key }),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', retryable: false });
+  });
+
+  it('same idempotencyKey dedupes whether deadlineMs is omitted or explicitly set to default', async () => {
+    const { app } = makeFixture();
+    const key = 'idem-deadline-default-key';
+    const query = 'Idempotency deadline normalization test';
+
+    // First call: omit deadlineMs entirely (should use default 600_000)
+    const result1 = await app.startRun({ query, idempotencyKey: key });
+
+    // Second call: explicitly pass deadlineMs: 600_000 (the default value)
+    const result2 = await app.startRun({ query, idempotencyKey: key, deadlineMs: 600_000 });
+
+    // Must dedupe to the same run — NOT a conflict
+    expect(result1.runId).toBe(result2.runId);
+    expect(result1.familyId).toBe(result2.familyId);
+
+    // Only one RUN_QUEUED event should exist
+    const events = queryEvents({ runId: result1.runId });
+    const queuedEvents = events.filter((e) => e.eventType === 'RUN_QUEUED');
+    expect(queuedEvents.length).toBe(1);
   });
 });

@@ -3,7 +3,7 @@
  * Tests handler dispatch and result shapes directly — no full MCP round-trip.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ResearchToolSchema, KnowledgeToolSchema } from '../../src/mcp/schemas.js';
 import { handleResearchTool, type ResearchToolDeps } from '../../src/mcp/researchTool.js';
 import { handleKnowledgeTool, type KnowledgeToolDeps } from '../../src/mcp/knowledgeTool.js';
@@ -15,6 +15,15 @@ import { initDb, getDb, appendEvents, closeDb } from '../../src/store/index.js';
 import { createEmptyProjectionState } from '../../src/store/projectionState.js';
 import { createKnowledgeQueryService, type KnowledgeQueryService } from '../../src/query/service.js';
 
+// Mock LlmClient so agent strategy doesn't need real LLM config
+vi.mock('../../src/research/llm/client.js', () => {
+  const mockResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  return {
+    LlmClient: class { callOrchestrator = async () => mockResponse; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    parseJsonFromText: (s: string) => { try { return JSON.parse(s); } catch { return undefined; } },
+  };
+});
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 const TEST_DB = ':memory:';
@@ -22,7 +31,7 @@ const TEST_DB = ':memory:';
 function makeConfig(): TrellisConfig {
   return {
     storage: { dbPath: TEST_DB },
-    llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
+    llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
     searchProvider: { command: 'node', args: [] },
     logLevel: 'silent',
   };

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -24,8 +24,17 @@ const provider: ResearchProvider = {
 };
 
 function config(dbPath: string): TrellisConfig {
-  return { storage: { dbPath }, llm: { apiKey: undefined, baseUrl: undefined, model: undefined }, searchProvider: { command: 'echo', args: [] }, logLevel: 'silent' };
+  return { storage: { dbPath }, llm: { baseUrl: 'http://mock-llm', model: 'test-model', apiKey: undefined }, searchProvider: { command: 'echo', args: [] }, logLevel: 'silent' };
 }
+
+// Mock LlmClient so agent strategy doesn't need real LLM config
+vi.mock('../../src/research/llm/client.js', () => {
+  const mockResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  return {
+    LlmClient: class { callOrchestrator = async () => mockResponse; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    parseJsonFromText: (s: string) => { try { return JSON.parse(s); } catch { return undefined; } },
+  };
+});
 
 async function waitForRun(service: ReturnType<typeof createRunService>, runId: string): Promise<void> {
   const deadline = Date.now() + 15_000;

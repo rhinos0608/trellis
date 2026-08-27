@@ -8,7 +8,7 @@
  * Only the underlying client.callTool is faked; wrapClientWithRetry,
  * provider factory, and RunService are exercised for real.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,6 +26,15 @@ import { graphEventHandlers } from '../../src/graph/index.js';
 import { workspaceEventHandlers } from '../../src/workspace/index.js';
 import type { ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
+
+// Mock LlmClient so agent strategy doesn't need real LLM config
+vi.mock('../../src/research/llm/client.js', () => {
+  const mockResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  return {
+    LlmClient: class { callOrchestrator = async () => mockResponse; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    parseJsonFromText: (s) => { try { return JSON.parse(s); } catch { return undefined; } },
+  };
+});
 
 // ── Shared constants ────────────────────────────────────────────────
 
@@ -63,7 +72,7 @@ function createFlakyClient(
 function makeConfig(dbPath: string): TrellisConfig {
   return {
     storage: { dbPath },
-    llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
+    llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
     searchProvider: { command: 'echo', args: [] },
     logLevel: 'silent',
   };
@@ -104,7 +113,7 @@ describe('run lifecycle chaos: flaky provider', () => {
       query: 'Flaky provider recovery test',
       provider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: 'fam_flaky_recovery',
     });
 
@@ -177,7 +186,7 @@ describe('run lifecycle chaos: flaky provider', () => {
       query: 'Flaky provider exhaustion test',
       provider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: 'fam_flaky_exhaustion',
     });
 

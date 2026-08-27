@@ -10,7 +10,7 @@
  * and the actual runService / projection / query layers end-to-end.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -48,6 +48,19 @@ function wrapState(state: ProjectionState): KnowledgeToolDeps {
 import type { ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 
+// Mock LlmClient so agent strategy doesn't need real LLM config
+let _intMockCallCount = 0;
+vi.mock('../../src/research/llm/client.js', () => {
+  const planResponse = { success: true, content: '{"scope":"test","assumptions":[],"perspectives":[{"name":"s","question":"q"}],"falsificationQuestions":[]}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const searchResponse = { success: true, content: 'THOUGHT: search\nACTION: search_web\nARGUMENTS: {"query":"test"}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const readResponse = { success: true, content: 'THOUGHT: read\nACTION: web_read\nARGUMENTS: {"url":"https://example.com/page1"}', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  const answerResponse = { success: true, content: 'THOUGHT: done\nANSWER: Done.', model: 'test', tokensUsed: 15, tokensSource: 'provider_usage', promptTokens: 10, completionTokens: 5, attempts: 1, durationMs: 100 };
+  return {
+    LlmClient: class { callOrchestrator = async () => { _intMockCallCount++; if (_intMockCallCount === 1) return planResponse; if (_intMockCallCount === 2) return searchResponse; if (_intMockCallCount === 3) return readResponse; return answerResponse; }; callWorker = async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated', attempts: 1, durationMs: 0 }); },
+    parseJsonFromText: (s: string) => { try { return JSON.parse(s); } catch { return undefined; } },
+  };
+});
+
 // ── Mock provider ────────────────────────────────────────────────────
 
 const mockProvider: ResearchProvider = {
@@ -78,7 +91,7 @@ const mockProvider: ResearchProvider = {
 function makeConfig(dbPath: string): TrellisConfig {
   return {
     storage: { dbPath },
-    llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
+    llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
     searchProvider: { command: 'echo', args: [] },
     logLevel: 'silent',
   };
@@ -102,6 +115,7 @@ function trackedCreateRunService(): ReturnType<typeof createRunService> {
 }
 
 beforeEach(() => {
+  _intMockCallCount = 0;
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trellis-sys-'));
 });
 
@@ -147,7 +161,7 @@ describe('Property 1: process-restart survival', () => {
       query: 'What are the benefits of TypeScript over JavaScript?',
       provider: mockProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
     });
 
     await waitForRun(svc1, runId);
@@ -234,7 +248,7 @@ describe('Property 2: multi-run longitudinal accumulation', () => {
       query: 'Benefits of TypeScript',
       provider: mockProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: FAMILY,
     });
     await waitForRun(svc, run1.runId);
@@ -248,7 +262,7 @@ describe('Property 2: multi-run longitudinal accumulation', () => {
       query: 'TypeScript vs JavaScript performance',
       provider: mockProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: FAMILY,
     });
     await waitForRun(svc, run2.runId);
@@ -295,7 +309,7 @@ describe('Property 2: multi-run longitudinal accumulation', () => {
       query: 'Python vs Go concurrency',
       provider: mockProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: FAMILY,
     });
     await waitForRun(svc, run1.runId);
@@ -304,7 +318,7 @@ describe('Property 2: multi-run longitudinal accumulation', () => {
       query: 'Python concurrency patterns',
       provider: mockProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: FAMILY,
     });
     await waitForRun(svc, run2.runId);
@@ -338,7 +352,7 @@ describe('Property 3: full pipeline through MCP tool handlers', () => {
 
     // ── Step 1: start via handleResearchTool ──────────────────────
     const startResult = await handleResearchTool(
-      { action: 'start', query: 'Node.js event loop internals', strategy: 'pipeline' },
+      { action: 'start', query: 'Node.js event loop internals', strategy: 'agent' },
       deps,
     );
     const runId = startResult.runId as string;
@@ -439,7 +453,7 @@ describe('Property 7: research wire-format parity through application service', 
     const deps = { runService: svc, config, getProvider: async () => mockProvider };
 
     const startResult = await handleResearchTool(
-      { action: 'start', query: 'Wire parity query', strategy: 'pipeline', familyId: FAMILY },
+      { action: 'start', query: 'Wire parity query', strategy: 'agent', familyId: FAMILY },
       deps,
     );
     // start response shape is exactly { runId, familyId }
@@ -522,7 +536,7 @@ describe('combined: restart + longitudinal + MCP handlers', () => {
       query: 'Rust memory safety guarantees',
       provider: mockProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: FAMILY,
     });
     await waitForRun(svc, run1.runId);
@@ -544,7 +558,7 @@ describe('combined: restart + longitudinal + MCP handlers', () => {
       query: 'Rust ownership model explained',
       provider: mockProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
       explicitFamilyId: FAMILY,
     });
     await waitForRun(svc2, run2.runId);
@@ -627,7 +641,7 @@ describe('Property 4: knowledge.threads integration', () => {
       query: 'Threads test',
       provider: mockProvider,
       config,
-      strategy: 'pipeline',
+      strategy: 'agent',
     });
     await waitForRun(svc, runId);
 
@@ -685,7 +699,7 @@ describe('Property 5: threadId round-trip', () => {
     ], { projection: familyState, handlers: ALL_HANDLERS });
 
     const startResult = await handleResearchTool(
-      { action: 'start', query: 'ThreadId roundtrip test', strategy: 'pipeline', familyId: 'family_thread_fixture', threadId: THREAD_ID },
+      { action: 'start', query: 'ThreadId roundtrip test', strategy: 'agent', familyId: 'family_thread_fixture', threadId: THREAD_ID },
       deps,
     );
     const runId = startResult.runId as string;

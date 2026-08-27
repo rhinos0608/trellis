@@ -1,10 +1,9 @@
 /**
- * Tests that pipeline and agent strategies reject malicious URLs
+ * Tests that the agent strategy rejects malicious URLs
  * before sending them to the provider (MCP read/crawl calls).
  */
 import { describe, it, expect, vi } from 'vitest';
 import { validateFetchableUrl } from '../../../src/providers/searchMcp/urlPolicy.js';
-import { PipelineStrategy } from '../../../src/research/strategies/pipelineStrategy.js';
 import { AgentStrategy } from '../../../src/research/strategies/agentStrategy.js';
 import { BudgetTracker } from '../../../src/research/budget.js';
 import { ResearchStateEngine } from '../../../src/research/state.js';
@@ -29,23 +28,13 @@ function urlTestProvider(url: string, read: () => void): ResearchProvider {
   };
 }
 
-describe('pipelineStrategy URL validation', () => {
+describe('URL validation (agentStrategy)', () => {
   it('validateFetchableUrl rejects file: scheme (pre-read guard)', () => expect(() => validateFetchableUrl('file:///etc/passwd')).toThrow());
   it('validateFetchableUrl rejects javascript: scheme', () => expect(() => validateFetchableUrl('javascript:alert(1)')).toThrow());
   it('validateFetchableUrl rejects localhost', () => expect(() => validateFetchableUrl('http://localhost/secret')).toThrow());
   it('validateFetchableUrl rejects literal IP', () => expect(() => validateFetchableUrl('http://169.254.169.254/metadata')).toThrow());
   it('validateFetchableUrl accepts safe URL', () => expect(() => validateFetchableUrl('https://example.com/page')).not.toThrow());
 
-  it('does not call provider.read for invalid discovered URL', async () => {
-    let reads = 0;
-    const ctx = strategyContext(urlTestProvider('file:///etc/passwd', () => { reads++; }));
-    await new PipelineStrategy().analyze('query', ctx);
-    expect(reads).toBe(0);
-    expect(ctx.state.getSources().every((source) => source.extractionStatus === 'failed')).toBe(true);
-  });
-});
-
-describe('agentStrategy URL validation', () => {
   it('validateFetchableUrl blocks attacker-controlled URLs at boundary', () => {
     for (const url of ['file:///etc/passwd', 'data:text/html,<script>alert(1)</script>', 'javascript:void(0)', 'ftp://evil.com/payload', 'http://127.0.0.1/admin', 'http://[::1]/admin', 'http://10.0.0.1/metadata', 'http://192.168.1.1/router']) expect(() => validateFetchableUrl(url)).toThrow();
   });

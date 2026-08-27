@@ -107,7 +107,7 @@ describe('LlmClient activation in runService (Phase 11C)', () => {
     expect(body.model).toBe('test-model');
   }, 15_000);
 
-  it('rejects explicit strategy:agent at startRun() with a PERMANENT precondition error when LLM config is missing', async () => {
+  it('rejects startRun() with a PERMANENT precondition error when LLM config is missing', async () => {
     const svc = createRunService();
     let caught: unknown;
     try {
@@ -115,7 +115,6 @@ describe('LlmClient activation in runService (Phase 11C)', () => {
         query: 'What is TypeScript?',
         provider: mockProvider,
         config: makeConfig(), // no baseUrl/model
-        strategy: 'agent',
       });
     } catch (err) {
       caught = err;
@@ -188,7 +187,7 @@ describe('LlmClient activation in runService (Phase 11C)', () => {
     const countsList = progressEvents
       .map((e) => (e.payload as { counts?: { tokensUsed?: number; providerCalls?: number } }).counts)
       .filter((c) => c !== undefined);
-    expect(countsList.some((c) => c.tokensUsed === 15)).toBe(true);
+    expect(countsList.some((c) => (c.tokensUsed ?? 0) >= 15)).toBe(true);
     expect(countsList.some((c) => (c.providerCalls ?? 0) >= 1)).toBe(true);
   }, 15_000);
 

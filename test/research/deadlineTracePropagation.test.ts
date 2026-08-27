@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { BudgetTracker } from '../../src/research/budget.js';
 import { ResearchStateEngine } from '../../src/research/state.js';
-import { PipelineStrategy } from '../../src/research/strategies/pipelineStrategy.js';
+import { AgentStrategy } from '../../src/research/strategies/agentStrategy.js';
 import { providerCallContext, type StrategyContext } from '../../src/research/strategies/types.js';
 import type { ProviderCallContext, ResearchProvider } from '../../src/providers/types.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 import type { RunContext } from '../../src/research/types.js';
+import type { LlmClient, LlmResponse } from '../../src/research/llm/client.js';
 
 function makeConfig(): TrellisConfig {
   return {
@@ -31,9 +32,30 @@ function schedulerCtx(overrides?: Partial<ProviderCallContext>): ProviderCallCon
   };
 }
 
+function llmResponse(content: string): LlmResponse {
+  return {
+    success: true,
+    content,
+    model: 'test',
+    tokensUsed: 15,
+    tokensSource: 'provider_usage' as const,
+    promptTokens: 10,
+    completionTokens: 5,
+    attempts: 1,
+    durationMs: 100,
+  };
+}
+
+function makeMockLlm(answer = 'THOUGHT: done\nANSWER: Answer.'): LlmClient {
+  return {
+    callOrchestrator: async () => llmResponse(answer),
+    callWorker: async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated' as const, attempts: 1, durationMs: 0 }),
+  } as unknown as LlmClient;
+}
+
 function makeStrategyCtx(
   provider: ResearchProvider,
-  opts?: { root?: ProviderCallContext; signal?: AbortSignal },
+  opts?: { root?: ProviderCallContext; signal?: AbortSignal; llm?: LlmClient },
 ): StrategyContext {
   const budget = new BudgetTracker({
     depth: 'standard',
@@ -51,6 +73,7 @@ function makeStrategyCtx(
     state,
     budget,
     provider,
+    llm: opts?.llm ?? makeMockLlm(),
     config: makeConfig(),
     runContext: makeRunContext(),
     abortSignal: opts?.signal,
@@ -76,15 +99,36 @@ describe('deadline/trace propagation', () => {
     expect(a.trace.spanId).not.toBe(b.trace.spanId); // new span per strategy phase
   });
 
-  it('PipelineStrategy passes the REAL scheduler deadline/trace to every provider call', async () => {
+  it('AgentStrategy passes the REAL scheduler deadline/trace to every provider call', async () => {
     const root = schedulerCtx();
     const seen: ProviderCallContext[] = [];
     const provider = createMockProvider({
       onSearch: (callCtx) => seen.push(callCtx),
       onRead: (callCtx) => seen.push(callCtx),
     });
-    const strategy = new PipelineStrategy();
-    await strategy.analyze('What is React?', makeStrategyCtx(provider, { root }));
+    const strategy = new AgentStrategy(makeStrategyCtx(provider, { root }));
+    // Plan returns empty perspectives → agent skips to ReAct loop which calls search_web
+    const llm = makeMockLlm(
+      '{"scope":"test","assumptions":[],"perspectives":[],"falsificationQuestions":[]}' + '\n\nTHOUGHT: need to search\nACTION: search_web\nARGUMENTS: {"query":"What is React?"}',
+    );
+    // Second call: answer
+    const llmWithAnswer = {
+      callOrchestrator: (async () => llmResponse('THOUGHT: done\nANSWER: Done.')) as LlmClient['callOrchestrator'],
+      callWorker: async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated' as const, attempts: 1, durationMs: 0 }),
+    } as unknown as LlmClient;
+    let callCount = 0;
+    const multiLlm: LlmClient = {
+      callOrchestrator: async (opts) => {
+        callCount++;
+        if (callCount === 1) return llmResponse('{"scope":"test","assumptions":[],"perspectives":[],"falsificationQuestions":[]}');
+        if (callCount === 2) return llmResponse('THOUGHT: need to search\nACTION: search_web\nARGUMENTS: {"query":"What is React?"}');
+        return llmResponse('THOUGHT: done\nANSWER: Done.');
+      },
+      callWorker: async () => ({ success: false, content: '', tokensUsed: 0, tokensSource: 'estimated' as const, attempts: 1, durationMs: 0 }),
+    } as unknown as LlmClient;
+    const ctx = makeStrategyCtx(provider, { root, llm: multiLlm });
+    const s = new AgentStrategy(ctx);
+    await s.analyze('What is React?', ctx);
 
     expect(seen.length).toBeGreaterThan(0);
     for (const callCtx of seen) {

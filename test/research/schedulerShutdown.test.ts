@@ -12,8 +12,8 @@
  *    construction — only genuinely orphaned (stale) leases are terminated.
  *
  * Production ordering: startRun() persists RUN_QUEUED FIRST, then calls
- * scheduler.enqueue(). Tests match this: construct scheduler, persist
- * RUN_QUEUED, then enqueue.
+ * scheduler.activate(). Tests match this: construct scheduler, persist
+ * RUN_QUEUED, then activate.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -38,7 +38,7 @@ function mkEnvelope(eventType: NewEventInput['eventType'], runId: string, payloa
 function queuedPayload(runId: string) {
   return {
     runId, rootRunId: runId, familyId: 'fam1', query: 'test query',
-    strategy: 'pipeline' as const, depth: 'standard' as const, providerName: 'p1',
+    strategy: 'agent' as const, depth: 'standard' as const, providerName: 'p1',
     requestHash: `hash_${runId}`,
     retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1000, maxBackoffMs: 30000 },
     deadlineAt: new Date(Date.now() + 600_000).toISOString(), attempt: 1, queuedAt: new Date().toISOString(),
@@ -52,7 +52,7 @@ function liveContext() {
 
 /**
  * Persist RUN_QUEUED (and FAMILY_CREATED) — matches production startRun()
- * which appends these events BEFORE calling scheduler.enqueue().
+ * which appends these events BEFORE calling scheduler.activate().
  */
 function appendQueued(runId: string): void {
   appendEvents([
@@ -176,9 +176,9 @@ describe('scheduler graceful shutdown', () => {
     });
     scheduler.start();
 
-    // Production ordering: persist RUN_QUEUED first, then enqueue.
+    // Production ordering: persist RUN_QUEUED first, then activate.
     appendQueued('run-active');
-    await scheduler.enqueue(enqueued('run-active'));
+    await scheduler.activate(enqueued('run-active'));
 
     // Wait until the run is RUNNING before shutting down.
     await waitFor(() => queryEvents({ runId: 'run-active', eventType: 'RUN_RUNNING' }).length > 0, 'run never reached RUNNING');
@@ -230,7 +230,7 @@ describe('scheduler graceful shutdown', () => {
     const scheduler = new JobScheduler({ maxConcurrentRuns: 1 }, hangingDeps());
     scheduler.start();
     appendQueued('run-order');
-    await scheduler.enqueue(enqueued('run-order'));
+    await scheduler.activate(enqueued('run-order'));
     await waitFor(() => queryEvents({ runId: 'run-order', eventType: 'RUN_RUNNING' }).length > 0, 'run never reached RUNNING');
 
     await scheduler.shutdown();
@@ -254,7 +254,7 @@ describe('scheduler terminal-event exclusivity (shutdown/deadline/cancel race)',
     scheduler.start();
     const deadlineAt = new Date(Date.now() + 200).toISOString();
     appendQueued('run-race-deadline');
-    await scheduler.enqueue({ ...enqueued('run-race-deadline'), deadlineAt });
+    await scheduler.activate({ ...enqueued('run-race-deadline'), deadlineAt });
     await waitFor(() => queryEvents({ runId: 'run-race-deadline', eventType: 'RUN_RUNNING' }).length > 0, 'run never reached RUNNING');
     // Wait for the internal deadline timer to fire.
     await waitFor(() => Date.now() >= Date.parse(deadlineAt) + 50, 'deadline never became due', 1000);
@@ -269,7 +269,7 @@ describe('scheduler terminal-event exclusivity (shutdown/deadline/cancel race)',
     const scheduler = new JobScheduler({ maxConcurrentRuns: 1 }, hangingDeps());
     scheduler.start();
     appendQueued('run-race-cancel');
-    await scheduler.enqueue(enqueued('run-race-cancel'));
+    await scheduler.activate(enqueued('run-race-cancel'));
     await waitFor(() => queryEvents({ runId: 'run-race-cancel', eventType: 'RUN_RUNNING' }).length > 0, 'run never reached RUNNING');
 
     // Same synchronous tick: cancel claims first; shutdown's claim must lose.
@@ -287,7 +287,7 @@ describe('scheduler terminal-event exclusivity (shutdown/deadline/cancel race)',
     scheduler.start();
     const deadlineAt = new Date(Date.now() + 200).toISOString();
     appendQueued('run-race-late-cancel');
-    await scheduler.enqueue({ ...enqueued('run-race-late-cancel'), deadlineAt });
+    await scheduler.activate({ ...enqueued('run-race-late-cancel'), deadlineAt });
     await waitFor(() => queryEvents({ runId: 'run-race-late-cancel', eventType: 'RUN_RUNNING' }).length > 0, 'run never reached RUNNING');
     await waitFor(() => Date.now() >= Date.parse(deadlineAt) + 50, 'deadline never became due', 1000);
     // The deadline terminal has fired (or is firing); cancel must not add a second terminal event.
