@@ -121,11 +121,17 @@ Each container should run one Trellis process.  Do not launch two containers aga
 | `/v1/research/runs/:id` | GET | Run status. |
 | `/v1/research/runs/:id/history` | GET | Full lifecycle event history for a run. |
 | `/v1/research/runs/:id/events` | GET | SSE stream of run lifecycle events. |
-| `/v1/research/runs/:id/cancel` \| `/v1/research/runs/:id/retry` | POST | Cancel or retry a run. |
-| `/v1/research/families/:id/continue` | POST | Continue research on an existing family. |
-| `/v1/knowledge/status` | GET | Knowledge read-model status. |
-| `/v1/claims`, `/v1/claims/:id` (+ `/observations`, `/evidence`, `/relations`) | GET | Knowledge graph claim queries. |
-| `/v1/sources`, `/v1/sources/:id` | GET | Source records. |
+| `/v1/research/runs/:id/cancel` | POST | Cancel a run. |
+| `/v1/research/runs/:id/retry` | POST | Retry a failed run. Accepts `idempotencyKey` and `deadlineMs`. |
+| `/v1/research/families/:id/continue` | POST | Continue research on an existing family. Accepts `depth` and `idempotencyKey`. |
+| `/v1/knowledge/status` | GET | Knowledge read-model status (version, lastAppliedSeq, ready/dirty). |
+| `/v1/claims` | GET | List claims. Query params: `familyId`, `threadId`, `epistemicStatus`, `contradictionState`, `q`, `cursor`, `limit`. |
+| `/v1/claims/:id` | GET | Single claim by ID. |
+| `/v1/claims/:id/observations` | GET | Observation history for a claim. |
+| `/v1/claims/:id/evidence` | GET | Evidence linked to a claim. Query params: `stance`, `cursor`, `limit`. |
+| `/v1/claims/:id/relations` | GET | Claim relations (from/to/either). Query params: `direction`, `relation`, `cursor`, `limit`. |
+| `/v1/sources` | GET | List sources. Query params: `q`, `domain`, `sourceType`, `extractionStatus`, `cursor`, `limit`. |
+| `/v1/sources/:id` | GET | Single source by ID. |
 
 ### Loopback-Only Trust Boundary
 
@@ -169,6 +175,36 @@ The Trellis version string (`0.1.0` and onwards) is defined in `package.json` an
 | DB location | `~/.cache/trellis/trellis.db` | `/data/trellis.db` (volume mount) |
 | Permissions | Current user | `node` user (UID 1000) |
 | Network access | Direct | Requires `--network host` for HTTP |
+
+---
+
+## CLI Commands
+
+All commands accept `--db <path>`, `--json`, and `--help/-h` as global flags.
+
+| Command | Description |
+|---|---|
+| `trellis run <query>` | Start a research run, wait until terminal |
+| `trellis search <query> [--kind claims\|sources\|all] [--limit N]` | Full-text search over claims/sources |
+| `trellis claim <id> [--observations] [--evidence] [--relations]` | Show a claim with optional children |
+| `trellis source <id>` | Show a source |
+| `trellis runs [--status <s>] [--family <id>] [--limit N]` | List research runs |
+| `trellis watch <run-id> [--timeout ms]` | Follow a run's lifecycle events until terminal |
+| `trellis merge <source> <survivor>` | Merge source claim into survivor claim (curation) |
+| `trellis split <source> --input <file>` | Split a claim per a partition plan JSON file |
+| `trellis retract <target-id> --kind claim\|observation` | Retract or restore a claim/observation |
+| `trellis curate-relation add \| remove` | Add or remove a curated claim relation |
+| `trellis override-stance <evidence-id> supports\|opposes` | Override an evidence record's stance |
+| `trellis doctor [--provider]` | Read-only diagnostics |
+| `trellis verify` | Strict full-scan event-store + read-model verification |
+| `trellis migrate` | Apply pending migrations (idempotent) |
+| `trellis rebuild read-model` | Rebuild derived state |
+| `trellis serve [--port N]` | Start the loopback HTTP server |
+| `trellis backup <bundle-directory>` | Snapshot the event store into a verifiable bundle |
+| `trellis export <events.jsonl>` | Export the event log as newline-delimited JSON |
+| `trellis restore <bundle-directory> [--replace]` | Restore the event store from a verifiable bundle |
+
+Curation commands (`merge`, `split`, `retract`, `curate-relation`, `override-stance`) require `--reason`, `--actor`, and `--seq` flags for idempotency and provenance.
 
 ---
 

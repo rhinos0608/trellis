@@ -51,14 +51,17 @@ interface CanonicalEntity {
   firstSeenRunId: string;
   lastUpdatedRunId: string;
   metadata: Record<string, unknown>;
-  releaseMeta?: { owner?: string; ecosystem?: string; packageName?: string; repo?: string; version?: string; releaseDate?: string };
+  releaseMeta?: { owner?: string; ecosystem?: string; packageName?: string; repo?: string; version?: string; releaseDate?: string; entityType?: ReleaseEntityType };
 }
 
 // ── Claim (was StructuredClaim + Finding + ResearchClaim, unified) ─────────
-interface Claim {
-  id: string; // ULID — independent identity, never derived from subject/object
-  familyId: string;
-  threadId?: string;
+//
+// Three-layer model:
+//   ClaimAssertion  — the semantic content of one observation (subject/predicate/object/polarity/etc.)
+//   ClaimObservation extends ClaimAssertion — one observed instance of a claim in a specific run
+//   Claim extends ClaimAssertion — the durable claim entity, accumulating observations over runs
+//
+interface ClaimAssertion {
   subjectEntityId?: string;   // FK -> CanonicalEntity when resolved
   subjectText: string;
   predicate: string;
@@ -67,17 +70,38 @@ interface Claim {
   quantifier?: CanonicalQuantifier;       // reuse research shape as-is
   polarity: ClaimPolarity;                // 'asserted'|'negated'|'conditional'
   hedge: ClaimHedge;                      // 'certain'|'likely'|'possible'|'speculative'
-  epistemicStatus?: EpistemicStatus;      // 'consensus'|'contested'|'emerging'|'speculative'|'unknown'
   evidenceType: ClaimEvidenceType;        // 'study'|'benchmark'|'claim'|'opinion'|'anecdote'
-  temporalScope?: TemporalClaim;          // reuse as-is
-  confidence: number;
+  temporalScope?: TemporalScope;          // reuse as-is
   authorityClass?: AuthorityClass;
   authorityRequirement?: ClaimAuthorityRequirement;
-  supportLevel?: 'primary' | 'secondary' | 'weak' | 'conflicting';
+  supportLevel?: SupportLevel;
   canonicalKey: NormalizedClaimKey;       // dedup/clustering key
+}
+
+interface ClaimObservation extends ClaimAssertion {
+  id: string; familyId: string; threadId?: string; runId: string; observedAt: string;
+  confidence: number; sourceIds: string[]; extractionVersion: string;
+  curationStatus?: 'active' | 'retracted';
+  lastCuration?: CurationMark;
+}
+
+interface Claim extends ClaimAssertion {
+  id: string; // ULID — independent identity, never derived from subject/predicate/object
+  familyId: string;
+  threadId?: string;
+  currentObservationId?: string;
+  confidence: number;
+  epistemicStatus?: EpistemicStatus;      // 'consensus'|'contested'|'emerging'|'speculative'|'unknown'
   contradictionState: 'none' | 'contested' | 'resolved';
-  firstSeenRunId: string;
-  lastSeenRunId: string;
+  firstSeenRunId: string; firstSeenAt?: string;
+  lastSeenRunId: string; lastSeenAt?: string;
+  observationIds?: string[]; evidenceIds?: string[]; observationCount?: number;
+  supportingEvidenceCount?: number; opposingEvidenceCount?: number;
+  confidenceHistory?: ClaimConfidencePoint[]; revisionHistory?: ClaimRevision[];
+  curationStatus?: 'active' | 'retracted' | 'merged' | 'split';
+  mergedIntoClaimId?: string;
+  splitIntoClaimIds?: string[];
+  lastCuration?: CurationMark;
 }
 
 // ── Evidence: Source -> Claim link (was EvidenceItem) ──────────────────────
@@ -85,6 +109,8 @@ interface Evidence {
   id: string; // ULID
   claimId: string;
   sourceId: string;           // mandatory — this is the provenance fix for #4
+  observationId?: string;     // links to the specific ClaimObservation this evidence supports/opposes
+  stance?: 'supports' | 'opposes' | 'context';
   excerpt?: string;
   alignment?: EvidenceAlignment; // reuse as-is: score/method/matchedTerms/semanticScore/snippet
   runId: string;
@@ -121,22 +147,23 @@ interface Contradiction {
 interface Source {
   id: string;
   url: string;
-  canonicalUrl?: string;
+  canonicalUrl: string;       // mandatory — canonicalized on ingestion
   title?: string;
   domain: string;
   sourceType: SourceType;      // reuse research's richer enum
   authorityClass?: AuthorityClass;
-  authorityScore?: number;
   qualityScore?: number;
   isPrimary: boolean;
   extractionStatus: ExtractionStatus;
   usageStatus?: SourceUsageStatus;
   discardReason?: DiscardReason;
-  contentHash: string;
-  rawHash?: string;
+  contentHash?: string;
   retrievedAt: string;
   publishedAt?: string;
   firstSeenRunId: string;
+  lastSeenRunId: string;      // tracks cross-run source reuse
+  lastSeenAt: string;
+  runCount: number;
 }
 
 // ── Family: research workspace (was thin KgFamily) ──────────────────────────
@@ -151,6 +178,16 @@ interface Family {
 }
 // runs/threads/claims/evidence/sources/gaps/contradictions/timeline are QUERIES
 // scoped by familyId against the tables above, not columns on Family itself.
+
+// ── Supporting types for Claim lifecycle ──────────────────────────────────
+interface CurationMark {
+  commandId: string; actorId: string; reason: string; at: string;
+}
+interface ClaimConfidencePoint { observationId: string; runId: string; observedAt: string; confidence: number; }
+interface ClaimRevision {
+  revision: number; classification: 'supersedes'; fromObservationId: string; toObservationId: string;
+  runId: string; revisedAt: string; before: ClaimAssertion; after: ClaimAssertion; rationale: string;
+}
 
 interface Thread {
   id: string;
@@ -177,48 +214,47 @@ interface Gap {
   resolvedRunId?: string;
 }
 
-// ── ResearchRun (was KgRun + jobManager's InternalJob, merged) ─────────────
-interface ResearchRun {
-  runId: string;
-  familyId: string;             // resolved BEFORE execution (invariant #7)
-  threadId?: string;
-  sessionId?: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'rolled_back';
-  query: string;
-  topic?: string;
-  strategy: string;             // agent|pipeline|tree
-  startedAt: string;
-  completedAt?: string;
-  failedAt?: string;
-  cancelledAt?: string;
-  lastError?: string;
-  progress: { phase: string; percent?: number; message?: string };
-  entityCount?: number; claimCount?: number; sourceCount?: number; evidenceCount?: number;
-  artifactPaths?: string[];     // full report/narrative, non-authoritative
-  idempotencyKey?: string;
-}
+// ── ResearchRun — exposed as RunSummaryDto, not a standalone projection ──
+// Runs are tracked via lifecycle events (RUN_QUEUED, RUN_STARTING, RUN_RUNNING,
+// RUN_COMPLETED, RUN_FAILED, RUN_CANCELLED, RUN_INTERRUPTED, RUN_ROLLED_BACK)
+// and projected into an in-memory RunSummaryDto for query. There is no
+// persistent rm_runs table — the event log IS the durable run state.
+//
+// RunSummaryDto (src/app/types.ts) carries:
+//   runId, familyId, status, query, progress?, startedAt?, completedAt?,
+//   failedAt?, cancelledAt?, lastError?, entityCount?, claimCount?,
+//   sourceCount?, evidenceCount?, strategy?
 ```
 
 Entity↔family membership stays a many-to-many table shaped like today's `kg_node_families` (already correct — no change needed).
 
 ## 4. Event vocabulary
 
-Extend `KgEventType` rather than replace it — keep all 23 existing types (they're well-designed), add:
+Extend `KgEventType` rather than replace it — keep all 26 legacy types (they're well-designed), add:
 
 | New event | Rollback class | Commit point |
 |---|---|---|
-| `FAMILY_RESOLVED` | `audit_only` | FamilyResolver picks/creates a family for an explicit run, before orchestration starts |
-| `THREAD_CREATED` / `THREAD_RESOLVED` | `pure_run_local` / `audit_only` | Thread assignment for a run |
+| `FAMILY_RESOLVED` | `pure_run_local` | FamilyResolver picks/creates a family for an explicit run, before orchestration starts |
+| `THREAD_CREATED` / `THREAD_RESOLVED` | `pure_run_local` / `pure_run_local` | Thread assignment for a run |
 | `SOURCE_READ` | `pure_run_local` | Distinguish "discovered" (existing `SOURCE_ADDED`) from "actually fetched/read" |
+| `SOURCE_OBSERVED` | `pure_run_local` | Full source observation snapshot (content-hash based change detection across runs) |
 | `CLAIM_ACCEPTED` | **`pure_run_local`** (fixes the current `CLAIM_EXTRACTED` audit-only gap — verified at `projection-state.ts:35,54`) | A claim survives pruning/dedup and is committed |
+| `CLAIM_OBSERVED` | `pure_run_local` | Per-observation claim sighting with confidence and extraction version |
 | `EVIDENCE_LINKED` | `pure_run_local` | Source↔claim link recorded |
 | `CONTRADICTION_IDENTIFIED` | `pure_run_local` | Replaces generic `CONTRADICTION_FLAGGED` for the new `Contradiction` shape |
 | `CONTRADICTION_RESOLVED` | `cross_run_mutation` | Resolution can reference claims from other runs |
 | `GAP_OPENED` / `GAP_RESOLVED` | `pure_run_local` / `cross_run_mutation` | Gap lifecycle |
 | `SYNTHESIS_COMPLETED` | `audit_only` | Marks narrative-view generation, not a state mutation |
-| `RUN_CANCELLED` | `audit_only` | Explicit cancel (today only has `RUN_FAILED`) |
+| `RUN_CANCELLED` / `RUN_INTERRUPTED` | `audit_only` / `audit_only` | Explicit cancel vs process-shutdown interruption |
+| `RUN_QUEUED` / `RUN_STARTING` / `RUN_RUNNING` / `RUN_PROGRESS` / `RUN_HEARTBEAT` | `audit_only` | Run lifecycle progression (all audit-only — state is derived, not authoritative) |
+| `RUN_CANCELLATION_REQUESTED` | `audit_only` | Operator or scheduler signals cancellation intent |
+| `RESEARCH_PLAN_CREATED` / `RESEARCH_PLAN_REVISED` | `pure_run_local` | Agent strategy plan lifecycle |
+| `CLAIM_MERGED` / `CLAIM_SPLIT` / `CLAIM_RETRACTION_SET` | `cross_run_mutation` | Operator curation — embeds before/after snapshots for compensation |
+| `CLAIM_RELATION_CURATED` / `EVIDENCE_STANCE_OVERRIDDEN` | `cross_run_mutation` | Operator curation of relations and evidence stance |
 
 Do not emit an event per intermediate research-state mutation (worker thoughts, retries, scoring passes) — only at the commit points above, per the user's explicit "avoid excessive event chatter" instruction.
+
+**Curation events** (Phase 9 Stage 1) carry a `CurationContext` block (`commandId`, `reason`, `expectedSeq`) for idempotency and optimistic concurrency. They are all `cross_run_mutation` — their payloads embed full before/after snapshots so the rollback executor can synthesize compensation. See `src/store/eventTypes.ts` for payload definitions.
 
 ## 5. Acquisition provider interface
 
@@ -227,6 +263,13 @@ Adopted from recon with the boundary question resolved first: **confirmed resear
 8 normalized capabilities (down from 30+ search-mcp tools — see recon for the full per-symbol import inventory):
 
 ```typescript
+interface ProviderCallContext {
+  signal: AbortSignal;
+  runId: string;
+  deadlineAt: number;  // Absolute Unix epoch deadline in milliseconds
+  trace: ProviderTraceMetadata;
+}
+
 interface ResearchCapabilities {
   search: boolean; read: boolean; academic: boolean; code: boolean;
   community: { reddit: boolean; hackernews: boolean; stackoverflow: boolean };
@@ -235,23 +278,25 @@ interface ResearchCapabilities {
 }
 
 interface ResearchProvider {
+  readonly name: string;
   readonly capabilities: ResearchCapabilities;
-  search(query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
-  read(url: string): Promise<ReadResult>;
-  crawl(url: string, opts?: { maxPages?: number }): Promise<CrawlResult[]>;
-  academic(query: string, opts?: AcademicOpts): Promise<ResearchHit[]>;
-  github(query: string, opts?: SearchOpts): Promise<GitHubHit[]>;
-  reddit(query: string, opts?: CommunityOpts): Promise<RedditHit[]>;
-  redditThread(url: string, opts?: { limit?: number }): Promise<RedditThread>;
-  hackernews?(query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
-  stackoverflow?(query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
-  youtube(query: string, opts?: MediaOpts): Promise<YouTubeHit[]>;
-  youtubeTranscript(videoId: string, language?: string): Promise<TranscriptSegment[]>;
-  wikipedia?(query: string, opts?: { language?: string }): Promise<ResearchHit[]>;
-  semanticSearch?(query: string, opts: SemanticOpts): Promise<SemanticResult>;
-  semanticCrawl?(url: string, query: string, opts?: SemanticOpts): Promise<SemanticResult>;
-  semanticCode?(query: string, opts: SemanticCodeOpts): Promise<SemanticCodeResult>;
-  browser?: { open(opts?): Promise<string>; extract(sessionId, url, plan): Promise<...>; close(sessionId): Promise<void> };
+  search(ctx: ProviderCallContext, query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
+  read(ctx: ProviderCallContext, url: string): Promise<ReadResult>;
+  crawl(ctx: ProviderCallContext, url: string, opts?: { maxPages?: number }): Promise<CrawlResult[]>;
+  academic(ctx: ProviderCallContext, query: string, opts?: AcademicOpts): Promise<ResearchHit[]>;
+  github?(ctx: ProviderCallContext, query: string, opts?: SearchOpts): Promise<GitHubHit[]>;
+  reddit?(ctx: ProviderCallContext, query: string, opts?: CommunityOpts): Promise<RedditHit[]>;
+  redditThread?(ctx: ProviderCallContext, url: string, opts?: { limit?: number }): Promise<RedditThread>;
+  hackernews?(ctx: ProviderCallContext, query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
+  stackoverflow?(ctx: ProviderCallContext, query: string, opts?: SearchOpts): Promise<ResearchHit[]>;
+  youtube?(ctx: ProviderCallContext, query: string, opts?: MediaOpts): Promise<YouTubeHit[]>;
+  youtubeTranscript?(ctx: ProviderCallContext, videoId: string, language?: string): Promise<TranscriptSegment[]>;
+  wikipedia?(ctx: ProviderCallContext, query: string, opts?: { language?: string }): Promise<ResearchHit[]>;
+  semanticSearch?(ctx: ProviderCallContext, query: string, opts: SemanticOpts): Promise<SemanticResult>;
+  semanticCrawl?(ctx: ProviderCallContext, url: string, query: string, opts?: SemanticOpts): Promise<SemanticResult>;
+  semanticCode?(ctx: ProviderCallContext, query: string, opts: SemanticCodeOpts): Promise<SemanticCodeResult>;
+  browser?: { open(ctx: ProviderCallContext, opts?): Promise<string>; extract(ctx, sessionId, url, plan): Promise<...>; close(ctx, sessionId): Promise<void> };
+  close?(): Promise<void>;
 }
 ```
 
@@ -264,16 +309,27 @@ All return types are plain JSON-serializable objects — no class instances or s
 ```
 trellis/
 ├── src/
-│   ├── research/        # orchestrator, strategies, phases, workers, state, gaps, audit, jobs
-│   ├── workspace/        # families, threads, resolver, timeline
-│   ├── graph/             # entities, claims, evidence, contradictions, queries
-│   ├── store/              # events, projections, checkpoints, rollback, migrations
-│   ├── providers/          # types.ts (ResearchProvider), search-mcp/ (adapter)
-│   ├── mcp/                 # research.*/knowledge.* tool surface
-│   └── config/
+│   ├── app/               # application services (researchService, curationService, DTOs)
+│   ├── cli/               # operator CLI (run, search, claim, curation, backup/restore/export)
+│   ├── config/            # env-based configuration loader
+│   ├── evaluation/        # reconciliation corpus, fixtures, eval harness
+│   ├── graph/             # entities, claims, evidence, contradictions, epistemics, queries
+│   ├── http/              # loopback HTTP server (healthz/readyz, research + knowledge REST)
+│   ├── logger.ts          # pino structured logger with redaction
+│   ├── mcp/               # research/knowledge MCP tool surface
+│   ├── providers/         # types.ts (ResearchProvider), search-mcp/ (adapter)
+│   ├── query/             # knowledge query service, longitudinal views, cursor pagination
+│   ├── research/          # orchestrator, strategies, phases, workers, state, gaps, audit
+│   ├── store/             # events, projections, checkpoints, rollback, migrations, read model
+│   ├── version.ts         # single version source from package.json
+│   └── workspace/         # families, threads, resolver, timeline
+├── scripts/               # benchmark harnesses, eval runners
 ├── test/
 └── docs/
-    └── ARCHITECTURE.md   # this file
+    ├── ARCHITECTURE.md   # this file
+    ├── CONFIGURATION.md  # env vars, Docker, HTTP endpoints
+    ├── EQUIVALENCE_NOTES.md # Trellis vs search-mcp capability mapping
+    └── research-roadmap.md  # post-audit evolution priorities
 ```
 
 ## 7. Module migration map (source: search-mcp recon)
@@ -284,9 +340,9 @@ Full per-file classification (portable-core / search-coupling / utility-coupling
 
 **KG side** (28 files): 24 portable-core (all of `store/**` except db/schema which are portable-as-is too, `extractor/schemas.ts`, `extractor/versions/v1.ts`, `families/index.ts`). 4 files have search-mcp coupling: `hook.ts` (SearchConfig + ResearchResult + contentScrubber), `extractor/canonicalise.ts` + `families/classifier.ts` + `families/consolidation.ts` (all need `embedTexts` from `rag/embedding.js` — shim as a provider). `extractor/normalise.ts` (hardcoded search-mcp tool-name mappings) is obsolete — Trellis needs its own ingestion adapters. `tools/families/knowledgeGraph.ts` (MCP tool surface) stays in search-mcp's tree until deleted per the cleanup phase.
 
-## 8. Open decisions — need explicit confirmation before implementation
+## 8. Decisions — resolved
 
-1. **Repo location**: proposing `/Users/rhinesharar/trellis` (sibling to `search-mcp`, matches existing convention). This doc is already there.
-2. **Rollback compensation**: keep advisory-only for `cross_run_mutation` events (matches current search-mcp behavior — safer default, no auto-executed un-merges). Flagging per the user's "Do not silently improvise around material discrepancies" instruction rather than deciding unilaterally.
-3. **search-mcp adapter for v1**: in-process (`SearchMcpProvider` wraps `createResearchTools()` directly, ~200 LOC, per user's explicit interim carve-out), swappable for an out-of-process MCP-client adapter later with zero research-core changes. This is a low-risk engineering call, stated here rather than asked, since recon proves the swap is clean either way.
-4. **Proceed to parallel implementation (Workers 1-9)** on this model, or want changes to §3/§4 first?
+1. **Repo location**: `/Users/rhinesharar/trellis` — confirmed.
+2. **Rollback compensation**: advisory-only for `cross_run_mutation` events, with executable compensation where snapshots are available. Curation events (Phase 9) carry full before/after snapshots enabling the rollback executor to synthesize compensation. Later-run interference detection blocks unsafe rollback (see `src/store/rollback.ts`).
+3. **search-mcp adapter for v1**: in-process `SearchMcpProvider` wrapping `createResearchTools()` via stdio child process (`src/providers/searchMcp/`). Swappable for out-of-process MCP-client adapter later with zero research-core changes.
+4. **Implementation complete** — all 9 worker scopes delivered. Remaining gaps are tracked in `docs/research-roadmap.md`.
