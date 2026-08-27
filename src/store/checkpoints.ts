@@ -81,6 +81,22 @@ export function computeProjectionChecksum(state: ProjectionState): string {
   return `sha256:projection-v${String(PROJECTION_CHECKSUM_VERSION)}:${digest}`;
 }
 
+export const CHECKPOINT_RETENTION = 3;
+
+const DEDUP_CHECK_SQL = `
+  SELECT event_cursor, checksum FROM projection_checkpoints
+  WHERE compatible = 1 AND projection_version = @projectionVersion
+  ORDER BY event_cursor DESC, created_at DESC, id DESC
+  LIMIT 1
+`;
+
+const RETAIN_IDS_SQL = `
+  SELECT id FROM projection_checkpoints
+  WHERE compatible = 1 AND projection_version = @projectionVersion
+  ORDER BY event_cursor DESC, created_at DESC, id DESC
+  LIMIT @retention
+`;
+
 export function createCheckpoint(
   eventCursor: EventCursor,
   eventCount: number,
@@ -95,21 +111,46 @@ export function createCheckpoint(
   }
 
   try {
-    const now = new Date().toISOString();
-    const row = {
-      id: `${now}-${crypto.randomUUID().slice(0, 8)}`,
-      createdAt: now,
-      eventCursor,
+    // Skip if latest compatible checkpoint already has same cursor + checksum.
+    const latest = db.prepare(DEDUP_CHECK_SQL).get({
       projectionVersion: CURRENT_PROJECTION_VERSION,
-      schemaVersion: SCHEMA_VERSION,
-      eventCount,
-      checksum,
-      compatible: 1,
-      snapshotJson: snapshotJson ?? null,
-      rolledBackRunIds: rolledBackRunIds !== undefined ? JSON.stringify(rolledBackRunIds) : null,
-    };
+    }) as { event_cursor: number; checksum: string } | undefined;
+    if (latest !== undefined && latest.event_cursor === eventCursor && latest.checksum === checksum) {
+      return null;
+    }
 
-    db.prepare(INSERT_CHECKPOINT_SQL).run(row);
+    const insert = db.transaction(() => {
+      const now = new Date().toISOString();
+      const row = {
+        id: `${now}-${crypto.randomUUID().slice(0, 8)}`,
+        createdAt: now,
+        eventCursor,
+        projectionVersion: CURRENT_PROJECTION_VERSION,
+        schemaVersion: SCHEMA_VERSION,
+        eventCount,
+        checksum,
+        compatible: 1,
+        snapshotJson: snapshotJson ?? null,
+        rolledBackRunIds: rolledBackRunIds !== undefined ? JSON.stringify(rolledBackRunIds) : null,
+      };
+
+      db.prepare(INSERT_CHECKPOINT_SQL).run(row);
+
+      // Retain only the newest N compatible checkpoints; delete the rest.
+      const retainRows = db.prepare(RETAIN_IDS_SQL).all({
+        projectionVersion: CURRENT_PROJECTION_VERSION,
+        retention: CHECKPOINT_RETENTION,
+      }) as { id: string }[];
+      if (retainRows.length > 0) {
+        const ids = retainRows.map((r) => r.id);
+        const placeholders = ids.map(() => '?').join(',');
+        db.prepare(`DELETE FROM projection_checkpoints WHERE id NOT IN (${placeholders})`).run(...ids);
+      }
+
+      return row;
+    });
+
+    const row = insert();
 
     const cp: ProjectionCheckpoint = {
       id: row.id,

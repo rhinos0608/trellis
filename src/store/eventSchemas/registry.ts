@@ -77,6 +77,8 @@ import {
   upcastRunFailed, upcastRunCancelled,
   projectionRebuiltPayload,
   synthesisCompletedPayload,
+  researchPlanCreatedPayload,
+  researchPlanRevisedPayload,
 } from './research.js';
 
 // ── Schemas — legacy ──────────────────────────────────────────────────
@@ -146,6 +148,8 @@ export const EVENT_CODECS = {
   RUN_ROLLED_BACK: v1(runRolledBackPayload),
   PROJECTION_REBUILT: v1(projectionRebuiltPayload),
   SYNTHESIS_COMPLETED: v1(synthesisCompletedPayload),
+  RESEARCH_PLAN_CREATED: v1(researchPlanCreatedPayload),
+  RESEARCH_PLAN_REVISED: v1(researchPlanRevisedPayload),
   RUN_QUEUED: v1(runQueuedPayload),
   RUN_STARTING: v1(runStartingPayload),
   RUN_RUNNING: v1(runRunningPayload),

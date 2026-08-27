@@ -272,6 +272,25 @@ export function queryEvents(opts: QueryEventsOpts = {}): EventEnvelope[] {
   }
 }
 
+// ── Indexed evidence-by-claim query ────────────────────────────────
+
+/**
+ * Query EVIDENCE_LINKED events for a specific claim via rm_evidence join.
+ * O(claim_evidence_count) instead of O(total_evidence_history).
+ * Uses idx_rm_evidence_claim + idx_events_entity_seq.
+ */
+export function queryEvidenceLinkedEventsByClaimId(claimId: string): EventEnvelope[] {
+  const db = getDb();
+  if (db === null) return [];
+  const rows = db.prepare(`
+    SELECT e.* FROM events e
+    JOIN rm_evidence r ON r.id = e.entity_id
+    WHERE r.claim_id = @claimId
+    ORDER BY e.seq ASC
+  `).all({ claimId }) as EventRow[];
+  return rows.map(rowToEnvelope);
+}
+
 // ── Utilities ───────────────────────────────────────────────────────
 
 export function getLatestEventCursor(): EventCursor | null {

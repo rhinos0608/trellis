@@ -94,7 +94,9 @@ export type NewTrellisEventType =
   | 'CLAIM_SPLIT'
   | 'CLAIM_RETRACTION_SET'
   | 'CLAIM_RELATION_CURATED'
-  | 'EVIDENCE_STANCE_OVERRIDDEN';
+  | 'EVIDENCE_STANCE_OVERRIDDEN'
+  | 'RESEARCH_PLAN_CREATED'
+  | 'RESEARCH_PLAN_REVISED';
 
 export type TrellisEventType = LegacyTrellisEventType | NewTrellisEventType;
 
@@ -131,7 +133,7 @@ export const ROLLBACK_CLASS: Record<TrellisEventType, RollbackClass> = {
   FAMILY_MERGED: 'cross_run_mutation',
   RUN_ROLLED_BACK: 'audit_only',
   // new
-  FAMILY_RESOLVED: 'audit_only',
+  FAMILY_RESOLVED: 'pure_run_local',
   THREAD_CREATED: 'pure_run_local',
   THREAD_RESOLVED: 'pure_run_local',
   SOURCE_READ: 'pure_run_local',
@@ -160,6 +162,9 @@ export const ROLLBACK_CLASS: Record<TrellisEventType, RollbackClass> = {
   CLAIM_RETRACTION_SET: 'cross_run_mutation',
   CLAIM_RELATION_CURATED: 'cross_run_mutation',
   EVIDENCE_STANCE_OVERRIDDEN: 'cross_run_mutation',
+  // agent strategy plan lifecycle — run-local, no cross-run mutation
+  RESEARCH_PLAN_CREATED: 'pure_run_local',
+  RESEARCH_PLAN_REVISED: 'pure_run_local',
 };
 
 /** Note: CLAIM_EXTRACTED stays audit_only exactly as it is in search-mcp

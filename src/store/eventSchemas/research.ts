@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const strategy = z.enum(['agent', 'pipeline']);
+const strategy = z.enum(['agent', 'pipeline']); // 'pipeline' is legacy-replay-only, no longer accepted for new run requests
 const depth = z.enum(['quick', 'standard', 'deep', 'exhaustive', 'tree']);
 const retryPolicy = z.strictObject({ maxAttempts: z.number(), autoRetry: z.boolean(), initialBackoffMs: z.number(), maxBackoffMs: z.number() });
 const runError = z.strictObject({ code: z.string(), classification: z.enum(['transient','permanent','deadline_exceeded','budget_exceeded','interrupted','cancelled','internal']), message: z.string().max(500), retryable: z.boolean(), occurredAt: z.string(), provider: z.string().optional() });
@@ -25,6 +25,36 @@ export const runInterruptedPayload = z.strictObject({ runId:z.string(), interrup
 export const runRolledBackPayload = z.strictObject({ run_id: z.string() });
 export const projectionRebuiltPayload = z.json();
 export const synthesisCompletedPayload = z.json();
+
+// ── Agent strategy plan lifecycle ────────────────────────────────────────
+
+const researchPlanPerspective = z.strictObject({
+  name: z.string().max(200),
+  question: z.string().max(1000),
+});
+
+const researchPlan = z.strictObject({
+  scope: z.string().max(2000),
+  assumptions: z.array(z.string().max(500)),
+  perspectives: z.array(researchPlanPerspective),
+  falsificationQuestions: z.array(z.string().max(1000)),
+});
+
+export const researchPlanCreatedPayload = z.strictObject({
+  runId: z.string(),
+  query: z.string(),
+  plan: researchPlan,
+  createdAt: z.string(),
+});
+
+export const researchPlanRevisedPayload = z.strictObject({
+  runId: z.string(),
+  query: z.string(),
+  revisionReason: z.string().max(500),
+  plan: researchPlan,
+  revisedAt: z.string(),
+  revisionNumber: z.number(),
+});
 
 export function upcastRunFailed(payload: unknown): unknown {
   const p = payload as {runId:string; error:string};

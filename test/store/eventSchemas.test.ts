@@ -217,7 +217,7 @@ describe('decodeEventPayload — valid payloads', () => {
   // 8. RUN_STARTED (research — from runService.ts call site)
   it('accepts legacy RUN_QUEUED payload without follow-up metadata', () => {
     const result = decodeEventPayload('RUN_QUEUED', 1, {
-      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'pipeline', depth: 'standard',
+      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'agent', depth: 'standard',
       providerName: 'provider', requestHash: 'hash', retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1, maxBackoffMs: 2 },
       deadlineAt: '2024-01-01T00:00:00Z', attempt: 1, queuedAt: '2024-01-01T00:00:00Z',
     });
@@ -226,7 +226,7 @@ describe('decodeEventPayload — valid payloads', () => {
 
   it('accepts RUN_QUEUED follow-up metadata', () => {
     const result = decodeEventPayload('RUN_QUEUED', 1, {
-      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'pipeline', depth: 'standard',
+      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'agent', depth: 'standard',
       providerName: 'provider', requestHash: 'hash', retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1, maxBackoffMs: 2 },
       deadlineAt: '2024-01-01T00:00:00Z', attempt: 1, queuedAt: '2024-01-01T00:00:00Z',
       followUp: { kind: 'information_gain_v1', targetType: 'gap', targetId: 'g1', sourceRunId: 'source' },
@@ -239,7 +239,7 @@ describe('decodeEventPayload — valid payloads', () => {
       runId: 'run_abc123',
       familyId: 'fam-1',
       query: 'React benchmarks',
-      strategy: 'pipeline',
+      strategy: 'agent',
       topic: 'React',
       threadId: 'thr-1',
       sessionId: 'sess-1',
@@ -348,7 +348,7 @@ describe('decodeEventPayload — valid payloads', () => {
 describe('decodeEventPayload — invalid payloads', () => {
   it('rejects malformed RUN_QUEUED follow-up metadata', () => {
     expect(() => decodeEventPayload('RUN_QUEUED', 1, {
-      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'pipeline', depth: 'standard',
+      runId: 'r1', rootRunId: 'r1', familyId: 'f1', query: 'q', strategy: 'agent', depth: 'standard',
       providerName: 'provider', requestHash: 'hash', retryPolicy: { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1, maxBackoffMs: 2 },
       deadlineAt: '2024-01-01T00:00:00Z', attempt: 1, queuedAt: '2024-01-01T00:00:00Z',
       followUp: { kind: 'wrong', targetType: 'gap', targetId: 'g1', sourceRunId: 'source' },

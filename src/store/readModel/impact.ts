@@ -63,4 +63,5 @@ export const READ_MODEL_IMPACT = {
   CLAIM_RETRACTION_SET: (e, state) => { const x = p(e); const target = x.target as Record<string, unknown> | undefined; if (target?.kind === 'claim') return { dirty: true, claimIds: ids([target.id]), observationIds: ids([...(state.observationsByClaimId.get(String(target.id)) ?? [])]) }; return { dirty: true, observationIds: ids([target?.id]), claimIds: ids([state.observationToClaimId.get(String(target?.id))]) }; },
   CLAIM_RELATION_CURATED: (e) => { const x = p(e); return { dirty: true, relationIds: ids([x.relationId]) }; },
   EVIDENCE_STANCE_OVERRIDDEN: (e) => { const x = p(e); return { dirty: true, evidenceIds: ids([x.evidenceId]), claimIds: ids([x.claimId]) }; },
+  RESEARCH_PLAN_CREATED: none, RESEARCH_PLAN_REVISED: none,
 } satisfies Record<TrellisEventType, ReadModelImpactResolver>;
