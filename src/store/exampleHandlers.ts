@@ -31,12 +31,16 @@ interface RunCompletedPayload {
 
 export function handleRunStarted(event: EventEnvelope, state: ProjectionState): void {
   const p = event.payload as RunStartedPayload;
+  // ponytail: intentionally hardcoded 'agent' — this handler is audit_only
+  // (projectionBuilder skips it). Legacy 'pipeline' replay routes through
+  // foldRunLedger which preserves p.strategy. No production path reads
+  // strategy from this projection.
   const run: import('../research/types.js').ResearchRun = {
     runId: p.runId,
     familyId: p.familyId,
     status: 'running',
     query: p.query,
-    strategy: (p.strategy === 'agent' ? 'agent' : 'agent') as 'agent',
+    strategy: 'agent',
     rootRunId: p.runId,
     attempt: 1,
     depth: 'standard',

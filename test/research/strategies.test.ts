@@ -284,4 +284,141 @@ describe('AgentStrategy', () => {
     const strategy = new AgentStrategy(ctx);
     await expect(strategy.close()).resolves.toBeUndefined();
   });
+
+  // ── Hostile-shape validation tests ──────────────────────────────────
+
+  describe('plan-parsing hostile shapes', () => {
+    it('filters mixed valid/invalid perspectives, keeps only valid ones', async () => {
+      const hostilePlan = JSON.stringify({
+        scope: 'Test scope',
+        assumptions: ['a1'],
+        perspectives: [
+          { name: 'valid', question: 'valid question?' },
+          { missingName: true },           // object missing name
+          { name: 'no-q' },                // object missing question
+          'not an object',                  // non-object
+          42,                               // non-object
+          null,                             // null
+          { name: 'also-valid', question: 'second valid?' },
+        ],
+        falsificationQuestions: ['fq1'],
+      });
+      const persistCalls: { plan: ResearchPlan; kind: string }[] = [];
+      const llm = makeMockLlm([
+        () => llmResponse(hostilePlan),
+        () => llmResponse('THOUGHT: done\nANSWER: answer.'),
+      ]);
+      const ctx = makeAgentStrategyCtx({
+        llm,
+        persistPlan: async (plan, kind) => { persistCalls.push({ plan, kind }); },
+      });
+      const strategy = new AgentStrategy(ctx);
+      await strategy.analyze('Test query', ctx);
+
+      expect(persistCalls).toHaveLength(1);
+      const plan = persistCalls[0]!.plan;
+      expect(plan.perspectives).toHaveLength(2);
+      expect(plan.perspectives[0]!.name).toBe('valid');
+      expect(plan.perspectives[1]!.name).toBe('also-valid');
+    });
+
+    it('returns null plan when all perspectives are invalid', async () => {
+      const hostilePlan = JSON.stringify({
+        scope: 'Test scope',
+        assumptions: [],
+        perspectives: [
+          { notName: 1 },
+          'string',
+          42,
+          null,
+        ],
+        falsificationQuestions: [],
+      });
+      const llm = makeMockLlm([
+        () => llmResponse(hostilePlan),
+        () => llmResponse('THOUGHT: done\nANSWER: answer.'),
+      ]);
+      const ctx = makeAgentStrategyCtx({ llm });
+      const strategy = new AgentStrategy(ctx);
+      const result = await strategy.analyze('Test query', ctx);
+
+      // No plan persisted, no sub-questions set
+      expect(ctx.state.getSubQuestions()).toHaveLength(0);
+      expect(result.report).toBeDefined();
+    });
+
+    it('filters non-string elements in assumptions', async () => {
+      const hostilePlan = JSON.stringify({
+        scope: 'Test scope',
+        assumptions: ['valid assumption', 42, null, { nested: true }, true],
+        perspectives: [
+          { name: 'p1', question: 'q1?' },
+        ],
+        falsificationQuestions: ['fq1'],
+      });
+      const persistCalls: { plan: ResearchPlan; kind: string }[] = [];
+      const llm = makeMockLlm([
+        () => llmResponse(hostilePlan),
+        () => llmResponse('THOUGHT: done\nANSWER: answer.'),
+      ]);
+      const ctx = makeAgentStrategyCtx({
+        llm,
+        persistPlan: async (plan, kind) => { persistCalls.push({ plan, kind }); },
+      });
+      const strategy = new AgentStrategy(ctx);
+      await strategy.analyze('Test query', ctx);
+
+      expect(persistCalls).toHaveLength(1);
+      const plan = persistCalls[0]!.plan;
+      // Only the valid string survived
+      expect(plan.assumptions).toEqual(['valid assumption']);
+    });
+
+    it('filters non-string elements in falsificationQuestions', async () => {
+      const hostilePlan = JSON.stringify({
+        scope: 'Test scope',
+        assumptions: [],
+        perspectives: [
+          { name: 'p1', question: 'q1?' },
+        ],
+        falsificationQuestions: ['valid fq', 123, false, { x: 1 }],
+      });
+      const persistCalls: { plan: ResearchPlan; kind: string }[] = [];
+      const llm = makeMockLlm([
+        () => llmResponse(hostilePlan),
+        () => llmResponse('THOUGHT: done\nANSWER: answer.'),
+      ]);
+      const ctx = makeAgentStrategyCtx({
+        llm,
+        persistPlan: async (plan, kind) => { persistCalls.push({ plan, kind }); },
+      });
+      const strategy = new AgentStrategy(ctx);
+      await strategy.analyze('Test query', ctx);
+
+      expect(persistCalls).toHaveLength(1);
+      const plan = persistCalls[0]!.plan;
+      expect(plan.falsificationQuestions).toEqual(['valid fq']);
+    });
+
+    it('returns null plan when scope is non-string', async () => {
+      const hostilePlan = JSON.stringify({
+        scope: 42,
+        assumptions: [],
+        perspectives: [
+          { name: 'p1', question: 'q1?' },
+        ],
+        falsificationQuestions: [],
+      });
+      const llm = makeMockLlm([
+        () => llmResponse(hostilePlan),
+        () => llmResponse('THOUGHT: done\nANSWER: answer.'),
+      ]);
+      const ctx = makeAgentStrategyCtx({ llm });
+      const strategy = new AgentStrategy(ctx);
+      const result = await strategy.analyze('Test query', ctx);
+
+      expect(ctx.state.getSubQuestions()).toHaveLength(0);
+      expect(result.report).toBeDefined();
+    });
+  });
 });

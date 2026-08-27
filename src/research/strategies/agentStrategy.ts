@@ -542,27 +542,46 @@ Output ONLY the JSON object.`;
 
     if (!resp.success) return null;
 
-    const parsed = parseJsonFromText<ResearchPlan>(resp.content);
-    if (parsed == null || typeof parsed.scope !== 'string' || !Array.isArray(parsed.perspectives) || parsed.perspectives.length === 0) {
+    const raw = parseJsonFromText<unknown>(resp.content);
+    if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+      logger.warn('Agent plan LLM returned invalid structure, proceeding without plan');
+      return null;
+    }
+    const obj = raw as Record<string, unknown>;
+
+    if (
+      typeof obj.scope !== 'string' ||
+      !Array.isArray(obj.perspectives) ||
+      obj.perspectives.length === 0
+    ) {
       logger.warn('Agent plan LLM returned invalid structure, proceeding without plan');
       return null;
     }
 
-    // Validate perspective shape
-    const validPerspectives = parsed.perspectives.filter(
+    // Validate perspective shape — filter out invalid entries rather than coercing
+    const validPerspectives = (obj.perspectives as unknown[]).filter(
       (p): p is { name: string; question: string } =>
-        typeof p === 'object' && p !== null && typeof (p as unknown as Record<string, unknown>).name === 'string' && typeof (p as unknown as Record<string, unknown>).question === 'string',
+        typeof p === 'object' &&
+        p !== null &&
+        typeof (p as Record<string, unknown>).name === 'string' &&
+        typeof (p as Record<string, unknown>).question === 'string',
     );
     if (validPerspectives.length === 0) return null;
 
     return {
-      scope: String(parsed.scope).slice(0, 2000),
-      assumptions: Array.isArray(parsed.assumptions)
-        ? parsed.assumptions.map((a) => String(a).slice(0, 500)).slice(0, 10)
+      scope: obj.scope.slice(0, 2000),
+      assumptions: Array.isArray(obj.assumptions)
+        ? (obj.assumptions as unknown[])
+            .filter((a): a is string => typeof a === 'string')
+            .map((a) => a.slice(0, 500))
+            .slice(0, 10)
         : [],
       perspectives: validPerspectives.slice(0, 8),
-      falsificationQuestions: Array.isArray(parsed.falsificationQuestions)
-        ? parsed.falsificationQuestions.map((f) => String(f).slice(0, 1000)).slice(0, 5)
+      falsificationQuestions: Array.isArray(obj.falsificationQuestions)
+        ? (obj.falsificationQuestions as unknown[])
+            .filter((f): f is string => typeof f === 'string')
+            .map((f) => f.slice(0, 1000))
+            .slice(0, 5)
         : [],
     };
   }

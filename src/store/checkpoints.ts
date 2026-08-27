@@ -115,7 +115,7 @@ export function createCheckpoint(
     const latest = db.prepare(DEDUP_CHECK_SQL).get({
       projectionVersion: CURRENT_PROJECTION_VERSION,
     }) as { event_cursor: number; checksum: string } | undefined;
-    if (latest !== undefined && latest.event_cursor === eventCursor && latest.checksum === checksum) {
+    if (latest?.event_cursor === eventCursor && latest.checksum === checksum) {
       return null;
     }
 

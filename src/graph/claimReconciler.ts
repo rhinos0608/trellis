@@ -235,9 +235,9 @@ function assertionFromClaim({
 }
 
 export interface PlanClaimObservationOptions {
-  /** Seams for future semantic resolution — not implemented yet. */
+  /** Seams for future semantic resolution — blocked on vector-embeddings infrastructure (see docs/research-roadmap.md). */
   semanticCandidates?: (obs: ClaimObservation) => Claim[];
-  /** Seams for future semantic adjudication — not implemented yet. */
+  /** Seams for future semantic adjudication — blocked on vector-embeddings infrastructure (see docs/research-roadmap.md). */
   adjudicate?: (obs: ClaimObservation, candidates: Claim[]) => ClaimReconciliation['classification'] | undefined;
 }
 

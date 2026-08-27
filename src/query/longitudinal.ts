@@ -467,7 +467,7 @@ export function getChanges(
   // than the requested limit to account for filtering, but cap the fetch
   // to prevent unbounded reads.
   const batchSize = opts?.familyId ? Math.max(limit * 5, 200) : limit;
-  let all = qe({ afterSeq: sinceSeq, limit: batchSize });
+  const all = qe({ afterSeq: sinceSeq, limit: batchSize });
 
   // Filter to claim-relevant types
   let relevant = all.filter((ev) => CLAIM_RELEVANT_TYPES.has(ev.eventType));
@@ -605,6 +605,7 @@ export function rankResearchNext(state: ProjectionState, familyId: string): Rank
       targets.push({
         id: contradiction.id,
         type: 'contradiction',
+        // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- intentional || for empty-string fallback
         question: (contradiction.followUpSearchRecommended?.trim() || contradiction.likelyExplanation?.trim() || `Contradiction ${contradiction.id}`),
         status: contradiction.resolutionStatus,
         priority: 2,

@@ -100,7 +100,7 @@ export function segmentSourceContent(
       : rawEnd;
 
     passages.push({
-      id: `passage_${sourceId}_${idx}`,
+      id: `passage_${sourceId}_${String(idx)}`,
       text: content.slice(offset, end),
       startOffset: offset,
       endOffset: end,
@@ -182,8 +182,8 @@ export function selectRelevantPassages(
     if (expanded.size >= MAX_PASSAGES) break;
     const after = idx + 1;
     if (after < segments.length && !expanded.has(after)) {
-      const candidate = segments[after]!;
-      if (totalChars + candidate.text.length <= MAX_TOTAL_CHARS) {
+      const candidate = segments[after];
+      if (candidate !== undefined && totalChars + candidate.text.length <= MAX_TOTAL_CHARS) {
         expanded.add(after);
         totalChars += candidate.text.length;
       }
@@ -191,8 +191,8 @@ export function selectRelevantPassages(
     if (expanded.size >= MAX_PASSAGES) break;
     const before = idx - 1;
     if (before >= 0 && !expanded.has(before)) {
-      const candidate = segments[before]!;
-      if (totalChars + candidate.text.length <= MAX_TOTAL_CHARS) {
+      const candidate = segments[before];
+      if (candidate !== undefined && totalChars + candidate.text.length <= MAX_TOTAL_CHARS) {
         expanded.add(before);
         totalChars += candidate.text.length;
       }
@@ -201,7 +201,8 @@ export function selectRelevantPassages(
 
   // Build result, sorted back into document order
   const result = [...expanded]
-    .map((i) => segments[i]!)
+    .map((i) => segments[i])
+    .filter((s): s is SourcePassage => s !== undefined)
     .sort((a, b) => a.startOffset - b.startOffset);
 
   return result;

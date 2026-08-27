@@ -46,7 +46,7 @@ function drainClaims(
 ): { items: Claim[]; truncated: boolean } {
   const all: Claim[] = [];
   let cursor: string | undefined;
-  while (true) {
+  for (;;) {
     const remaining = maxCount !== undefined ? maxCount - all.length : undefined;
     if (remaining !== undefined && remaining <= 0) break;
     const page = qs.listClaims({ ...opts, limit: Math.min(100, remaining ?? 100), ...(cursor !== undefined ? { cursor } : {}) });
@@ -66,7 +66,7 @@ function drainEvidence(
 ): { items: Evidence[]; truncated: boolean } {
   const all: Evidence[] = [];
   let cursor: string | undefined;
-  while (true) {
+  for (;;) {
     const remaining = maxCount !== undefined ? maxCount - all.length : undefined;
     if (remaining !== undefined && remaining <= 0) break;
     const page = qs.listEvidenceForClaim({ ...opts, limit: Math.min(100, remaining ?? 100), ...(cursor !== undefined ? { cursor } : {}) });

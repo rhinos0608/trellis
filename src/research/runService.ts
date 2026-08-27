@@ -655,7 +655,7 @@ export function createRunService(): RunService {
     // Permanent precondition: every new run requires LLM config (agent is the only strategy).
     // Reject before any events are appended — never fail deep in execution.
     const llmCfgForCheck = input.config.llm;
-    if (!llmCfgForCheck?.baseUrl || !llmCfgForCheck?.model) throw new MissingLlmConfigError();
+    if (!llmCfgForCheck.baseUrl || !llmCfgForCheck.model) throw new MissingLlmConfigError();
 
     // 1. Resolve family from current projection BEFORE starting research
     let projection: ProjectionState;
