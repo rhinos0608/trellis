@@ -109,14 +109,14 @@ export function deriveEpistemicState(
   // ── Confidence ────────────────────────────────────────────────────────
   const confidence = computeConfidence(observations, state, nowMs, activeEvidence);
 
-  // ── Domain independence ───────────────────────────────────────────────
-  const domains = collectDomains(observations, state, activeEvidence);
+  // ── Source independence ───────────────────────────────────────────────
+  const independentSourceKeys = collectIndependentSourceKeys(observations, state, activeEvidence);
 
   // ── Epistemic status ──────────────────────────────────────────────────
   const epistemicStatus = computeEpistemicStatus(
     observations,
     contradictionState,
-    domains,
+    independentSourceKeys,
     activeEvidence,
   );
 
@@ -261,31 +261,59 @@ function resolveFreshness(
   return Math.max(RECENCY_FLOOR, decay);
 }
 
-function collectDomains(
+function collectIndependentSourceKeys(
   observations: ClaimObservation[],
   state: ProjectionState,
   activeEvidence?: Evidence[],
 ): Set<string> {
-  const domains = new Set<string>();
+  const sourceIds = new Set<string>();
   for (const obs of observations) {
-    for (const srcId of obs.sourceIds) {
-      const src = state.sources.get(srcId);
-      if (src?.domain) domains.add(src.domain);
+    for (const srcId of obs.sourceIds) sourceIds.add(srcId);
+  }
+  for (const evidence of activeEvidence ?? []) sourceIds.add(evidence.sourceId);
+
+  const evidenceTextBySource = new Map<string, string>();
+  for (const evidence of activeEvidence ?? []) {
+    if (evidence.excerpt && !evidenceTextBySource.has(evidence.sourceId)) {
+      evidenceTextBySource.set(evidence.sourceId, evidence.excerpt);
     }
   }
-  if (activeEvidence) {
-    for (const e of activeEvidence) {
-      const src = state.sources.get(e.sourceId);
-      if (src?.domain) domains.add(src.domain);
+
+  const parent = new Map<string, string>();
+  const find = (key: string): string => {
+    const current = parent.get(key);
+    if (!current) {
+      parent.set(key, key);
+      return key;
     }
+    if (current === key) return key;
+    const root = find(current);
+    parent.set(key, root);
+    return root;
+  };
+  const union = (left: string, right: string): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parent.set(leftRoot, rightRoot);
+  };
+
+  const domainKeys = new Set<string>();
+  for (const sourceId of sourceIds) {
+    const source = state.sources.get(sourceId);
+    if (!source?.domain) continue;
+    const domainKey = `domain:${source.domain}`;
+    domainKeys.add(domainKey);
+    const content = source.contentHash ?? evidenceTextBySource.get(sourceId);
+    if (content) union(domainKey, `content:${content}`);
   }
-  return domains;
+
+  return new Set([...domainKeys].map(find));
 }
 
 function computeEpistemicStatus(
   observations: ClaimObservation[],
   contradictionState: ClaimContradictionState,
-  domains: Set<string>,
+  independentSourceKeys: Set<string>,
   activeEvidence: Evidence[],
 ): EpistemicStatus {
   // No evidence at all
@@ -297,11 +325,10 @@ function computeEpistemicStatus(
   // Check for authoritative support
   const hasSubstantialEvidence =
     activeEvidence.length > 0 || observations.length >= 2;
-  const multiDomain = domains.size >= 2;
+  const multipleIndependentSources = independentSourceKeys.size >= 2;
 
-  // Cross-domain corroboration heuristic — not true source independence;
-  // multiple sites citing the same press release still count as separate domains.
-  if (observations.length >= 2 && multiDomain) {
+  // Cross-domain corroboration heuristic; exact duplicate content counts once.
+  if (observations.length >= 2 && multipleIndependentSources) {
     return 'consensus';
   }
 

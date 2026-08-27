@@ -65,12 +65,14 @@ function makeEvidence(
   claimId: string,
   sourceId: string,
   stance: Evidence['stance'] = 'supports',
+  excerpt?: string,
 ): Evidence {
   return {
     id,
     claimId,
     sourceId,
     stance,
+    ...(excerpt === undefined ? {} : { excerpt }),
     runId: 'run-1',
   };
 }
@@ -154,6 +156,37 @@ describe('deriveEpistemicState', () => {
     expect(result.contradictionState).toBe('none');
     expect(result.supportLevel).toBe('primary');
     expect(result.confidence).toBeGreaterThan(0.7);
+  });
+
+  it('not consensus — identical evidence text across 2 domains counts as one source', () => {
+    const src1 = makeSource('s1', 'wire.example.com', 'news');
+    const src2 = makeSource('s2', 'local.example.com', 'news');
+    const obs1 = makeObservation('o1', 'f1', ['s1'], 0.8, 'study');
+    const obs2 = makeObservation('o2', 'f1', ['s2'], 0.8, 'study');
+    const excerpt = 'Identical syndicated evidence text.';
+    const ev1 = makeEvidence('e1', 'c1', 's1', 'supports', excerpt);
+    const ev2 = makeEvidence('e2', 'c1', 's2', 'supports', excerpt);
+    const claim = makeClaim('c1', 'f1', ['o1', 'o2'], ['e1', 'e2']);
+    const state = buildState([src1, src2], [obs1, obs2], [ev1, ev2], [claim]);
+
+    const result = deriveEpistemicState(state, claim, '2024-06-01T00:00:00Z');
+
+    expect(result.epistemicStatus).toBe('emerging');
+  });
+
+  it('consensus — distinct evidence text across 2 domains counts as 2 sources', () => {
+    const src1 = makeSource('s1', 'docs.example.com', 'official_spec');
+    const src2 = makeSource('s2', 'blog.other.com', 'third_party_analysis');
+    const obs1 = makeObservation('o1', 'f1', ['s1'], 0.9, 'study');
+    const obs2 = makeObservation('o2', 'f1', ['s2'], 0.8, 'benchmark');
+    const ev1 = makeEvidence('e1', 'c1', 's1', 'supports', 'Distinct evidence text one.');
+    const ev2 = makeEvidence('e2', 'c1', 's2', 'supports', 'Distinct evidence text two.');
+    const claim = makeClaim('c1', 'f1', ['o1', 'o2'], ['e1', 'e2']);
+    const state = buildState([src1, src2], [obs1, obs2], [ev1, ev2], [claim]);
+
+    const result = deriveEpistemicState(state, claim, '2024-06-01T00:00:00Z');
+
+    expect(result.epistemicStatus).toBe('consensus');
   });
 
   it('not consensus — 1 observation with evidence from 2 domains falls back to emerging', () => {
