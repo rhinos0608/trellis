@@ -1,13 +1,23 @@
 /**
  * Agent strategy — LLM-driven ReAct agent for deep research.
  * Simplified from search-mcp agentStrategy.ts — routes through ResearchProvider.
+ *
+ * Enhancements over the basic ReAct loop:
+ * 1. Pre-loop LLM-generated research plan (persisted as event)
+ * 2. Prior-knowledge awareness from durable state
+ * 3. Periodic gap analysis injected into context
+ * 4. Output parity with pipeline strategy (postProcess + audit + synthesize)
+ * 5. Gap-driven stop condition (no actionable gaps + idle LLM)
  */
 
 import { logger, safeErrorLog } from '../../logger.js';
-import { providerCallContext, type ResearchStrategy, type StrategyContext } from './types.js';
+import { providerCallContext, type ResearchStrategy, type StrategyContext, type ResearchPlan } from './types.js';
 import type { ResearchResult } from '../internalTypes.js';
 import { validateFetchableUrl } from '../../providers/searchMcp/urlPolicy.js';
 import { extractClaimsFromSource } from '../claimExtraction.js';
+import { GapAnalyzer } from '../gapAnalysis.js';
+import { ResearchSynthesizer } from '../synthesizer.js';
+import { parseJsonFromText } from '../llm/client.js';
 import { randomUUID } from 'node:crypto';
 
 // ── Agent response parsing ────────────────────────────────────────────────
@@ -261,48 +271,107 @@ export class AgentStrategy implements ResearchStrategy {
   async analyze(query: string, ctx: StrategyContext): Promise<ResearchResult> {
     if (!ctx.llm) {
       logger.info('No LLM available, agent strategy produces empty result');
-      return {
-        report: {
-          query,
-          classification: 'explainer',
-          depth: ctx.depth,
-          degradationMode: 'source_note_synthesis',
-          executiveSummary: 'LLM was unavailable. Agent strategy could not proceed.',
-          narrativeMarkdown: 'Agent research could not be completed: no LLM configured.',
-          themes: [],
-          contradictions: [],
-          uncertainties: ['LLM unavailable'],
-          sourceNotes: [],
-          openQuestions: [query],
-          limitations: ['Agent strategy requires an LLM.'],
-          sourceCount: 0,
-          sourceTypeCount: 0,
-          sourceDiversity: [],
-          findingCount: 0,
-          evidenceSources: [],
-        },
-        timeline: [{ phase: 'complete' }],
-      };
+      return this.emptyResult(query, ctx.depth);
     }
 
     logger.info({ query }, 'Agent strategy starting');
     ctx.state.initialize(query, ctx.budget);
 
-    const systemPrompt = this.buildSystemPrompt();
+    // ── Phase 0: Prior-knowledge awareness ──────────────────────────────
+    let priorKnowledge = '';
+    if (ctx.getPriorKnowledge) {
+      try {
+        const prior = await ctx.getPriorKnowledge();
+        if (prior && (prior.knownClaims.length > 0 || prior.knownGaps.length > 0)) {
+          priorKnowledge = `
+PRIOR KNOWLEDGE (from previous research on this topic):
+Known claims: ${prior.knownClaims.slice(0, 10).join('; ')}
+Known open gaps: ${prior.knownGaps.slice(0, 5).join('; ')}`;
+        }
+      } catch {
+        // non-fatal — proceed without prior knowledge
+      }
+    }
+
+    // Also include what the current run state already knows
+    const existingFindings = ctx.state.getFindings();
+    const existingSources = ctx.state.getSources();
+    if (existingFindings.length > 0 || existingSources.length > 0) {
+      priorKnowledge += `
+CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingFindings.length)} findings already collected.`;
+    }
+
+    // ── Phase 1: Generate research plan ─────────────────────────────────
+    const plan = await this.generatePlan(query, priorKnowledge, ctx);
+    if (plan !== null && ctx.persistPlan) {
+      try {
+        await ctx.persistPlan(plan, 'created');
+      } catch {
+        // non-fatal
+      }
+    }
+
+    // Set up sub-questions from the plan's perspectives
+    if (plan !== null) {
+      const subQuestions = plan.perspectives.map((p) => ({
+        id: randomUUID().slice(0, 12),
+        text: p.question,
+        classification: 'explainer' as const,
+        evidenceType: 'general' as const,
+        preferredSources: [] as never[],
+        freshnessRequirement: 'any',
+        failureModes: [],
+        budgetPriority: 1,
+        status: 'pending' as const,
+      }));
+      ctx.state.setSubQuestions(subQuestions);
+    }
+
+    // ── Phase 2: ReAct loop with gap-driven context ─────────────────────
+    const systemPrompt = this.buildSystemPrompt(plan, priorKnowledge);
+    const gapAnalyzer = new GapAnalyzer(ctx.state);
     let iteration = 0;
+    let toolCallsSinceGapCheck = 0;
+    let consecutiveIdleChecks = 0;
+    const GAP_CHECK_INTERVAL = 4;
+    const MAX_IDLE_CHECKS = 2;
 
     while (iteration < this.maxIterations) {
       if (ctx.abortSignal?.aborted) break;
       if (ctx.budget.isExhausted()) break;
       iteration++;
 
-      const response = await this.callLlm(systemPrompt, query, ctx);
+      // Periodic gap analysis (every N tool calls)
+      let gapContext = '';
+      if (toolCallsSinceGapCheck >= GAP_CHECK_INTERVAL) {
+        toolCallsSinceGapCheck = 0;
+        const coverage = ctx.state.computeSubQuestionCoverage();
+        const gaps = gapAnalyzer.analyze(coverage);
+        const openGaps = gaps.filter((g) => g.status === 'open');
+        if (openGaps.length > 0) {
+          const gapSummary = openGaps
+            .slice(0, 5)
+            .map((g) => `- [P${String(g.priority)}] ${g.description}`)
+            .join('\n');
+          gapContext = `\n\nCOVERAGE GAPS detected:\n${gapSummary}\nUse this signal to guide your next search, but you choose the action.`;
+          consecutiveIdleChecks = 0;
+        } else {
+          consecutiveIdleChecks++;
+        }
+      }
+
+      // Stop when no actionable gaps and LLM idle for consecutive checks
+      if (consecutiveIdleChecks >= MAX_IDLE_CHECKS) {
+        logger.info({ iteration }, 'Agent stopping: no gaps, LLM idle');
+        break;
+      }
+
+      const response = await this.callLlm(systemPrompt, query, ctx, gapContext);
       if (response === null) break;
 
       const parsed = parseAgentResponse(response);
 
       if (parsed.type === 'answer') {
-        // Answer signals completion — findings already in state from web_read
         break;
       }
 
@@ -319,6 +388,7 @@ export class AgentStrategy implements ResearchStrategy {
           content: toolResult.content.slice(0, 8000),
         });
 
+        toolCallsSinceGapCheck++;
         const progress = 5 + Math.round((iteration / this.maxIterations) * 85);
         try {
           await ctx.reportProgress({
@@ -347,15 +417,15 @@ export class AgentStrategy implements ResearchStrategy {
       }
     }
 
-    // Final answer is a completion signal only — durable findings come from web_read.
-    // No need to persist prose as a Finding.
-
+    // ── Phase 3: Output parity — post-process, audit, synthesize ────────
     try {
       await ctx.reportProgress({
         phase: 'agent_complete',
-        percent: 95,
-        message: 'Agent research complete',
+        percent: 90,
+        message: 'Agent research loop complete, finalizing',
         counts: {
+          sourcesDiscovered: ctx.state.sourceCount(),
+          findings: ctx.state.findingCount(),
           providerCalls: ctx.budget.snapshot().toolCallsUsed,
           tokensUsed: ctx.budget.snapshot().tokensUsed,
         },
@@ -364,8 +434,35 @@ export class AgentStrategy implements ResearchStrategy {
       // non-fatal
     }
 
+    // Post-processing: dedup + contradiction detection (mirrors pipeline)
+    const postResult = ctx.state.postProcessFindings();
+    logger.info(
+      { merged: postResult.merged, contradictions: postResult.contradictions },
+      'Agent post-processing complete',
+    );
+
+    // Audit
+    ctx.state.markAudited();
+
+    // Synthesis
     const state = ctx.state.getState();
-    const report = new (await import('../synthesizer.js')).ResearchSynthesizer(state).synthesize();
+    const report = new ResearchSynthesizer(state).synthesize();
+
+    try {
+      await ctx.reportProgress({
+        phase: 'agent_complete',
+        percent: 95,
+        message: 'Agent research complete',
+        counts: {
+          sourcesDiscovered: ctx.state.sourceCount(),
+          findings: ctx.state.findingCount(),
+          providerCalls: ctx.budget.snapshot().toolCallsUsed,
+          tokensUsed: ctx.budget.snapshot().tokensUsed,
+        },
+      });
+    } catch {
+      // non-fatal
+    }
 
     return {
       report,
@@ -378,11 +475,120 @@ export class AgentStrategy implements ResearchStrategy {
     this.history = [];
   }
 
-  private buildSystemPrompt(): string {
+  // ── Plan generation ───────────────────────────────────────────────────
+
+  private async generatePlan(
+    query: string,
+    priorKnowledge: string,
+    ctx: StrategyContext,
+  ): Promise<ResearchPlan | null> {
+    if (!ctx.llm) return null;
+
+    const prompt = `You are a research planner. Given the following research question, produce a structured research plan.
+
+Question: ${query}${priorKnowledge}
+
+Generate a JSON object (no markdown fences) with this exact structure:
+{
+  "scope": "<1-2 sentence scope statement>",
+  "assumptions": ["<assumption 1>", ...],
+  "perspectives": [
+    {"name": "<perspective name, e.g. historian/primary-source>", "question": "<specific sub-question from this angle>"}
+  ],
+  "falsificationQuestions": ["<what evidence would prove current understanding wrong?>", ...]
+}
+
+Choose 3-6 perspectives relevant to THIS specific query. Examples of perspective names: historian/primary-source, implementer/practitioner, skeptic/critic, current-state, comparison, technical-deep-dive, user-experience, economic-analysis, regulatory, future-outlook. Pick only what fits.
+
+Output ONLY the JSON object.`;
+
+    const resp = await ctx.llm.callOrchestrator({
+      messages: [{ role: 'system', content: prompt }],
+      temperature: 0.3,
+      maxTokens: 2000,
+      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      ...(ctx.providerCtx
+        ? { runId: ctx.providerCtx.runId, traceId: ctx.providerCtx.trace.traceId }
+        : { runId: ctx.runContext.researchRunId }),
+    });
+    ctx.budget.recordToolCall();
+
+    if (!resp.success) return null;
+
+    const parsed = parseJsonFromText<ResearchPlan>(resp.content);
+    if (parsed === undefined || typeof parsed.scope !== 'string' || !Array.isArray(parsed.perspectives) || parsed.perspectives.length === 0) {
+      logger.warn('Agent plan LLM returned invalid structure, proceeding without plan');
+      return null;
+    }
+
+    // Validate perspective shape
+    const validPerspectives = parsed.perspectives.filter(
+      (p): p is { name: string; question: string } =>
+        typeof p === 'object' && p !== null && typeof (p as unknown as Record<string, unknown>).name === 'string' && typeof (p as unknown as Record<string, unknown>).question === 'string',
+    );
+    if (validPerspectives.length === 0) return null;
+
+    return {
+      scope: String(parsed.scope).slice(0, 2000),
+      assumptions: Array.isArray(parsed.assumptions)
+        ? parsed.assumptions.map((a) => String(a).slice(0, 500)).slice(0, 10)
+        : [],
+      perspectives: validPerspectives.slice(0, 8),
+      falsificationQuestions: Array.isArray(parsed.falsificationQuestions)
+        ? parsed.falsificationQuestions.map((f) => String(f).slice(0, 1000)).slice(0, 5)
+        : [],
+    };
+  }
+
+  // ── Empty result (no LLM) ─────────────────────────────────────────────
+
+  private emptyResult(query: string, depth: ResearchResult['report']['depth']): ResearchResult {
+    return {
+      report: {
+        query,
+        classification: 'explainer',
+        depth,
+        degradationMode: 'source_note_synthesis',
+        executiveSummary: 'LLM was unavailable. Agent strategy could not proceed.',
+        narrativeMarkdown: 'Agent research could not be completed: no LLM configured.',
+        themes: [],
+        contradictions: [],
+        uncertainties: ['LLM unavailable'],
+        sourceNotes: [],
+        openQuestions: [query],
+        limitations: ['Agent strategy requires an LLM.'],
+        sourceCount: 0,
+        sourceTypeCount: 0,
+        sourceDiversity: [],
+        findingCount: 0,
+        evidenceSources: [],
+      },
+      timeline: [{ phase: 'complete' }],
+    };
+  }
+
+  // ── System prompt ─────────────────────────────────────────────────────
+
+  private buildSystemPrompt(plan: ResearchPlan | null, priorKnowledge: string): string {
     const today = new Date().toISOString().slice(0, 10);
     const toolDesc = describeTools(this.tools);
 
-    return `You are an exhaustive research agent. Today's date: ${today}.
+    let planSection = '';
+    if (plan !== null) {
+      const perspectiveLines = plan.perspectives
+        .map((p) => `  - ${p.name}: ${p.question}`)
+        .join('\n');
+      planSection = `
+RESEARCH PLAN:
+Scope: ${plan.scope}
+Assumptions: ${plan.assumptions.join('; ')}
+Perspectives to investigate:
+${perspectiveLines}
+Falsification questions:
+${plan.falsificationQuestions.map((q) => `  - ${q}`).join('\n')}`;
+    }
+
+    return `You are an exhaustive research agent. Today's date: ${today}.${priorKnowledge}${planSection}
 
 RULES:
 1. You MUST search then read at least one source before answering.
@@ -404,10 +610,13 @@ Available tools:
 ${toolDesc}`;
   }
 
+  // ── LLM call ──────────────────────────────────────────────────────────
+
   private async callLlm(
     systemPrompt: string,
     query: string,
     ctx: StrategyContext,
+    gapContext?: string,
   ): Promise<string | null> {
     if (!ctx.llm) return null;
 
@@ -439,12 +648,12 @@ ${toolDesc}`;
     if (this.history.length === 0) {
       messages.push({
         role: 'user',
-        content: `Research question: ${query}\n\nBegin searching for information.`,
+        content: `Research question: ${query}\n\nBegin searching for information.${gapContext ?? ''}`,
       });
     } else {
       messages.push({
         role: 'user',
-        content: 'Continue research. If you have enough information, provide your ANSWER.',
+        content: `Continue research. If you have enough information, provide your ANSWER.${gapContext ?? ''}`,
       });
     }
 

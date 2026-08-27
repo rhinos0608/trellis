@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
 import { randomUUID } from 'node:crypto';
 import type { AppendContext, NewEventInput } from '../store/events.js';
-import { hashPayload, queryEvents } from '../store/events.js';
+import { queryEvents } from '../store/events.js';
 import { logger, safeErrorLog } from '../logger.js';
 import type { ProjectionState } from '../store/projectionState.js';
 import type { ProviderCallContext, ResearchProvider } from '../providers/types.js';
@@ -10,9 +10,9 @@ import { foldRunLedger } from './runLedger.js';
 import { classifyError } from './retry.js';
 import type { StartRunInput, RunStatus } from './runService.js';
 
+// NOTE: If tool execution is ever parallelized (batched concurrent calls), reintroduce a per-provider semaphore here.
 export interface SchedulerOptions {
   maxConcurrentRuns?: number;
-  maxConcurrentCallsPerProvider?: number;
   heartbeatIntervalMs?: number;
   leaseDurationMs?: number;
   defaultDeadlineMs?: number;
@@ -34,7 +34,7 @@ export interface EnqueuedRun {
 }
 export class IdempotencyConflictError extends Error { constructor() { super('Idempotency key conflicts with a different request'); this.name = 'IdempotencyConflictError'; } }
 
-const defaults: Required<SchedulerOptions> = { maxConcurrentRuns: 2, maxConcurrentCallsPerProvider: 4, heartbeatIntervalMs: 15_000, leaseDurationMs: 60_000, defaultDeadlineMs: 600_000, progressMinIntervalMs: 1_000 };
+const defaults: Required<SchedulerOptions> = { maxConcurrentRuns: 2, heartbeatIntervalMs: 15_000, leaseDurationMs: 60_000, defaultDeadlineMs: 600_000, progressMinIntervalMs: 1_000 };
 const envelope = (eventType: NewEventInput['eventType'], runId: string, payload: unknown): NewEventInput => ({ timestamp: new Date().toISOString(), eventType, eventVersion: 1, runId, batchId: null, actor: 'system', entityId: runId, entityType: 'run', payload });
 
 export class JobScheduler {
@@ -81,17 +81,33 @@ export class JobScheduler {
     })();
     return this.shutdownPromise;
   }
-  async enqueue(input: EnqueuedRun): Promise<{ runId: string; familyId: string; deduplicated: boolean }> {
-    const spec = JSON.stringify({ query: input.query, strategy: input.strategy, depth: input.depth, topic: input.topic, familyId: input.familyId, threadId: input.threadId, sessionId: input.sessionId, providerName: input.providerName, deadlineAt: input.deadlineAt, retryPolicy: input.retryPolicy, followUp: input.followUp });
-    const requestHash = input.requestHash || hashPayload(spec);
-    for (const run of this.runs.values()) if (input.idempotencyKey && run.idempotencyKey === input.idempotencyKey) {
-      if (run.requestHash !== requestHash) throw new IdempotencyConflictError();
-      return { runId: run.runId, familyId: run.familyId, deduplicated: true };
+  /**
+   * Read-only idempotency check: returns the deduplicated run if the key matches,
+   * throws IdempotencyConflictError if the key exists with a different hash,
+   * or returns { deduplicated: false } if no existing run matches.
+   *
+   * MUST NOT mutate this.runs / this.contexts / this.inputs / this.queue,
+   * must NOT call this.wake().
+   */
+  checkIdempotency(input: { idempotencyKey?: string | undefined; requestHash: string }): { runId: string; familyId: string; deduplicated: true } | { deduplicated: false } {
+    for (const run of this.runs.values()) {
+      if (input.idempotencyKey && run.idempotencyKey === input.idempotencyKey) {
+        if (run.requestHash !== input.requestHash) throw new IdempotencyConflictError();
+        return { runId: run.runId, familyId: run.familyId, deduplicated: true };
+      }
     }
+    return { deduplicated: false };
+  }
+
+  /**
+   * Register a run in the scheduler's in-memory maps and enqueue it for execution.
+   * Call ONLY after the RUN_QUEUED event has been durably appended to the store.
+   */
+  activate(input: EnqueuedRun): { runId: string; familyId: string } {
     if (this.stopping) throw new Error('Scheduler is shut down');
-        const run = { ...input, requestHash, queuedAt: input.queuedAt || new Date().toISOString(), status: 'queued' } as unknown as ResearchRun;
+    const run = { ...input, queuedAt: input.queuedAt || new Date().toISOString(), status: 'queued' } as unknown as ResearchRun;
     this.runs.set(run.runId, run); this.contexts.set(run.runId, input.appendContext); this.inputs.set(run.runId, input.input); this.queue.push(run.runId); this.wake?.();
-    return { runId: run.runId, familyId: run.familyId, deduplicated: false };
+    return { runId: run.runId, familyId: run.familyId };
   }
   cancel(runId: string): boolean {
     const run = this.current(runId); if (!run || ['completed','failed','cancelled','interrupted'].includes(run.status)) return false;

@@ -22,7 +22,7 @@ import type { RunSummaryDto, RunEventDto, RunHistoryDto, ListRunsInput, ListRunE
 
 export interface StartRunInput {
   query: string;
-  strategy?: 'agent' | 'pipeline' | undefined;
+  strategy?: 'agent' | undefined;
   depth?: string | undefined;
   sessionId?: string | undefined;
   threadId?: string | undefined;

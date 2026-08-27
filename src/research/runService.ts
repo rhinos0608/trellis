@@ -12,11 +12,12 @@
 import { randomUUID } from 'node:crypto';
 import type { StrategyContext } from './strategies/types.js';
 import type { ResearchResult, Finding, InternalContradiction, GapRecord, ResearchDepth } from './internalTypes.js';
-import type { ResearchStrategy as StrategyName, RunProgressUpdate } from './types.js'
+import type { RunProgressUpdate } from './types.js'
 import type { BudgetProfile } from './internalTypes.js';
 import type { ProviderCallContext, ResearchProvider } from '../providers/types.js';
 import type { TrellisConfig } from '../config/index.js';
 import type { AuthorityClass, ClaimObservation } from '../graph/types.js';
+import { getClaimsByFamily, getGapsByFamily } from '../graph/queries.js';
 import { canonicalizeSourceUrl } from '../graph/sourceIdentity.js';
 import { planClaimObservation } from '../graph/claimReconciler.js';
 import { resolveClaimEntities } from '../graph/claimEntityResolution.js';
@@ -73,7 +74,7 @@ export class MissingLlmConfigError extends Error {
 
 export interface StartRunInput {
   query: string;
-  strategy?: StrategyName;
+  strategy?: 'agent';
   depth?: string;
   topic?: string;
   sessionId?: string;
@@ -651,12 +652,10 @@ export function createRunService(): RunService {
   async function startRun(input: StartRunInput, followUp?: RunFollowUp): Promise<{ runId: string; familyId: string }> {
     const runId = `run_${randomUUID().slice(0, 12)}`;
 
-    // Permanent precondition: explicit agent strategy requires LLM config.
+    // Permanent precondition: every new run requires LLM config (agent is the only strategy).
     // Reject before any events are appended — never fail deep in execution.
-    if ((input.strategy ?? 'pipeline') === 'agent') {
-      const llmCfg = input.config.llm;
-      if (!llmCfg.baseUrl || !llmCfg.model) throw new MissingLlmConfigError();
-    }
+    const llmCfgForCheck = input.config.llm;
+    if (!llmCfgForCheck?.baseUrl || !llmCfgForCheck?.model) throw new MissingLlmConfigError();
 
     // 1. Resolve family from current projection BEFORE starting research
     let projection: ProjectionState;
@@ -708,17 +707,26 @@ export function createRunService(): RunService {
     }
 
     const queuedAt = new Date().toISOString();
-    const deadlineAt = new Date(Date.now() + (input.deadlineMs ?? 600_000)).toISOString();
+    const effectiveDeadlineMs = input.deadlineMs ?? 600_000;
+    const deadlineAt = new Date(Date.now() + effectiveDeadlineMs).toISOString();
     const providerName = input.providerName ?? input.provider?.name ?? 'search-mcp';
     const retryPolicy = { maxAttempts: 3, autoRetry: false, initialBackoffMs: 1_000, maxBackoffMs: 30_000 };
-    const requestHash = hashPayload(JSON.stringify({ query: input.query, strategy: input.strategy ?? 'pipeline', depth: input.depth ?? 'standard', topic: input.topic, familyId, threadId, sessionId: input.sessionId, providerName, deadlineAt, retryPolicy }));
-    const runPayload = { runId, rootRunId: runId, attempt: 1, familyId, query: input.query, strategy: input.strategy ?? 'pipeline', depth: input.depth ?? 'standard', topic: input.topic, sessionId: input.sessionId, threadId, providerName, idempotencyKey: input.idempotencyKey, requestHash, retryPolicy, deadlineAt, queuedAt, ...(followUp ? { followUp } : {}) };
+    const requestHash = hashPayload(JSON.stringify({ query: input.query, strategy: input.strategy ?? 'agent', depth: input.depth ?? 'standard', topic: input.topic, familyId, threadId, sessionId: input.sessionId, providerName, deadlineMs: effectiveDeadlineMs, retryPolicy }));
+    const runPayload = { runId, rootRunId: runId, attempt: 1, familyId, query: input.query, strategy: input.strategy ?? 'agent', depth: input.depth ?? 'standard', topic: input.topic, sessionId: input.sessionId, threadId, providerName, idempotencyKey: input.idempotencyKey, requestHash, retryPolicy, deadlineAt, queuedAt, ...(followUp ? { followUp } : {}) };
 
+    const appendContext: AppendContext = { projection, handlers };
+
+    // Consult scheduler for idempotency BEFORE appending any events.
+    const idemCheck = scheduler.checkIdempotency({ idempotencyKey: input.idempotencyKey ?? undefined, requestHash });
+    if (idemCheck.deduplicated) {
+      return { runId: idemCheck.runId, familyId: idemCheck.familyId };
+    }
+
+    // Append RUN_QUEUED durably BEFORE activating the scheduler.
     const allStartEvents: NewEventInput[] = [
       ...familyEvents,
       makeEnvelope('RUN_QUEUED', runId, runPayload, { entityId: runId, entityType: 'run' }),
     ];
-    const appendContext: AppendContext = { projection, handlers };
     runContexts.set(runId, appendContext);
     try {
       appendWithRetry(allStartEvents, appendContext);
@@ -729,7 +737,7 @@ export function createRunService(): RunService {
 
     providerByName.set(providerName, input.provider);
     setRunInput(runId, { ...input, threadId });
-    await scheduler.enqueue({ ...runPayload, appendContext, input });
+    scheduler.activate({ ...runPayload, appendContext, input });
     return { runId, familyId };
   }
 
@@ -743,7 +751,6 @@ export function createRunService(): RunService {
   ): Promise<void> {
     // Resolve strategy
     const depth: ResearchDepth = (input.depth ?? 'standard') as ResearchDepth;
-    const strategyName = input.strategy ?? 'pipeline';
 
     // Build in-memory research state engine
     const budgetProfile: BudgetProfile = resolveBudgetProfile(depth);
@@ -777,15 +784,33 @@ export function createRunService(): RunService {
       providerCtx,
       reportProgress,
       depth,
+      getPriorKnowledge: async () => {
+        const proj = getProjection();
+        const claims = getClaimsByFamily(proj, familyId).slice(0, 20);
+        const gaps = getGapsByFamily(proj, familyId).slice(0, 10);
+        return {
+          knownClaims: claims.map((c) => `${c.subjectText} ${c.predicate}`),
+          knownGaps: gaps.map((g) => g.question),
+        };
+      },
+      persistPlan: async (plan, kind, reason) => {
+        const ctx = runContexts.get(runId);
+        if (!ctx) return;
+        const now = new Date().toISOString();
+        if (kind === 'created') {
+          appendWithRetry([makeEnvelope('RESEARCH_PLAN_CREATED', runId, { runId, query: input.query, plan, createdAt: now }, { entityId: runId, entityType: 'run' })], ctx);
+        } else {
+          appendWithRetry([makeEnvelope('RESEARCH_PLAN_REVISED', runId, { runId, query: input.query, revisionReason: reason ?? '', plan, revisedAt: now, revisionNumber: 1 }, { entityId: runId, entityType: 'run' })], ctx);
+        }
+      },
     };
 
-    return executeStrategyAndPersist(runId, familyId, strategyName, strategyCtx, stateEngine, abortSignal, input.query, reportProgress);
+    return executeStrategyAndPersist(runId, familyId, strategyCtx, stateEngine, abortSignal, input.query, reportProgress);
   }
 
   async function executeStrategyAndPersist(
     runId: string,
     familyId: string,
-    strategyName: string,
     strategyCtx: StrategyContext,
     stateEngine: ResearchStateEngine,
     abortSignal: AbortSignal,
@@ -796,24 +821,8 @@ export function createRunService(): RunService {
     if (!context) throw new Error(`Missing append context for run ${runId}`);
     try {
       // Import strategy dynamically to avoid circular deps
-      const { StrategyRegistry } = await import('./strategies/registry.js');
-      const registry = new StrategyRegistry();
-
-      // Register pipeline strategy
-      const { PipelineStrategy } = await import('./strategies/pipelineStrategy.js');
-      registry.register('pipeline', (_ctx) => new PipelineStrategy());
-
-      // Register agent strategy if LLM available
-      if (strategyCtx.llm) {
-        try {
-          const { AgentStrategy } = await import('./strategies/agentStrategy.js');
-          registry.register('agent', (ctx) => new AgentStrategy(ctx));
-        } catch {
-          // agent strategy not available, fall through to pipeline
-        }
-      }
-
-      const strategy = registry.create(strategyName, strategyCtx);
+      const { AgentStrategy } = await import('./strategies/agentStrategy.js');
+      const strategy = new AgentStrategy(strategyCtx);
 
       // Execute
       const result = await strategy.analyze(query, strategyCtx);
@@ -952,7 +961,8 @@ export function createRunService(): RunService {
     };
     runContexts.set(runId, appendContext);
     appendWithRetry([makeEnvelope('RUN_QUEUED', runId, runPayload, { entityId: runId, entityType: 'run' })], appendContext);
-    return scheduler.enqueue({ ...runPayload, appendContext, input: effectiveRetryInput });
+    scheduler.activate({ ...runPayload, appendContext, input: effectiveRetryInput });
+    return { runId, familyId: original.familyId, deduplicated: false };
   }
 
   async function continueResearch(input: ContinueResearchInput): Promise<ContinueResearchResult> {

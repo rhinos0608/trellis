@@ -14,6 +14,22 @@ import type { TrellisConfig } from '../../config/index.js';
 
 // ── StrategyContext ───────────────────────────────────────────────────────
 
+// ── Research plan (STORM-style) ──────────────────────────────────────────
+
+export interface ResearchPlanPerspective {
+  /** e.g. "historian/primary-source", "implementer/practitioner", "skeptic/critic" */
+  name: string;
+  /** The sub-question from this perspective */
+  question: string;
+}
+
+export interface ResearchPlan {
+  scope: string;
+  assumptions: string[];
+  perspectives: ResearchPlanPerspective[];
+  falsificationQuestions: string[];
+}
+
 export function providerCallContext(
   ctx: StrategyContext,
   fields?: { phase?: string; subquestionId?: string },
@@ -47,6 +63,16 @@ export interface StrategyContext {
   reportProgress: (update: RunProgressUpdate) => Promise<void>;
   depth: ResearchDepth;
   deterministic?: boolean;
+  /** Persist a research plan as an event (RESEARCH_PLAN_CREATED or REVISED). */
+  persistPlan?: (
+    plan: ResearchPlan,
+    kind: 'created' | 'revised',
+    reason?: string,
+  ) => Promise<void>;
+  /** Retrieve prior knowledge (claims/gaps) for this family from durable state. */
+  getPriorKnowledge?: () => Promise<
+    { knownClaims: string[]; knownGaps: string[] } | undefined
+  >;
 }
 
 // ── ResearchStrategy ──────────────────────────────────────────────────────
@@ -59,6 +85,3 @@ export interface ResearchStrategy {
   close?(): Promise<void>;
 }
 
-// ── StrategyFactory ───────────────────────────────────────────────────────
-
-export type StrategyFactory = (ctx: StrategyContext) => ResearchStrategy;

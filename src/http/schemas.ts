@@ -3,7 +3,7 @@ import { MAX_SEARCH_QUERY_LENGTH } from '../query/cursor.js';
 
 const optionalString = z.string().min(1).optional();
 const researchDepth = z.enum(['quick', 'standard', 'deep', 'exhaustive', 'tree']);
-export const startRunSchema = z.strictObject({ query: z.string().min(1), strategy: z.enum(['agent', 'pipeline']).optional(), depth: researchDepth.optional(), sessionId: optionalString, threadId: optionalString, familyId: optionalString, idempotencyKey: optionalString, deadlineMs: z.number().int().positive().optional() });
+export const startRunSchema = z.strictObject({ query: z.string().min(1), strategy: z.literal('agent').optional(), depth: researchDepth.optional(), sessionId: optionalString, threadId: optionalString, familyId: optionalString, idempotencyKey: optionalString, deadlineMs: z.number().int().positive().optional() });
 export const retryRunSchema = z.strictObject({ idempotencyKey: optionalString, deadlineMs: z.number().int().positive().optional() });
 export const continueSchema = z.strictObject({ depth: z.enum(['quick', 'standard']).optional(), idempotencyKey: optionalString });
 const page = { cursor: z.string().min(1).optional(), limit: z.coerce.number().int().positive().max(100).optional() };

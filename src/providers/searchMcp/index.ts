@@ -188,7 +188,7 @@ export async function createSearchMcpProvider(
   return provider;
 }
 
-/** Tools the pipeline strategy cannot run without. */
+/** Tools the agent strategy cannot run without. */
 const REQUIRED_SEARCH_MCP_TOOLS = ['web_search', 'web_crawl'] as const;
 
 /**

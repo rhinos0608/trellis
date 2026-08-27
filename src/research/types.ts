@@ -19,7 +19,7 @@ export type ResearchRunStatus =
   | 'queued' | 'starting' | 'running' | 'cancelling' | 'interrupted'
   | 'completed' | 'failed' | 'cancelled' | 'rolled_back';
 
-export type ResearchStrategy = 'agent' | 'pipeline';
+export type ResearchStrategy = 'agent';
 
 export interface RunFollowUp {
   kind: 'information_gain_v1';
