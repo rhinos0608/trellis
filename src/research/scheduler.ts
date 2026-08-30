@@ -51,9 +51,11 @@ export class JobScheduler {
   private stopping = false;
   private active = 0;
   private wake?: () => void;
-  private shutdownPromise?: Promise<void>;
+  private shutdownPromise: Promise<void> | undefined;
   /** Runs whose terminal event (INTERRUPTED/CANCELLED/FAILED) is already claimed. */
   private readonly terminalClaimed = new Set<string>();
+  /** Shutdown terminal claims pending durable append across teardown (typed, survives execution/controller cleanup). */
+  private readonly shutdownPending = new Set<string>();
   /** Runs being resumed from a step checkpoint (keyed by runId). */
   private readonly resumedCheckpoints = new Map<string, StepCheckpoint>();
   private readonly resumedRuns = new Set<string>();
@@ -74,15 +76,32 @@ export class JobScheduler {
   async shutdown(): Promise<void> {
     if (this.shutdownPromise !== undefined) return this.shutdownPromise;
     this.stopping = true; this.running = false; this.wake?.();
+    for (const runId of this.controllers.keys()) {
+      if (!this.terminalClaimed.has(runId)) this.shutdownPending.add(runId);
+    }
     this.shutdownPromise = (async () => {
-      for (const [runId, controller] of this.controllers) {
-        controller.abort();
-        // Atomically claim terminal ownership FIRST so a concurrently firing
-        // deadline/cancel path cannot append a second terminal event.
-        this.claimTerminal(runId, [envelope('RUN_INTERRUPTED', runId, { runId, interruptedAt: new Date().toISOString(), reason: 'process shutdown' })]);
+      let firstError: unknown;
+      for (const runId of [...this.shutdownPending]) {
+        const controller = this.controllers.get(runId);
+        if (controller) controller.abort();
+        try {
+          const claimed = this.claimTerminal(runId, [envelope('RUN_INTERRUPTED', runId, { runId, interruptedAt: new Date().toISOString(), reason: 'process shutdown' })]);
+          if (claimed) {
+            this.shutdownPending.delete(runId);
+          } else if (this.terminalClaimed.has(runId)) {
+            // Already claimed by another path (deadline/cancel) — stop retrying, preserve exclusivity
+            this.shutdownPending.delete(runId);
+          }
+        } catch (err) {
+          firstError ??= err;
+        }
       }
       await Promise.all([...this.executions]);
+      if (firstError !== undefined) throw firstError;
     })();
+    this.shutdownPromise.catch(() => {
+      this.shutdownPromise = undefined;
+    });
     return this.shutdownPromise;
   }
   /**
@@ -145,9 +164,8 @@ export class JobScheduler {
           message: 'Queued run cannot resume after process restart because provider/config context is not durable; start a new run.',
           occurredAt: new Date().toISOString(),
         };
-        const claimed = this.claimTerminal(run.runId, [
-          { ...envelope('RUN_FAILED', run.runId, { runId: run.runId, error }), eventVersion: 2 },
-        ]);
+        let claimed = false;
+        try { claimed = this.claimTerminal(run.runId, [ { ...envelope('RUN_FAILED', run.runId, { runId: run.runId, error }), eventVersion: 2 } ]); } catch {}
         if (claimed) this.runs.set(run.runId, { ...run, status: 'failed', error });
         continue;
       }
@@ -194,17 +212,16 @@ export class JobScheduler {
             logger.warn({ err, runId: run.runId }, 'scheduler: checkpoint resume failed, falling back to interruption');
             this.resumedCheckpoints.delete(run.runId);
             this.resumedRuns.delete(run.runId);
-            this.claimTerminal(run.runId, [envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })]);
-            this.runs.set(run.runId, { ...run, status: 'interrupted' });
+            let c1=false; try { c1=this.claimTerminal(run.runId, [envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })]); } catch { c1=false; }
+            if (c1) this.runs.set(run.runId, { ...run, status: 'interrupted' });
           }
         } else {
-          // No compatible checkpoint — existing interruption behavior
-          this.claimTerminal(run.runId, [envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })]);
-          this.runs.set(run.runId, { ...run, status: 'interrupted' });
+          let c2=false; try { c2=this.claimTerminal(run.runId, [envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })]); } catch { c2=false; }
+          if (c2) this.runs.set(run.runId, { ...run, status: 'interrupted' });
         }
       } else if (run.status === 'cancelling') {
-        this.claimTerminal(run.runId, [envelope('RUN_CANCELLED', run.runId, { runId: run.runId })]);
-        this.runs.set(run.runId, { ...run, status: 'cancelled' });
+        let c3=false; try { c3=this.claimTerminal(run.runId, [envelope('RUN_CANCELLED', run.runId, { runId: run.runId })]); } catch { c3=false; }
+        if (c3) this.runs.set(run.runId, { ...run, status: 'cancelled' });
       }
     }
   }
@@ -249,9 +266,12 @@ export class JobScheduler {
   private claimTerminal(runId: string, events: readonly NewEventInput[]): boolean {
     const ctx = this.context(runId);
     if (ctx === undefined || this.terminalClaimed.has(runId)) return false;
+    this.appendOrThrow(events, ctx);
     this.terminalClaimed.add(runId);
-    this.append(events, ctx);
     return true;
+  }
+  private appendOrThrow(events: readonly NewEventInput[], context: AppendContext): void {
+    try { this.deps.appendWithRetry(events, context); } catch (err) { logger.warn({ ...safeErrorLog(err), eventTypes: events.map((e) => e.eventType) }, 'scheduler: event append failed'); throw err; }
   }
   private append(events: readonly NewEventInput[], context: AppendContext): void { try { this.deps.appendWithRetry(events, context); } catch (err) { /* Store may close while a worker drains. Never silent during shutdown diagnostics. */ logger.warn({ ...safeErrorLog(err), eventTypes: events.map((e) => e.eventType) }, 'scheduler: event append failed'); } }
 }

@@ -2,7 +2,7 @@
   "corpusVersion": 1,
   "projectionVersion": 6,
   "reconcilerVersion": 4,
-  "checksum": "sha256:projection-v1:264d69deaa447832bf789a55ea9b06bfd845b5345bdc3e506829f5b5738cfae5",
+  "checksum": "sha256:projection-v1:d4317c6e84904ccd94e67a0b796acfad8f55a3b67909bd6487f67c1887349951",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -370,11 +370,6 @@
               "claimId": "claim_a2",
               "classification": "qualification",
               "score": 0.7349999999999999
-            },
-            {
-              "claimId": "claim_a1",
-              "classification": "qualification",
-              "score": 0.275
             }
           ],
           "canonicalClaimId": "claim_a4",

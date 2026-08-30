@@ -244,6 +244,36 @@ describe('scheduler graceful shutdown', () => {
     await scheduler.shutdown();
     expect(queryEvents({ runId: 'run-order', eventType: 'RUN_INTERRUPTED' }).length).toBe(countBefore);
   });
+
+  it('shutdown rejects if RUN_INTERRUPTED append fails, does not poison terminal claim, retry can durably append', async () => {
+    const sentinel = new Error('append failed sentinel');
+    let shouldThrow = true;
+    const base = hangingDeps();
+    const deps = {
+      ...base,
+      appendWithRetry: (events: readonly unknown[], context: Parameters<typeof appendEvents>[1]) => {
+        const hasInterrupted = (events as readonly NewEventInput[]).some((e) => e.eventType === 'RUN_INTERRUPTED');
+        if (shouldThrow && hasInterrupted) throw sentinel;
+        return base.appendWithRetry(events, context);
+      },
+    };
+    const scheduler = new JobScheduler({ maxConcurrentRuns: 1 }, deps);
+    scheduler.start();
+    appendQueued('run-retry');
+    await scheduler.activate(enqueued('run-retry'));
+    await waitFor(() => queryEvents({ runId: 'run-retry', eventType: 'RUN_RUNNING' }).length > 0, 'run never reached RUNNING');
+
+    await expect(scheduler.shutdown()).rejects.toThrow('append failed sentinel');
+    // Must not have durably appended
+    expect(queryEvents({ runId: 'run-retry', eventType: 'RUN_INTERRUPTED' }).length).toBe(0);
+    // Terminal claim must remain retryable (not poisoned)
+    expect((scheduler as unknown as { terminalClaimed: Set<string> }).terminalClaimed.has('run-retry')).toBe(false);
+    // Retry via same scheduler public path can durably append for same run (proves durable retry, not unrelated success)
+    shouldThrow = false;
+    await expect(scheduler.shutdown()).resolves.toBeUndefined();
+    expect(queryEvents({ runId: 'run-retry', eventType: 'RUN_INTERRUPTED' }).length).toBe(1);
+    expect(() => foldRunLedger(queryEvents({}))).not.toThrow(RunHistoryCorruptionError);
+  });
 });
 
 // ── Terminal-event exclusivity tests ─────────────────────────────────

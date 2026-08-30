@@ -87,7 +87,8 @@ function scorePair(observation: ClaimObservation, claim: Claim): number {
   const polarityScore = observation.polarity === claim.polarity ? 1 : 0;
   const hedgeScore = observation.hedge === claim.hedge ? 1 : 0;
   const base = Math.max(0, Math.min(1, text * 0.7 + numericScore * 0.15 + polarityScore * 0.1 + hedgeScore * 0.05));
-  return entityMatch ? Math.max(base, 0.85) : base;
+  const entityScope = observation.canonicalKey.subject === claim.canonicalKey.subject && observation.canonicalKey.predicate === claim.canonicalKey.predicate;
+  return entityMatch && entityScope ? Math.max(base, 0.85) : base;
 }
 
 function newer(observation: ClaimObservation, claim: Claim): boolean {
@@ -190,7 +191,10 @@ function classify(
   if (scoped && observation.polarity !== claim.polarity && observation.polarity !== 'conditional' && claim.polarity !== 'conditional') return 'contradiction';
   if (scoped && numeric === false) return 'contradiction';
   if (sameSupersessionScope(observation, claim)) return 'supersedes';
-  if (isNarrowing(observation, claim)) return 'qualification';
+  if (isNarrowing(observation, claim)) {
+    // ponytail: scope gate — same-entity different-predicate conditional must not falsely qualify; require same subject/predicate scope
+    if (scoped || sameKey(observation, claim)) return 'qualification';
+  }
   if (isElaboration(observation, claim)) return 'elaboration';
   // Entity-equality hard negative: different subjectEntityId → never same_claim
   const obsEntity = observation.subjectEntityId;

@@ -313,4 +313,37 @@ describe('claim reconciler', () => {
     // Without both entity IDs set, falls back to text scoring — canonical key match → same_claim
     expect(result(obs1, existing).classification).toBe('same_claim');
   });
+
+  it('same entity but different predicate with conditional polarity is new_claim, not qualification', () => {
+    // Regression: entity-match inflated score (0.85 floor) must not grant qualification for unrelated predicate.
+    const existing = claim('c1', {
+      subjectEntityId: 'entity-trellis',
+      subjectText: 'Trellis', predicate: 'supports', objectText: 'claim reconciliation',
+      canonicalKey: { subject: 'trellis', predicate: 'supports' },
+    });
+    const obs = observation('o-conditional', {
+      subjectEntityId: 'entity-trellis',
+      subjectText: 'Trellis', predicate: 'mentions', objectText: 'other data',
+      canonicalKey: { subject: 'trellis', predicate: 'mentions' },
+      polarity: 'conditional',
+    });
+    // Same entityId but different predicate → sameScope false, sameKey false → must remain new_claim even though scorePair would inflate to >=0.85 via entityMatch.
+    expect(result(obs, existing).classification).toBe('new_claim');
+  });
+
+  it('legitimate scoped conditional still qualifies', () => {
+    // Ensure scope gate does not break valid qualification: same subject/predicate, conditional polarity.
+    const existing = claim('c2', {
+      subjectEntityId: 'entity-trellis',
+      subjectText: 'Trellis', predicate: 'supports', objectText: 'claim reconciliation',
+      canonicalKey: { subject: 'trellis', predicate: 'supports' },
+    });
+    const obs = observation('o-qual', {
+      subjectEntityId: 'entity-trellis',
+      subjectText: 'Trellis', predicate: 'supports', objectText: 'claim reconciliation',
+      canonicalKey: { subject: 'trellis', predicate: 'supports' },
+      polarity: 'conditional',
+    });
+    expect(result(obs, existing).classification).toBe('qualification');
+  });
 });
