@@ -12,6 +12,18 @@ import type { ResearchResult, ResearchDepth } from '../internalTypes.js';
 import type { RunContext, RunProgressUpdate } from '../types.js';
 import type { TrellisConfig } from '../../config/index.js';
 
+// ── Resume state ─────────────────────────────────────────────────────────
+
+/** State carried from a step checkpoint for automatic resume after crash. */
+export interface ResumeState {
+  stepIndex: number;
+  status: 'started' | 'completed';
+  history: unknown[];
+  strategyState: import('../internalTypes.js').ResearchState;
+  budgetState: import('../internalTypes.js').BudgetState;
+  pendingTool?: { name: string; args: Record<string, unknown>; thought?: string };
+}
+
 // ── StrategyContext ───────────────────────────────────────────────────────
 
 // ── Research plan (STORM-style) ──────────────────────────────────────────
@@ -73,6 +85,10 @@ export interface StrategyContext {
   getPriorKnowledge?: () => Promise<
     { knownClaims: string[]; knownGaps: string[] } | undefined
   >;
+  /** Resume state from a step checkpoint — set by scheduler for interrupted runs. */
+  resumeState?: ResumeState;
+  /** Checkpoint a step boundary — called by strategy before/after tool execution. */
+  checkpointStep?: (stepIndex: number, status: 'started' | 'completed', pendingWrite: unknown, history: unknown[]) => void;
 }
 
 // ── ResearchStrategy ──────────────────────────────────────────────────────

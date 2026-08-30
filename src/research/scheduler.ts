@@ -9,6 +9,7 @@ import type { ResearchStrategy, ResearchRun, RunError, RunRetryPolicy, RunProgre
 import { foldRunLedger } from './runLedger.js';
 import { classifyError } from './retry.js';
 import type { StartRunInput, RunStatus } from './runService.js';
+import { loadCheckpoint, deleteCheckpoint, type StepCheckpoint } from './stepCheckpoints.js';
 
 // NOTE: If tool execution is ever parallelized (batched concurrent calls), reintroduce a per-provider semaphore here.
 export interface SchedulerOptions {
@@ -23,7 +24,7 @@ export interface SchedulerDeps {
   appendWithRetry(events: readonly NewEventInput[], context: AppendContext): void;
   /** Rebuild an AppendContext for reconciling stale orphaned runs on startup. */
   rebuildAppendContext?(): AppendContext | undefined;
-  executeResearch(runId: string, familyId: string, input: StartRunInput, signal: AbortSignal, provider: ResearchProvider, providerCtx: ProviderCallContext, reportProgress: (update: RunProgressUpdate) => Promise<void>): Promise<void>;
+  executeResearch(runId: string, familyId: string, input: StartRunInput, signal: AbortSignal, provider: ResearchProvider, providerCtx: ProviderCallContext, reportProgress: (update: RunProgressUpdate) => Promise<void>, checkpoint?: StepCheckpoint): Promise<void>;
   rebuildProjection(): ProjectionState;
 }
 export interface EnqueuedRun {
@@ -53,6 +54,9 @@ export class JobScheduler {
   private shutdownPromise?: Promise<void>;
   /** Runs whose terminal event (INTERRUPTED/CANCELLED/FAILED) is already claimed. */
   private readonly terminalClaimed = new Set<string>();
+  /** Runs being resumed from a step checkpoint (keyed by runId). */
+  private readonly resumedCheckpoints = new Map<string, StepCheckpoint>();
+  private readonly resumedRuns = new Set<string>();
   constructor(options: SchedulerOptions = {}, private readonly deps: SchedulerDeps) {
     this.opts = { ...defaults, ...options };
     this.reconcileOnStartup();
@@ -158,15 +162,53 @@ export class JobScheduler {
       if (!ctx) continue;
       this.contexts.set(run.runId, ctx);
       if (run.status === 'starting' || run.status === 'running') {
-        this.claimTerminal(run.runId, [envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })]);
-        this.runs.set(run.runId, { ...run, status: 'interrupted' });
+        // Try checkpoint-based resume before falling back to interruption
+        const checkpoint = loadCheckpoint(run.runId);
+        if (checkpoint !== null && checkpoint.formatVersion <= 1 && (run.status === 'starting' || run.status === 'running')) {
+          // Compatible checkpoint found — attempt resume
+          try {
+            // Emit heartbeat refresh + agent_resume progress
+            this.append([
+              envelope('RUN_HEARTBEAT', run.runId, { runId: run.runId, ownerId: this.ownerId, heartbeatAt: new Date().toISOString(), leaseUntil: new Date(Date.now() + this.opts.leaseDurationMs).toISOString() }),
+              envelope('RUN_PROGRESS', run.runId, { runId: run.runId, phase: 'agent_resume', message: `Resuming from step ${String(checkpoint.stepIndex)} (${checkpoint.status})` }),
+            ], ctx);
+            this.resumedCheckpoints.set(run.runId, checkpoint);
+            this.resumedRuns.add(run.runId);
+            // Reconstruct StartRunInput from checkpoint so execute() can find it
+            // in this.inputs — the original input was only in the dead process's memory.
+            this.inputs.set(run.runId, {
+              query: checkpoint.executionSpec.query,
+              depth: checkpoint.executionSpec.depth,
+              topic: checkpoint.executionSpec.topic,
+              familyId: run.familyId,
+              threadId: checkpoint.executionSpec.threadId,
+              sessionId: checkpoint.executionSpec.sessionId,
+              providerName: checkpoint.executionSpec.providerName,
+              config: checkpoint.executionSpec.config,
+            } as StartRunInput);
+            this.queue.push(run.runId);
+            this.wake?.();
+            logger.info({ runId: run.runId, stepIndex: checkpoint.stepIndex, status: checkpoint.status }, 'scheduler: resuming run from checkpoint');
+          } catch (err) {
+            // Resume failed — fall through to interruption
+            logger.warn({ err, runId: run.runId }, 'scheduler: checkpoint resume failed, falling back to interruption');
+            this.resumedCheckpoints.delete(run.runId);
+            this.resumedRuns.delete(run.runId);
+            this.claimTerminal(run.runId, [envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })]);
+            this.runs.set(run.runId, { ...run, status: 'interrupted' });
+          }
+        } else {
+          // No compatible checkpoint — existing interruption behavior
+          this.claimTerminal(run.runId, [envelope('RUN_INTERRUPTED', run.runId, { runId: run.runId, interruptedAt: new Date().toISOString(), reason: 'orphaned lease', previousOwnerId: run.ownerId })]);
+          this.runs.set(run.runId, { ...run, status: 'interrupted' });
+        }
       } else if (run.status === 'cancelling') {
         this.claimTerminal(run.runId, [envelope('RUN_CANCELLED', run.runId, { runId: run.runId })]);
         this.runs.set(run.runId, { ...run, status: 'cancelled' });
       }
     }
   }
-  private async loop(): Promise<void> { while (this.running || this.active > 0) { while (this.running && this.active < this.opts.maxConcurrentRuns) { const id = this.queue.find((x) => this.current(x)?.status === 'queued'); if (!id) break; this.active++; const p = this.execute(id).finally(() => { this.active--; this.executions.delete(p); }); this.executions.add(p); } if (this.active === 0 && !this.running) break; await new Promise<void>((resolve) => { const timer = setTimeout(resolve, 100); this.wake = () => { clearTimeout(timer); resolve(); }; }); } }
+  private async loop(): Promise<void> { while (this.running || this.active > 0) { while (this.running && this.active < this.opts.maxConcurrentRuns) { const id = this.queue.find((x) => { const r = this.current(x); return r !== undefined && (r.status === 'queued' || this.resumedRuns.has(x)); }); if (!id) break; this.active++; const p = this.execute(id).finally(() => { this.active--; this.executions.delete(p); }); this.executions.add(p); } if (this.active === 0 && !this.running) break; await new Promise<void>((resolve) => { const timer = setTimeout(resolve, 100); this.wake = () => { clearTimeout(timer); resolve(); }; }); } }
   private async execute(runId: string): Promise<void> {
     const run = this.current(runId); let context = this.context(runId);
     if (!run) return;
@@ -176,18 +218,22 @@ export class JobScheduler {
       if (rebuilt === undefined) return;
       this.contexts.set(runId, rebuilt); context = rebuilt;
     }
-    if (run.status !== 'queued') return;
+    if (run.status !== 'queued' && !this.resumedRuns.has(runId)) return;
+    const isResumed = this.resumedRuns.has(runId);
+    if (isResumed) this.resumedRuns.delete(runId);
     const now = new Date(); const deadline = Date.parse(run.deadlineAt); if (deadline <= now.getTime()) { this.fail(run, 'deadline exceeded', 'deadline_exceeded'); return; }
-    this.append([envelope('RUN_STARTING', runId, { runId, ownerId: this.ownerId, startingAt: now.toISOString() }), envelope('RUN_RUNNING', runId, { runId, ownerId: this.ownerId, startedAt: now.toISOString(), heartbeatAt: now.toISOString(), leaseUntil: new Date(now.getTime() + this.opts.leaseDurationMs).toISOString() })], context);
+    if (!isResumed) {
+      this.append([envelope('RUN_STARTING', runId, { runId, ownerId: this.ownerId, startingAt: now.toISOString() }), envelope('RUN_RUNNING', runId, { runId, ownerId: this.ownerId, startedAt: now.toISOString(), heartbeatAt: now.toISOString(), leaseUntil: new Date(now.getTime() + this.opts.leaseDurationMs).toISOString() })], context);
+    }
     const controller = new AbortController(); this.controllers.set(runId, controller);
     const heartbeat = setInterval(() => { const c = this.context(runId); if (c) this.append([envelope('RUN_HEARTBEAT', runId, { runId, ownerId: this.ownerId, heartbeatAt: new Date().toISOString(), leaseUntil: new Date(Date.now() + this.opts.leaseDurationMs).toISOString() })], c); }, this.opts.heartbeatIntervalMs);
     let deadlineExceeded = false; let lastProgressAt = 0; let lastPhase: string | undefined; let pendingProgress: RunProgressUpdate | undefined;
     const reportProgress = async (update: RunProgressUpdate): Promise<void> => { pendingProgress = update; const nowAt = Date.now(); const bypass = (lastPhase !== undefined && update.phase !== lastPhase) || update.providerActivity !== undefined || deadlineExceeded; if (lastProgressAt !== 0 && nowAt - lastProgressAt < this.opts.progressMinIntervalMs && !bypass) return; this.append([envelope('RUN_PROGRESS', runId, { runId, ...update })], context); lastProgressAt = nowAt; lastPhase = update.phase; pendingProgress = undefined; };
     const flushProgress = (): void => { if (pendingProgress) { this.append([envelope('RUN_PROGRESS', runId, { runId, ...pendingProgress })], context); pendingProgress = undefined; } };
     const timer = setTimeout(() => { deadlineExceeded = true; controller.abort(); }, Math.max(0, deadline - Date.now()));
-    try { const input = this.inputs.get(runId); if (!input) { this.fail(run, 'Internal error: run input missing at execution time', 'permanent'); return; } const provider = await this.deps.getProvider(run.providerName); await this.deps.executeResearch(runId, run.familyId, input, controller.signal, provider, { signal: controller.signal, runId, deadlineAt: deadline, trace: { traceId: runId, spanId: randomUUID().slice(0, 12) } }, reportProgress); flushProgress(); if (controller.signal.aborted) throw Object.assign(new Error('cancelled'), { cancelled: true }); }
+    try { const input = this.inputs.get(runId); if (!input) { this.fail(run, 'Internal error: run input missing at execution time', 'permanent'); return; } const provider = await this.deps.getProvider(run.providerName); const checkpoint = this.resumedCheckpoints.get(runId) ?? undefined; this.resumedCheckpoints.delete(runId); await this.deps.executeResearch(runId, run.familyId, input, controller.signal, provider, { signal: controller.signal, runId, deadlineAt: deadline, trace: { traceId: runId, spanId: randomUUID().slice(0, 12) } }, reportProgress, checkpoint); flushProgress(); if (controller.signal.aborted) throw Object.assign(new Error('cancelled'), { cancelled: true }); }
     catch (error) { flushProgress(); if (deadlineExceeded) this.claimTerminal(runId, [envelope('RUN_INTERRUPTED', runId, { runId, interruptedAt: new Date().toISOString(), reason: 'deadline exceeded' })]); else if (controller.signal.aborted) { if (this.stopping) return; /* shutdown owns the terminal event */ this.claimTerminal(runId, [envelope('RUN_CANCELLED', runId, { runId })]); } else { const c = this.context(runId); if (!c) return; this.fail(run, error instanceof Error ? error.message : String(error), classifyError(error) === 'TRANSIENT' ? 'transient' : 'permanent'); } }
-    finally { clearInterval(heartbeat); clearTimeout(timer); this.controllers.delete(runId); this.runs.set(runId, this.current(runId) ?? run); }
+    finally { clearInterval(heartbeat); clearTimeout(timer); this.controllers.delete(runId); this.runs.set(runId, this.current(runId) ?? run); const finalRun = this.current(runId); if (finalRun !== undefined && ['completed', 'failed', 'cancelled', 'interrupted'].includes(finalRun.status)) { deleteCheckpoint(runId); } }
   }
   private fail(run: ResearchRun, message: string, classification: RunError['classification']): void { if (this.stopping) return; /* shutdown owns the terminal event */ const error: RunError = { code: classification, classification, message, retryable: classification === 'transient', occurredAt: new Date().toISOString() }; const claimed = this.claimTerminal(run.runId, [ { ...envelope('RUN_FAILED', run.runId, { runId: run.runId, error }), eventVersion: 2 } ]); if (claimed) this.runs.set(run.runId, { ...run, status: 'failed', error }); }
   private current(id: string): ResearchRun | undefined { try { const folded = foldRunLedger(queryEvents({ runId: id })); return folded.get(id) ?? this.runs.get(id); } catch { return this.runs.get(id); } }

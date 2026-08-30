@@ -8,6 +8,7 @@
  * 3. Periodic gap analysis injected into context
  * 4. Output parity with pipeline strategy (postProcess + audit + synthesize)
  * 5. Gap-driven stop condition (no actionable gaps + idle LLM)
+ * 6. STORM-style moderator gap-finding (runs once after main loop)
  */
 
 import { logger, safeErrorLog } from '../../logger.js';
@@ -336,6 +337,38 @@ CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingF
     const GAP_CHECK_INTERVAL = 4;
     const MAX_IDLE_CHECKS = 2;
 
+    // ── Resume from checkpoint ──────────────────────────────────────────
+    if (ctx.resumeState !== undefined) {
+      const rs = ctx.resumeState;
+      this.history = rs.history as typeof this.history;
+      ctx.state.fromJSON(rs.strategyState);
+      ctx.budget.restore(rs.budgetState);
+      toolCallsSinceGapCheck = 0;
+      consecutiveIdleChecks = 0;
+
+      if (rs.status === 'started' && rs.pendingTool !== undefined) {
+        // Re-execute the tool that was interrupted
+        const toolResult = await this.executeTool(rs.pendingTool.name, rs.pendingTool.args);
+        const assistantEntry: { role: 'assistant'; thought?: string; action?: string; args?: Record<string, unknown> } = { role: 'assistant' };
+        if (rs.pendingTool.thought) assistantEntry.thought = rs.pendingTool.thought;
+        assistantEntry.action = rs.pendingTool.name;
+        assistantEntry.args = rs.pendingTool.args;
+        // History already has the assistant entry from the checkpoint — don't re-add
+        this.history.push({
+          role: 'tool',
+          tool: rs.pendingTool.name,
+          content: toolResult.content.slice(0, 8000),
+        });
+        toolCallsSinceGapCheck++;
+        // Checkpoint the completed step
+        if (ctx.checkpointStep) {
+          ctx.checkpointStep(rs.stepIndex, 'completed', { tool: rs.pendingTool.name, args: rs.pendingTool.args, content: toolResult.content.slice(0, 8000), error: toolResult.error }, this.history);
+        }
+      }
+      // Skip to next iteration after last completed step
+      iteration = rs.stepIndex + 1;
+    }
+
     while (iteration < this.maxIterations) {
       if (ctx.abortSignal?.aborted) break;
       if (ctx.budget.isExhausted()) break;
@@ -376,6 +409,10 @@ CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingF
       }
 
       if (parsed.type === 'action' && parsed.tool) {
+        // Checkpoint: before tool call (started)
+        if (ctx.checkpointStep) {
+          ctx.checkpointStep(iteration, 'started', { tool: parsed.tool, args: parsed.args ?? {}, thought: parsed.thought }, this.history);
+        }
         const toolResult = await this.executeTool(parsed.tool, parsed.args ?? {});
         const assistantEntry: { role: 'assistant'; thought?: string; action?: string; args?: Record<string, unknown> } = { role: 'assistant' };
         if (parsed.thought) assistantEntry.thought = parsed.thought;
@@ -387,6 +424,10 @@ CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingF
           tool: parsed.tool,
           content: toolResult.content.slice(0, 8000),
         });
+        // Checkpoint: after tool call (completed)
+        if (ctx.checkpointStep) {
+          ctx.checkpointStep(iteration, 'completed', { tool: parsed.tool, args: parsed.args ?? {}, content: toolResult.content.slice(0, 8000), error: toolResult.error }, this.history);
+        }
 
         toolCallsSinceGapCheck++;
         const progress = 5 + Math.round((iteration / this.maxIterations) * 85);
@@ -416,6 +457,9 @@ CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingF
         this.history.push(errorEntry);
       }
     }
+
+    // ── Phase 2b: Moderator gap-finding (STORM-style) ────────────────────
+    await this.runModeratorGapFinding(plan, query, systemPrompt, iteration, ctx);
 
     // ── Phase 3: Output parity — post-process, audit, synthesize ────────
     if (ctx.abortSignal?.aborted) {
@@ -736,6 +780,188 @@ ${toolDesc}`;
         content: `Tool ${name} failed: ${err instanceof Error ? err.message : String(err)}`,
         error: 'tool error',
       };
+    }
+  }
+
+  // ── Moderator gap-finding (STORM-style, runs once after main loop) ───
+
+  private async runModeratorGapFinding(
+    plan: ResearchPlan | null,
+    query: string,
+    systemPrompt: string,
+    loopEndIteration: number,
+    ctx: StrategyContext,
+  ): Promise<void> {
+    // Gate: need 2+ perspectives AND findings present
+    if (plan === null || plan.perspectives.length < 2) return;
+    const allFindings = ctx.state.getFindings();
+    if (allFindings.length === 0) return;
+
+    // Budget gate: 3+ tool calls, 20k tokens, 30s remaining
+    const snap = ctx.budget.snapshot();
+    if (snap.toolCallsUsed < 3) return;
+    const rem = ctx.budget.remaining();
+    if (rem.tokens < 20000 || rem.timeMs < 30000) return;
+
+    const coverage = ctx.state.computeSubQuestionCoverage();
+    const state = ctx.state.getState();
+
+    // Group findings by subQuestionId
+    const findingsBySq = new Map<string, { claim: string }[]>();
+    for (const f of allFindings) {
+      for (const sqId of f.subQuestionIds) {
+        const arr = findingsBySq.get(sqId) ?? [];
+        arr.push({ claim: f.claim });
+        findingsBySq.set(sqId, arr);
+      }
+    }
+
+    const perspectiveLines = plan.perspectives
+      .map((p) => `  - ${p.name}: ${p.question}`)
+      .join('\n');
+
+    const coverageLines = coverage
+      .map((c) => `  - [${c.status}] ${c.subQuestionText} (${String(c.sourceCount)} sources, ${String(c.findingCount)} findings)`)
+      .join('\n');
+
+    const findingsLines = coverage
+      .map((c) => {
+        const sqFindings = findingsBySq.get(c.subQuestionId) ?? [];
+        if (sqFindings.length === 0) return '';
+        const lines = sqFindings
+          .slice(0, 5)
+          .map((f) => `    - ${f.claim}`)
+          .join('\n');
+        return `  - ${c.subQuestionText}:\n${lines}`;
+      })
+      .filter(Boolean)
+      .join('\n');
+
+    // Contradictions if locally available
+    const contradictions = state.contradictions;
+    let contradictionSection = '';
+    if (contradictions.length > 0) {
+      const cLines = contradictions
+        .slice(0, 5)
+        .map((c) => `  - ${c.claimA} vs ${c.claimB} (${c.contradictionType})`)
+        .join('\n');
+      contradictionSection = `\nKNOWN CONTRADICTIONS:\n${cLines}`;
+    }
+
+    const prompt = `You are a research moderator. Review the current research state and identify the most important coverage gaps.
+
+PERSPECTIVES:
+${perspectiveLines}
+
+SUB-QUESTION COVERAGE:
+${coverageLines}
+
+FINDINGS BY SUB-QUESTION:
+${findingsLines}${contradictionSection}
+
+Identify at most 3 critical gaps — areas where the research is weakest or most likely to be misleading. For each gap, specify a targeted search query.
+
+Respond with ONLY a JSON object (no markdown fences):
+{
+  "gaps": [
+    {
+      "question": "<targeted search query to fill this gap>",
+      "reason": "<why this gap matters>",
+      "involvedPerspectives": ["<perspective name>"]
+    }
+  ]
+}
+
+If no critical gaps exist, return {"gaps": []}.`;
+
+    if (!ctx.llm) return;
+    const resp = await ctx.llm.callOrchestrator({
+      messages: [{ role: 'system', content: prompt }],
+      temperature: 0.3,
+      maxTokens: 1500,
+      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      ...(ctx.providerCtx
+        ? { runId: ctx.providerCtx.runId, traceId: ctx.providerCtx.trace.traceId }
+        : { runId: ctx.runContext.researchRunId }),
+    });
+    ctx.budget.recordToolCall();
+
+    if (!resp.success) return;
+
+    // Parse and validate moderator JSON response (same pattern as generatePlan)
+    const raw = parseJsonFromText<unknown>(resp.content);
+    if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return;
+    const obj = raw as Record<string, unknown>;
+    if (!Array.isArray(obj.gaps)) return;
+
+    interface ModeratorGap {
+      question: string;
+      reason: string;
+      involvedPerspectives: string[];
+    }
+    const gaps = (obj.gaps as unknown[])
+      .filter(
+        (g): g is ModeratorGap =>
+          typeof g === 'object' &&
+          g !== null &&
+          typeof (g as Record<string, unknown>).question === 'string',
+      )
+      .slice(0, 3);
+
+    if (gaps.length === 0) return;
+
+    try {
+      await ctx.reportProgress({
+        phase: 'moderator_gap_followup',
+        percent: 88,
+        message: `Moderator identified ${String(gaps.length)} gap(s), running follow-up iterations`,
+        counts: {
+          sourcesDiscovered: ctx.state.sourceCount(),
+          findings: ctx.state.findingCount(),
+          providerCalls: ctx.budget.snapshot().toolCallsUsed,
+          tokensUsed: ctx.budget.snapshot().tokensUsed,
+        },
+      });
+    } catch {
+      // non-fatal
+    }
+
+    // At most 2 follow-up iterations using existing ReAct machinery
+    const maxFollowUps = Math.min(2, gaps.length);
+    for (let i = 0; i < maxFollowUps; i++) {
+      // Re-check budget before each follow-up
+      const r = ctx.budget.remaining();
+      if (r.tokens < 20000 || r.timeMs < 30000) break;
+      if (ctx.abortSignal?.aborted) break;
+
+      const gap = gaps[i];
+      if (!gap) break;
+      const gapContext = `\n\nMODERATOR GAP FOLLOW-UP: ${gap.question}\nReason: ${gap.reason}\nRelated perspectives: ${gap.involvedPerspectives.join(', ')}\nUse this to guide your next search.`;
+
+      const response = await this.callLlm(systemPrompt, query, ctx, gapContext);
+      if (response === null) break;
+
+      const parsed = parseAgentResponse(response);
+      if (parsed.type !== 'action' || !parsed.tool) break;
+
+      const stepIdx = loopEndIteration + i + 1;
+      if (ctx.checkpointStep) {
+        ctx.checkpointStep(stepIdx, 'started', { tool: parsed.tool, args: parsed.args ?? {}, thought: parsed.thought }, this.history);
+      }
+      const toolResult = await this.executeTool(parsed.tool, parsed.args ?? {});
+      const assistantEntry: { role: 'assistant'; thought?: string; action?: string; args?: Record<string, unknown> } = { role: 'assistant' };
+      if (parsed.thought) assistantEntry.thought = parsed.thought;
+      assistantEntry.action = parsed.tool;
+      if (parsed.args) assistantEntry.args = parsed.args;
+      this.history.push(assistantEntry);
+      this.history.push({
+        role: 'tool',
+        tool: parsed.tool,
+        content: toolResult.content.slice(0, 8000),
+      });
+      if (ctx.checkpointStep) {
+        ctx.checkpointStep(stepIdx, 'completed', { tool: parsed.tool, args: parsed.args ?? {}, content: toolResult.content.slice(0, 8000), error: toolResult.error }, this.history);
+      }
     }
   }
 }

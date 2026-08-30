@@ -44,6 +44,8 @@ import { JobScheduler } from './scheduler.js'
 import { foldRunLedger } from './runLedger.js';
 import { selectFollowUpTarget } from './followUpPlanner.js';
 import type { RunFollowUp } from './types.js';
+import { upsertCheckpoint, CURRENT_CHECKPOINT_FORMAT_VERSION, type StepCheckpoint, type ExecutionSpec } from './stepCheckpoints.js';
+import type { ResumeState } from './strategies/types.js';
 
 function deserializeScratch(state: ProjectionState): ProjectionState { return deserializeProjectionState(serializeProjectionState(state)); }
 function applyScratchEvents(events: readonly NewEventInput[], state: ProjectionState, handlers: EventHandlerRegistry): void {
@@ -620,6 +622,17 @@ export function createRunService(): RunService {
         const planned = planClaimObservation(observation, scratch);
         const claimId = planned.reconciliation.canonicalClaimId;
         findingClaims.set(finding.id, claimId); claimTextToId.set(finding.claim, claimId);
+        // Supersession emits CLAIM_EXPIRED for the old claim + CLAIM_OBSERVED for the new
+        if (planned.reconciliation.classification === 'supersedes' && planned.reconciliation.matchedClaimId) {
+          const now = new Date().toISOString();
+          events.push(makeEnvelope('CLAIM_EXPIRED', runId, {
+            claimId: planned.reconciliation.matchedClaimId,
+            expiredAt: now,
+            reason: 'superseded' as const,
+            replacementClaimId: planned.reconciliation.canonicalClaimId,
+            replacementObservationId: observation.id,
+          }, { entityId: planned.reconciliation.matchedClaimId, entityType: 'claim' }));
+        }
         const claimEvent = makeEnvelope('CLAIM_OBSERVED', runId, planned, { entityId: claimId, entityType: 'claim' });
         events.push(claimEvent); applyScratchEvents([claimEvent], scratch, handlers);
         // EVIDENCE_LINKED per grounding (not per legacy sourceIds)
@@ -748,6 +761,7 @@ export function createRunService(): RunService {
     abortSignal: AbortSignal,
     providerCtx: ProviderCallContext,
     reportProgress: (update: RunProgressUpdate) => Promise<void>,
+    checkpoint?: StepCheckpoint,
   ): Promise<void> {
     // Resolve strategy
     const depth: ResearchDepth = (input.depth ?? 'standard') as ResearchDepth;
@@ -757,6 +771,23 @@ export function createRunService(): RunService {
     const budget = new BudgetTracker(budgetProfile);
     const stateEngine = new ResearchStateEngine(budget);
     stateEngine.initialize(input.query, budget);
+
+    // If checkpoint exists, restore state from it
+    let resumeState: ResumeState | undefined;
+    if (checkpoint !== undefined) {
+      stateEngine.fromJSON(checkpoint.strategyState);
+      budget.restore(checkpoint.strategyState.budget);
+      resumeState = {
+        stepIndex: checkpoint.stepIndex,
+        status: checkpoint.status,
+        history: checkpoint.history,
+        strategyState: checkpoint.strategyState,
+        budgetState: checkpoint.strategyState.budget,
+        ...(checkpoint.pendingWrite !== null && checkpoint.status === 'started'
+          ? { pendingTool: { name: (checkpoint.pendingWrite as { tool: string }).tool, args: (checkpoint.pendingWrite as { args: Record<string, unknown> }).args, ...(checkpoint.pendingWrite as { thought?: string }).thought !== undefined ? { thought: (checkpoint.pendingWrite as { thought?: string }).thought } : {} } }
+          : {}),
+      };
+    }
 
     // Build strategy context — construct LlmClient when baseUrl+model are
     // configured (apiToken optional: local OpenAI-compatible servers). Token
@@ -785,6 +816,31 @@ export function createRunService(): RunService {
       providerCtx,
       reportProgress,
       depth,
+      ...(resumeState !== undefined ? { resumeState } : {}),
+      checkpointStep: (stepIndex, status, pendingWrite, history) => {
+        const execSpec: ExecutionSpec = {
+          query: input.query,
+          depth: input.depth ?? 'standard',
+          topic: input.topic,
+          familyId,
+          threadId: input.threadId,
+          sessionId: input.sessionId,
+          providerName: input.providerName ?? input.provider?.name ?? 'unknown',
+          deadlineAt: new Date(providerCtx.deadlineAt).toISOString(),
+          config: input.config,
+        };
+        upsertCheckpoint({
+          runId,
+          stepIndex,
+          status,
+          executionSpec: execSpec,
+          strategyState: stateEngine.toJSON(),
+          history,
+          pendingWrite: pendingWrite as StepCheckpoint['pendingWrite'],
+          formatVersion: CURRENT_CHECKPOINT_FORMAT_VERSION,
+          updatedAt: new Date().toISOString(),
+        });
+      },
       getPriorKnowledge: async () => {
         const proj = getProjection();
         const claims = getClaimsByFamily(proj, familyId).slice(0, 20);
@@ -878,7 +934,7 @@ export function createRunService(): RunService {
     appendWithRetry,
     rebuildAppendContext: () => ({ projection: getProjection(), handlers }),
     rebuildProjection: getProjection,
-    executeResearch: (runId, familyId, input, signal, provider, providerCtx, reportProgress) => executeResearch(runId, familyId, { ...input, provider }, signal, providerCtx, reportProgress),
+    executeResearch: (runId, familyId, input, signal, provider, providerCtx, reportProgress, checkpoint) => executeResearch(runId, familyId, { ...input, provider }, signal, providerCtx, reportProgress, checkpoint),
   });
 
   scheduler.start();
