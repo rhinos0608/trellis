@@ -254,4 +254,110 @@ describe('extractClaimsFromSource', () => {
     expect(result.findings).toHaveLength(0);
     expect(result.rejected).toHaveLength(0);
   });
+
+  it('extracts claims with LLM reranking when content is long enough', async () => {
+    // Build content long enough to exceed MAX_PASSAGES=6 segments
+    // Each segment is ~4K chars (DEFAULT_WINDOW_SIZE), so need >24K total
+    const filler = 'The React compiler optimizes component rendering. '.repeat(40);
+    const longContent = Array.from({ length: 15 }, (_, i) =>
+      `## Section ${i}: React 19 features\nReact 19 introduces features like server components and the use() hook. Section ${i} discusses performance improvements in React 19. ${filler}`,
+    ).join('\n\n');
+
+    let rerankCallCount = 0;
+    const llm: Pick<LlmClient, 'callJSON'> = {
+      callJSON: async () => {
+        rerankCallCount++;
+        if (rerankCallCount === 1) {
+          // First call: reranking — return valid scores for top passages
+          const passages = Array.from({ length: 12 }, (_, i) => ({
+            id: `passage_src_long_${i}`,
+            score: 10 - i,
+          }));
+          return {
+            success: true,
+            data: { passages } as { passages: { id: string; score: number }[] },
+            response: { content: JSON.stringify({ passages }), model: 'mock', tokensUsed: 100, tokensSource: 'estimated', attempts: 1, durationMs: 50, success: true },
+          };
+        }
+        // Second call: extraction — return claims matching the actual passage IDs
+        const extractionResponse = {
+          claims: [
+            {
+              subjectText: 'React 19',
+              predicate: 'introduces',
+              objectText: 'server components',
+              polarity: 'asserted',
+              hedge: 'certain',
+              evidenceType: 'claim',
+              evidenceDirectness: 'direct',
+              passageId: 'passage_src_long_0',
+              verbatimSpan: 'React 19 introduces features like server components and the use() hook',
+              confidence: 0.9,
+              subQuestionIds: ['sq1'],
+              caveats: [],
+              freshnessSensitive: false,
+            },
+          ],
+        };
+        return {
+          success: true,
+          data: extractionResponse as { claims: unknown[] },
+          response: { content: JSON.stringify(extractionResponse), model: 'mock', tokensUsed: 100, tokensSource: 'estimated', attempts: 1, durationMs: 50, success: true },
+        };
+      },
+    };
+
+    const longBudget = new BudgetTracker({
+      depth: 'standard', maxSources: 50, maxExtractions: 50, maxGapLoops: 4,
+      minGapLoops: 2, maxToolCalls: 200, maxTokens: 400_000, maxTimeMs: 480_000,
+      maxStateEntries: 500,
+    });
+
+    const result = await extractClaimsFromSource(
+      makeInput({ content: longContent }),
+      { llm, budget: longBudget },
+    );
+    expect(result.status).toBe('extracted');
+    expect(rerankCallCount).toBe(2); // reranking + extraction
+  });
+
+  it('extracts claims with deterministic path when budget insufficient for reranking', async () => {
+    // Build content long enough to trigger reranking attempt (>24K chars for >6 segments)
+    const filler = 'The React compiler optimizes component rendering. '.repeat(40);
+    const longContent = Array.from({ length: 15 }, (_, i) =>
+      `## Section ${i}: React 19 features\nReact 19 introduces features like server components and the use() hook. Section ${i} discusses performance improvements in React 19. ${filler}`,
+    ).join('\n\n');
+
+    let rerankingInvoked = false;
+    const llm: Pick<LlmClient, 'callJSON'> = {
+      callJSON: async (opts) => {
+        // Detect reranking call vs extraction call: reranking prompt contains 'score each passage'
+        const prompt = opts.messages[0]?.content ?? '';
+        if (prompt.includes('score each passage')) {
+          rerankingInvoked = true;
+        }
+        return {
+          success: true,
+          data: basicFixture.mockLlmResponse as { claims: unknown[] },
+          response: { content: JSON.stringify(basicFixture.mockLlmResponse), model: 'mock', tokensUsed: 100, tokensSource: 'estimated', attempts: 1, durationMs: 50, success: true },
+        };
+      },
+    };
+
+    // Budget with only 1 tool call remaining — insufficient for reranking (needs >= 2)
+    const tightBudget = new BudgetTracker({
+      depth: 'standard', maxSources: 50, maxExtractions: 50, maxGapLoops: 4,
+      minGapLoops: 2, maxToolCalls: 1, maxTokens: 400_000, maxTimeMs: 480_000,
+      maxStateEntries: 500,
+    });
+
+    const result = await extractClaimsFromSource(
+      makeInput({ content: longContent }),
+      { llm, budget: tightBudget },
+    );
+    expect(result.status).toBe('extracted');
+    // Reranking should NOT have been called (budget gate blocked it)
+    expect(rerankingInvoked).toBe(false);
+    // But extraction still proceeded via deterministic path
+  });
 });
