@@ -37,7 +37,7 @@ export function createKnowledgeQueryService(db: Database) {
   function listClaims(input: ListClaimsInput = {}): QueryPage<Claim> {
     const readModel = requireReady();
     const limit = resolveLimit(input.limit);
-    const conditions: string[] = [];
+    const conditions: string[] = ['c.expired_at IS NULL'];
     const params: unknown[] = [];
     if (input.familyId !== undefined) { conditions.push('c.family_id = ?'); params.push(input.familyId); }
     if (input.threadId !== undefined) { conditions.push('c.thread_id = ?'); params.push(input.threadId); }

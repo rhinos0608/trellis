@@ -12,9 +12,11 @@ import { migration0001 } from './0001_event_store_foundation.js';
 import { migration0002 } from './0002_durable_knowledge_read_model.js';
 import { migration0003 } from './0003_event_actor_identity.js';
 import { migration0004 } from './0004_curation_lifecycle.js';
+import { migration0005 } from './0005_claim_validity.js';
+import { migration0006 } from './0006_research_step_checkpoints.js';
 import type { Migration } from './types.js';
 
-export const MIGRATIONS: readonly Migration[] = [migration0001, migration0002, migration0003, migration0004];
+export const MIGRATIONS: readonly Migration[] = [migration0001, migration0002, migration0003, migration0004, migration0005, migration0006];
 
 /** Latest applied migration version — the authoritative schema version. */
 export const SCHEMA_VERSION: number = MIGRATIONS[MIGRATIONS.length - 1]!.version; // eslint-disable-line @typescript-eslint/no-non-null-assertion

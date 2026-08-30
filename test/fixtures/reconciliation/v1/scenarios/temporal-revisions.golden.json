@@ -1,8 +1,8 @@
 {
   "corpusVersion": 1,
-  "projectionVersion": 5,
+  "projectionVersion": 6,
   "reconcilerVersion": 4,
-  "checksum": "sha256:projection-v1:bb2b8ec3aefb16ed2e6fe53093354849ec3a634edad1c9b7164b9c003eb36745",
+  "checksum": "sha256:projection-v1:c2c534993f9c69bbc5a167f04cda9d5f7385324f68db389a3be5c2da2317c68f",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -14,7 +14,7 @@
             "predicate": "supports",
             "subject": "trellis"
           },
-          "confidence": 0.875,
+          "confidence": 0.85,
           "confidenceHistory": [
             {
               "confidence": 0.8,
@@ -24,25 +24,13 @@
             },
             {
               "confidence": 0.9,
-              "observationId": "t1",
-              "observedAt": "2025-01-01T00:00:00.000Z",
-              "runId": "eval-run"
-            },
-            {
-              "confidence": 0.9,
-              "observationId": "t2",
-              "observedAt": "2025-01-01T00:00:00.000Z",
-              "runId": "eval-run"
-            },
-            {
-              "confidence": 0.9,
-              "observationId": "t4",
+              "observationId": "t3",
               "observedAt": "2025-01-01T00:00:00.000Z",
               "runId": "eval-run"
             }
           ],
           "contradictionState": "none",
-          "currentObservationId": "t1",
+          "currentObservationId": "t3",
           "epistemicStatus": "emerging",
           "evidenceIds": [],
           "evidenceType": "study",
@@ -53,161 +41,10 @@
           "id": "claim-1",
           "lastSeenAt": "2025-01-01T00:00:00.000Z",
           "lastSeenRunId": "eval-run",
-          "objectText": "replaces legacy sync engine",
-          "observationCount": 3,
-          "observationIds": [
-            "obs_legacy_claim-1",
-            "t1",
-            "t2",
-            "t4"
-          ],
-          "opposingEvidenceCount": 0,
-          "polarity": "asserted",
-          "predicate": "supports",
-          "revisionHistory": [
-            {
-              "after": {
-                "canonicalKey": {
-                  "predicate": "supports",
-                  "subject": "trellis"
-                },
-                "confidence": 0.9,
-                "evidenceType": "study",
-                "extractionVersion": "eval-v1",
-                "familyId": "eval-family",
-                "hedge": "certain",
-                "id": "t1",
-                "objectText": "replaces legacy sync engine",
-                "observedAt": "2025-01-01T00:00:00.000Z",
-                "polarity": "asserted",
-                "predicate": "supports",
-                "runId": "eval-run",
-                "sourceIds": [],
-                "subjectText": "Trellis",
-                "temporalScope": {
-                  "dateConfidence": "exact",
-                  "eventDate": "2025-01-01",
-                  "eventType": "updated"
-                }
-              },
-              "before": {
-                "canonicalKey": {
-                  "predicate": "supports",
-                  "subject": "trellis"
-                },
-                "evidenceType": "study",
-                "hedge": "certain",
-                "objectText": "sync engine",
-                "polarity": "asserted",
-                "predicate": "supports",
-                "subjectText": "Trellis",
-                "temporalScope": {
-                  "dateConfidence": "exact",
-                  "eventDate": "2024-01-01",
-                  "eventType": "released"
-                }
-              },
-              "classification": "supersedes",
-              "fromObservationId": "obs_legacy_claim-1",
-              "rationale": "Deterministic lexical reconciliation: supersedes (score=0.692).",
-              "revisedAt": "2025-01-01T00:00:00.000Z",
-              "revision": 1,
-              "runId": "eval-run",
-              "toObservationId": "t1"
-            },
-            {
-              "after": {
-                "canonicalKey": {
-                  "predicate": "supports",
-                  "subject": "trellis"
-                },
-                "confidence": 0.9,
-                "evidenceType": "study",
-                "extractionVersion": "eval-v1",
-                "familyId": "eval-family",
-                "hedge": "certain",
-                "id": "t4",
-                "objectText": "replaces legacy sync engine entirely",
-                "observedAt": "2025-01-01T00:00:00.000Z",
-                "polarity": "asserted",
-                "predicate": "supports",
-                "runId": "eval-run",
-                "sourceIds": [],
-                "subjectText": "Trellis",
-                "temporalScope": {
-                  "dateConfidence": "exact",
-                  "eventDate": "2026-01-01",
-                  "eventType": "updated"
-                }
-              },
-              "before": {
-                "canonicalKey": {
-                  "predicate": "supports",
-                  "subject": "trellis"
-                },
-                "evidenceType": "study",
-                "hedge": "certain",
-                "objectText": "replaces legacy sync engine",
-                "polarity": "asserted",
-                "predicate": "supports",
-                "subjectText": "Trellis",
-                "supportLevel": "weak",
-                "temporalScope": {
-                  "dateConfidence": "exact",
-                  "eventDate": "2025-01-01",
-                  "eventType": "updated"
-                }
-              },
-              "classification": "supersedes",
-              "fromObservationId": "t1",
-              "rationale": "Deterministic lexical reconciliation: supersedes (score=0.825).",
-              "revisedAt": "2025-01-01T00:00:00.000Z",
-              "revision": 2,
-              "runId": "eval-run",
-              "toObservationId": "t4"
-            }
-          ],
-          "subjectText": "Trellis",
-          "supportLevel": "weak",
-          "supportingEvidenceCount": 0,
-          "temporalScope": {
-            "dateConfidence": "exact",
-            "eventDate": "2025-01-01",
-            "eventType": "updated"
-          }
-        }
-      ],
-      [
-        "claim_t3",
-        {
-          "canonicalKey": {
-            "predicate": "supports",
-            "subject": "trellis"
-          },
-          "confidence": 0.9,
-          "confidenceHistory": [
-            {
-              "confidence": 0.9,
-              "observationId": "t3",
-              "observedAt": "2025-01-01T00:00:00.000Z",
-              "runId": "eval-run"
-            }
-          ],
-          "contradictionState": "none",
-          "currentObservationId": "t3",
-          "epistemicStatus": "speculative",
-          "evidenceIds": [],
-          "evidenceType": "study",
-          "familyId": "eval-family",
-          "firstSeenAt": "2025-01-01T00:00:00.000Z",
-          "firstSeenRunId": "eval-run",
-          "hedge": "certain",
-          "id": "claim_t3",
-          "lastSeenAt": "2025-01-01T00:00:00.000Z",
-          "lastSeenRunId": "eval-run",
           "objectText": "sync engine",
           "observationCount": 1,
           "observationIds": [
+            "obs_legacy_claim-1",
             "t3"
           ],
           "opposingEvidenceCount": 0,
@@ -222,6 +59,109 @@
             "eventDate": "2024-01-01",
             "eventType": "released"
           }
+        }
+      ],
+      [
+        "claim_t1",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.9,
+          "confidenceHistory": [
+            {
+              "confidence": 0.9,
+              "observationId": "t1",
+              "observedAt": "2025-01-01T00:00:00.000Z",
+              "runId": "eval-run"
+            },
+            {
+              "confidence": 0.9,
+              "observationId": "t2",
+              "observedAt": "2025-01-01T00:00:00.000Z",
+              "runId": "eval-run"
+            }
+          ],
+          "contradictionState": "none",
+          "currentObservationId": "t1",
+          "epistemicStatus": "emerging",
+          "evidenceIds": [],
+          "evidenceType": "study",
+          "familyId": "eval-family",
+          "firstSeenAt": "2025-01-01T00:00:00.000Z",
+          "firstSeenRunId": "eval-run",
+          "hedge": "certain",
+          "id": "claim_t1",
+          "lastSeenAt": "2025-01-01T00:00:00.000Z",
+          "lastSeenRunId": "eval-run",
+          "objectText": "replaces legacy sync engine",
+          "observationCount": 2,
+          "observationIds": [
+            "t1",
+            "t2"
+          ],
+          "opposingEvidenceCount": 0,
+          "polarity": "asserted",
+          "predicate": "supports",
+          "revisionHistory": [],
+          "subjectText": "Trellis",
+          "supportLevel": "weak",
+          "supportingEvidenceCount": 0,
+          "temporalScope": {
+            "dateConfidence": "exact",
+            "eventDate": "2025-01-01",
+            "eventType": "updated"
+          },
+          "validAt": "2025-01-01T00:00:00.000Z"
+        }
+      ],
+      [
+        "claim_t4",
+        {
+          "canonicalKey": {
+            "predicate": "supports",
+            "subject": "trellis"
+          },
+          "confidence": 0.9,
+          "confidenceHistory": [
+            {
+              "confidence": 0.9,
+              "observationId": "t4",
+              "observedAt": "2025-01-01T00:00:00.000Z",
+              "runId": "eval-run"
+            }
+          ],
+          "contradictionState": "none",
+          "currentObservationId": "t4",
+          "epistemicStatus": "speculative",
+          "evidenceIds": [],
+          "evidenceType": "study",
+          "familyId": "eval-family",
+          "firstSeenAt": "2025-01-01T00:00:00.000Z",
+          "firstSeenRunId": "eval-run",
+          "hedge": "certain",
+          "id": "claim_t4",
+          "lastSeenAt": "2025-01-01T00:00:00.000Z",
+          "lastSeenRunId": "eval-run",
+          "objectText": "replaces legacy sync engine entirely",
+          "observationCount": 1,
+          "observationIds": [
+            "t4"
+          ],
+          "opposingEvidenceCount": 0,
+          "polarity": "asserted",
+          "predicate": "supports",
+          "revisionHistory": [],
+          "subjectText": "Trellis",
+          "supportLevel": "weak",
+          "supportingEvidenceCount": 0,
+          "temporalScope": {
+            "dateConfidence": "exact",
+            "eventDate": "2026-01-01",
+            "eventType": "updated"
+          },
+          "validAt": "2025-01-01T00:00:00.000Z"
         }
       ]
     ],
@@ -376,7 +316,7 @@
               "score": 0.6916666666666667
             }
           ],
-          "canonicalClaimId": "claim-1",
+          "canonicalClaimId": "claim_t1",
           "classification": "supersedes",
           "matchedClaimId": "claim-1",
           "method": "lexical_rules_v2",
@@ -411,14 +351,19 @@
         {
           "candidates": [
             {
-              "claimId": "claim-1",
+              "claimId": "claim_t1",
               "classification": "same_claim",
               "score": 1
+            },
+            {
+              "claimId": "claim-1",
+              "classification": "supersedes",
+              "score": 0.6916666666666667
             }
           ],
-          "canonicalClaimId": "claim-1",
+          "canonicalClaimId": "claim_t1",
           "classification": "same_claim",
-          "matchedClaimId": "claim-1",
+          "matchedClaimId": "claim_t1",
           "method": "canonical_key_exact",
           "observationId": "t2",
           "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
@@ -429,14 +374,21 @@
       [
         "t3",
         {
-          "candidates": [],
-          "canonicalClaimId": "claim_t3",
-          "classification": "new_claim",
-          "method": "lexical_rules_v2",
+          "candidates": [
+            {
+              "claimId": "claim-1",
+              "classification": "same_claim",
+              "score": 1
+            }
+          ],
+          "canonicalClaimId": "claim-1",
+          "classification": "same_claim",
+          "matchedClaimId": "claim-1",
+          "method": "canonical_key_exact",
           "observationId": "t3",
-          "rationale": "Deterministic lexical reconciliation: new_claim (score=0.692).",
+          "rationale": "Deterministic lexical reconciliation: same_claim (score=1.000).",
           "reconcilerVersion": 4,
-          "score": 0.6916666666666667
+          "score": 1
         }
       ],
       [
@@ -444,19 +396,19 @@
         {
           "candidates": [
             {
-              "claimId": "claim-1",
+              "claimId": "claim_t1",
               "classification": "supersedes",
               "score": 0.825
             },
             {
-              "claimId": "claim_t3",
+              "claimId": "claim-1",
               "classification": "supersedes",
               "score": 0.625
             }
           ],
-          "canonicalClaimId": "claim-1",
+          "canonicalClaimId": "claim_t4",
           "classification": "supersedes",
-          "matchedClaimId": "claim-1",
+          "matchedClaimId": "claim_t1",
           "method": "lexical_rules_v2",
           "observationId": "t4",
           "rationale": "Deterministic lexical reconciliation: supersedes (score=0.825).",
@@ -479,7 +431,8 @@
                 "dateConfidence": "exact",
                 "eventDate": "2025-01-01",
                 "eventType": "updated"
-              }
+              },
+              "validAt": "2025-01-01T00:00:00.000Z"
             },
             "previousObservationId": "t1"
           }
@@ -493,19 +446,19 @@
       ],
       [
         "t1",
-        "claim-1"
+        "claim_t1"
       ],
       [
         "t2",
-        "claim-1"
+        "claim_t1"
       ],
       [
         "t3",
-        "claim_t3"
+        "claim-1"
       ],
       [
         "t4",
-        "claim-1"
+        "claim_t4"
       ]
     ],
     "observationsByClaimId": [
@@ -513,15 +466,20 @@
         "claim-1",
         [
           "obs_legacy_claim-1",
-          "t1",
-          "t2",
-          "t4"
+          "t3"
         ]
       ],
       [
-        "claim_t3",
+        "claim_t1",
         [
-          "t3"
+          "t1",
+          "t2"
+        ]
+      ],
+      [
+        "claim_t4",
+        [
+          "t4"
         ]
       ]
     ],
@@ -541,7 +499,8 @@
         "eval-family",
         [
           "claim-1",
-          "claim_t3"
+          "claim_t1",
+          "claim_t4"
         ]
       ]
     ],

@@ -1,8 +1,8 @@
 {
   "corpusVersion": 1,
-  "projectionVersion": 5,
+  "projectionVersion": 6,
   "reconcilerVersion": 4,
-  "checksum": "sha256:projection-v1:d4aa8438f1f8876cb3fc7c7413578e0b97a7ffd7fe41c29215b8e4f941e37e80",
+  "checksum": "sha256:projection-v1:0046007d683d1eea9dcfd01427de1fea3c6bc915a1499176f51fc0ee84f9f5ff",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -151,7 +151,8 @@
           "revisionHistory": [],
           "subjectText": "SQLite",
           "supportLevel": "conflicting",
-          "supportingEvidenceCount": 0
+          "supportingEvidenceCount": 0,
+          "validAt": "2025-01-01T00:00:00.000Z"
         }
       ],
       [
@@ -193,7 +194,8 @@
           "revisionHistory": [],
           "subjectText": "Redis",
           "supportLevel": "weak",
-          "supportingEvidenceCount": 0
+          "supportingEvidenceCount": 0,
+          "validAt": "2025-01-01T00:00:00.000Z"
         }
       ]
     ],

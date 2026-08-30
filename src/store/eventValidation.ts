@@ -126,6 +126,7 @@ export function validateEventReferences(eventType: string, payload: any, state: 
     case 'CLAIM_RETRACTION_SET': if (payload.target.kind === 'claim') claim(payload.target.id); else if (!state.claimObservations.has(payload.target.id)) missing(`observation ${payload.target.id}`); break;
     case 'CLAIM_RELATION_CURATED': if (payload.after) { claim(payload.after.fromClaimId); claim(payload.after.toClaimId); } break;
     case 'EVIDENCE_STANCE_OVERRIDDEN': if (!state.evidence.has(payload.evidenceId)) missing(`evidence ${payload.evidenceId}`); claim(payload.claimId); break;
+    case 'CLAIM_EXPIRED': claim(payload.claimId); break;
   }
 }
 

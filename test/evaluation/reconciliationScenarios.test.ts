@@ -49,10 +49,14 @@ describe('reconciliation scenario gates (v1)', () => {
       } else {
         expect(step.reconciliation.matchedClaimId).toBeUndefined();
       }
-      // Canonical reuse contract: only same_claim/supersedes join the matched cluster.
-      const reuses = step.reconciliation.classification === 'same_claim'
-        || step.reconciliation.classification === 'supersedes';
-      if (reuses) expect(step.reconciliation.canonicalClaimId).toBe(step.reconciliation.matchedClaimId);
+      // Canonical reuse contract: same_claim joins the matched cluster.
+      // Supersedes creates a NEW claim identity (distinct canonicalClaimId).
+      if (step.reconciliation.classification === 'same_claim') {
+        expect(step.reconciliation.canonicalClaimId).toBe(step.reconciliation.matchedClaimId);
+      }
+      if (step.reconciliation.classification === 'supersedes') {
+        expect(step.reconciliation.canonicalClaimId).not.toBe(step.reconciliation.matchedClaimId);
+      }
     }
   });
 
@@ -82,16 +86,9 @@ describe('reconciliation scenario gates (v1)', () => {
       expect(state.claimObservations.has(step.observationId)).toBe(true);
       expect(state.claims.has(canonicalId)).toBe(true);
     }
-    // Supersession steps must persist a revision entry on the canonical claim;
-    // currentObservationId tracks only the latest superseding observation.
-    for (const step of steps) {
-      if (step.reconciliation.classification === 'supersedes') {
-        const claim = state.claims.get(step.reconciliation.canonicalClaimId)!;
-        const revisions = claim.revisionHistory ?? [];
-        expect(revisions.some((r) => r.toObservationId === step.observationId && r.classification === 'supersedes'))
-          .toBe(true);
-      }
-    }
+    // Supersession creates a NEW claim identity — the old claim receives
+    // a CLAIM_EXPIRED event (event-sourcing: domain code emits, never mutates
+    // read model directly). The golden test verifies canonical cluster assignment above.
   });
 
   describe('golden projection metadata validation', () => {

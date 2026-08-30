@@ -1,8 +1,8 @@
 {
   "corpusVersion": 1,
-  "projectionVersion": 5,
+  "projectionVersion": 6,
   "reconcilerVersion": 4,
-  "checksum": "sha256:projection-v1:99c56cee8746c18056673bcc26d0d4f9d92a6e82e082702914a1e8af39ba8429",
+  "checksum": "sha256:projection-v1:264d69deaa447832bf789a55ea9b06bfd845b5345bdc3e506829f5b5738cfae5",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -95,7 +95,8 @@
           "revisionHistory": [],
           "subjectText": "Trellis",
           "supportLevel": "weak",
-          "supportingEvidenceCount": 0
+          "supportingEvidenceCount": 0,
+          "validAt": "2025-01-01T00:00:00.000Z"
         }
       ],
       [
@@ -138,7 +139,8 @@
           "revisionHistory": [],
           "subjectText": "Trellis",
           "supportLevel": "weak",
-          "supportingEvidenceCount": 0
+          "supportingEvidenceCount": 0,
+          "validAt": "2025-01-01T00:00:00.000Z"
         }
       ],
       [
@@ -180,7 +182,8 @@
           "revisionHistory": [],
           "subjectText": "Trellis",
           "supportLevel": "weak",
-          "supportingEvidenceCount": 0
+          "supportingEvidenceCount": 0,
+          "validAt": "2025-01-01T00:00:00.000Z"
         }
       ]
     ],

@@ -69,7 +69,7 @@ describe('migration 0001: fresh DB', () => {
 
     // schema_migrations has both numbered migrations
     const rows = db!.prepare('SELECT * FROM schema_migrations ORDER BY version').all() as { version: number; name: string; checksum: string }[];
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(6);
     expect(rows[0]!.version).toBe(1);
     expect(rows[0]!.name).toBe('event_store_foundation');
     expect(rows[0]!.checksum).toMatch(/^sha256:/);
@@ -169,7 +169,7 @@ describe('migration 0001: legacy DB migration', () => {
 
     // All migrations apply to legacy databases in one initialization.
     const migrations = db!.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as { version: number; name: string }[];
-    expect(migrations).toHaveLength(4);
+    expect(migrations).toHaveLength(6);
     expect(migrations[0]!.version).toBe(1);
     expect(migrations[0]!.name).toBe('event_store_foundation');
     expect(migrations[1]!.version).toBe(2);
@@ -178,6 +178,8 @@ describe('migration 0001: legacy DB migration', () => {
     expect(migrations[2]!.name).toBe('event_actor_identity');
     expect(migrations[3]!.version).toBe(4);
     expect(migrations[3]!.name).toBe('curation_lifecycle');
+    expect(migrations[4]!.version).toBe(5);
+    expect(migrations[4]!.name).toBe('claim_validity');
 
     // Seq values are ascending 1..3 in timestamp order: id-a (t1), id-b (t2), id-c (t3)
     const all = queryEvents({});
@@ -382,7 +384,7 @@ describe('migration 0001: hasSeq path', () => {
 
     // All migrations are recorded after migrating an already-seq DB.
     const migrations = db!.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as { version: number; name: string }[];
-    expect(migrations).toHaveLength(4);
+    expect(migrations).toHaveLength(6);
     expect(migrations[0]!.version).toBe(1);
     expect(migrations[0]!.name).toBe('event_store_foundation');
     expect(migrations[1]!.version).toBe(2);
@@ -391,6 +393,8 @@ describe('migration 0001: hasSeq path', () => {
     expect(migrations[2]!.name).toBe('event_actor_identity');
     expect(migrations[3]!.version).toBe(4);
     expect(migrations[3]!.name).toBe('curation_lifecycle');
+    expect(migrations[4]!.version).toBe(5);
+    expect(migrations[4]!.name).toBe('claim_validity');
 
     // projection_checkpoints table still exists
     const cpExists = db!.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projection_checkpoints'").get();
@@ -415,7 +419,7 @@ describe('migration 0001: restart idempotency', () => {
 
     // All migration rows remain after restart, without duplicates.
     const migrations = db!.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all() as { version: number; name: string }[];
-    expect(migrations).toHaveLength(4);
+    expect(migrations).toHaveLength(6);
     expect(migrations[0]!.version).toBe(1);
     expect(migrations[0]!.name).toBe('event_store_foundation');
     expect(migrations[1]!.version).toBe(2);
@@ -424,6 +428,8 @@ describe('migration 0001: restart idempotency', () => {
     expect(migrations[2]!.name).toBe('event_actor_identity');
     expect(migrations[3]!.version).toBe(4);
     expect(migrations[3]!.name).toBe('curation_lifecycle');
+    expect(migrations[4]!.version).toBe(5);
+    expect(migrations[4]!.name).toBe('claim_validity');
 
     // Existing events untouched
     expect(countEvents()).toBe(1);

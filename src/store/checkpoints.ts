@@ -16,7 +16,9 @@ import { canonicalSerializeProjectionState } from './projectionState.js';
 // fields (curationStatus, mergedIntoClaimId, splitIntoClaimIds, lastCuration);
 // five curation event types added. Conventions: v3 Phase 2 (claim codecs),
 // v4 Phase 3.
-export const CURRENT_PROJECTION_VERSION = 5;
+// v6: Claim gains validAt/expiredAt for claim validity/expiration semantics.
+// Supersession expires old claim, contradiction does NOT expire.
+export const CURRENT_PROJECTION_VERSION = 6;
 
 export interface ProjectionCheckpoint {
   id: string;

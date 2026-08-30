@@ -173,6 +173,10 @@ export interface Claim extends ClaimAssertion {
   id: string; familyId: string; threadId?: string; currentObservationId?: string; confidence: number;
   epistemicStatus?: EpistemicStatus; contradictionState: ClaimContradictionState;
   firstSeenRunId: string; firstSeenAt?: string; lastSeenRunId: string; lastSeenAt?: string;
+  /** When this claim became valid (backfilled from firstSeenAt/lastSeenAt for legacy rows). */
+  validAt?: string;
+  /** When this claim was superseded — IS NULL means active/valid. */
+  expiredAt?: string;
   observationIds?: string[]; evidenceIds?: string[]; observationCount?: number;
   supportingEvidenceCount?: number; opposingEvidenceCount?: number;
   confidenceHistory?: ClaimConfidencePoint[]; revisionHistory?: ClaimRevision[];

@@ -96,7 +96,8 @@ export type NewTrellisEventType =
   | 'CLAIM_RELATION_CURATED'
   | 'EVIDENCE_STANCE_OVERRIDDEN'
   | 'RESEARCH_PLAN_CREATED'
-  | 'RESEARCH_PLAN_REVISED';
+  | 'RESEARCH_PLAN_REVISED'
+  | 'CLAIM_EXPIRED';
 
 export type TrellisEventType = LegacyTrellisEventType | NewTrellisEventType;
 
@@ -165,6 +166,8 @@ export const ROLLBACK_CLASS: Record<TrellisEventType, RollbackClass> = {
   // agent strategy plan lifecycle — run-local, no cross-run mutation
   RESEARCH_PLAN_CREATED: 'pure_run_local',
   RESEARCH_PLAN_REVISED: 'pure_run_local',
+  // claim validity lifecycle — expiration of superseded claims
+  CLAIM_EXPIRED: 'pure_run_local',
 };
 
 /** Note: CLAIM_EXTRACTED stays audit_only exactly as it is in search-mcp
@@ -365,6 +368,16 @@ export interface EvidenceStanceOverriddenPayload {
 export type RollbackOutcome =
   | { kind: 'executed'; inverseEventId: string }
   | { kind: 'blocked'; reason: string };
+
+/** Payload for CLAIM_EXPIRED — emitted when a superseding observation
+ * creates a new claim identity, expiring the previous one. */
+export interface ClaimExpiredPayload {
+  claimId: string;
+  expiredAt: string;
+  reason: 'superseded';
+  replacementClaimId: string;
+  replacementObservationId: string;
+}
 
 // ── Event envelope ──────────────────────────────────────────────────────
 

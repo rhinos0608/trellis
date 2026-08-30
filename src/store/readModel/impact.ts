@@ -64,4 +64,5 @@ export const READ_MODEL_IMPACT = {
   CLAIM_RELATION_CURATED: (e) => { const x = p(e); return { dirty: true, relationIds: ids([x.relationId]) }; },
   EVIDENCE_STANCE_OVERRIDDEN: (e) => { const x = p(e); return { dirty: true, evidenceIds: ids([x.evidenceId]), claimIds: ids([x.claimId]) }; },
   RESEARCH_PLAN_CREATED: none, RESEARCH_PLAN_REVISED: none,
+  CLAIM_EXPIRED: (e) => ({ claimIds: ids([p(e).claimId]) }),
 } satisfies Record<TrellisEventType, ReadModelImpactResolver>;

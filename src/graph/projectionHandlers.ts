@@ -28,6 +28,7 @@ import type {
   ClaimRelationCuratedPayload,
   EvidenceStanceOverriddenPayload,
   CuratedRelationSnapshot,
+  ClaimExpiredPayload,
 } from '../store/eventTypes.js';
 import type {
   CanonicalEntity,
@@ -205,7 +206,7 @@ const handleClaimObserved: EventHandler = (event, state) => {
       .some((id) => state.rolledBackRuns.has(state.claimObservations.get(id)?.runId ?? ''));
     if (!founderRolledBack) throw new EventReferenceInvalidError('CLAIM_OBSERVED', reconciliation.matchedClaimId ?? reconciliation.canonicalClaimId);
     const { id: _id, familyId: _family, threadId: _thread, runId: _run, observedAt: _at, confidence: _conf, sourceIds: _sources, extractionVersion: _version, ...assertion } = observation;
-    const claim: Claim = { ...assertion, id: reconciliation.canonicalClaimId, familyId: observation.familyId, ...(observation.threadId !== undefined ? { threadId: observation.threadId } : {}), confidence: observation.confidence, currentObservationId: observation.id, firstSeenRunId: observation.runId, firstSeenAt: observation.observedAt, lastSeenRunId: observation.runId, lastSeenAt: observation.observedAt, contradictionState: 'none', epistemicStatus: 'unknown', observationIds: [observation.id], observationCount: 1, evidenceIds: [], supportingEvidenceCount: 0, opposingEvidenceCount: 0, confidenceHistory: [{ observationId: observation.id, runId: observation.runId, observedAt: observation.observedAt, confidence: observation.confidence }], revisionHistory: [] };
+    const claim: Claim = { ...assertion, id: reconciliation.canonicalClaimId, familyId: observation.familyId, ...(observation.threadId !== undefined ? { threadId: observation.threadId } : {}), confidence: observation.confidence, currentObservationId: observation.id, firstSeenRunId: observation.runId, firstSeenAt: observation.observedAt, lastSeenRunId: observation.runId, lastSeenAt: observation.observedAt, validAt: observation.observedAt, contradictionState: 'none', epistemicStatus: 'unknown', observationIds: [observation.id], observationCount: 1, evidenceIds: [], supportingEvidenceCount: 0, opposingEvidenceCount: 0, confidenceHistory: [{ observationId: observation.id, runId: observation.runId, observedAt: observation.observedAt, confidence: observation.confidence }], revisionHistory: [] };
     state.claims.set(claim.id, claim); addClaimFamilyIndex(state, claim); recomputeClaim(state, claim); return;
   }
   if (reconciliation.classification === 'same_claim' && matched) {
@@ -221,21 +222,20 @@ const handleClaimObserved: EventHandler = (event, state) => {
     return;
   }
   if (reconciliation.classification === 'supersedes' && matched) {
-    const supersedes = reconciliation.supersedes;
-    if (!supersedes) return;
-    const before = supersedes.previousAssertion;
-    const { id: _id, familyId: _family, threadId: _thread, runId: _run, observedAt: _at, confidence: _conf, sourceIds: _sources, extractionVersion: _version, ...updatedAssertion } = observation;
-    Object.assign(matched, updatedAssertion, { observationIds: [...(matched.observationIds ?? []), observation.id], observationCount: (matched.observationIds?.length ?? 0) + 1, currentObservationId: observation.id, lastSeenRunId: observation.runId, lastSeenAt: observation.observedAt, confidence: observation.confidence });
-    matched.confidenceHistory = [...(matched.confidenceHistory ?? []), { observationId: observation.id, runId: observation.runId, observedAt: observation.observedAt, confidence: observation.confidence }];
-    matched.revisionHistory = [...(matched.revisionHistory ?? []), { revision: (matched.revisionHistory?.length ?? 0) + 1, classification: 'supersedes', fromObservationId: supersedes.previousObservationId, toObservationId: observation.id, runId: observation.runId, revisedAt: observation.observedAt, before, after: observation, rationale: reconciliation.rationale }];
-    recomputeClaim(state, matched);
+    // Supersession creates a NEW claim identity — the old claim is expired
+    // via a separate CLAIM_EXPIRED event (event-sourcing rule: domain code
+    // only emits events, never mutates the read model directly).
+    const { id: _id, familyId: _family, threadId: _thread, runId: _run, observedAt: _at, confidence: _conf, sourceIds: _sources, extractionVersion: _version, ...newAssertion } = observation;
+    const claim: Claim = { ...newAssertion, id: reconciliation.canonicalClaimId, familyId: observation.familyId, ...(observation.threadId !== undefined ? { threadId: observation.threadId } : {}), confidence: observation.confidence, currentObservationId: observation.id, firstSeenRunId: observation.runId, firstSeenAt: observation.observedAt, lastSeenRunId: observation.runId, lastSeenAt: observation.observedAt, validAt: observation.observedAt, contradictionState: 'none', epistemicStatus: 'unknown', observationIds: [observation.id], observationCount: 1, evidenceIds: [], supportingEvidenceCount: 0, opposingEvidenceCount: 0, confidenceHistory: [{ observationId: observation.id, runId: observation.runId, observedAt: observation.observedAt, confidence: observation.confidence }], revisionHistory: [] };
+    state.claims.set(claim.id, claim); addClaimFamilyIndex(state, claim);
+    recomputeClaim(state, claim);
     return;
   }
   const { id: _observationId, familyId: _familyId, threadId: _threadId, runId: _runId, observedAt: _observedAt, confidence: _confidence, sourceIds: _sourceIds, extractionVersion: _extractionVersion, ...assertion } = observation;
   const claim: Claim = {
     ...assertion, id: reconciliation.canonicalClaimId, familyId: observation.familyId, ...(observation.threadId !== undefined ? { threadId: observation.threadId } : {}), confidence: observation.confidence, currentObservationId: observation.id,
     firstSeenRunId: observation.runId, firstSeenAt: observation.observedAt, lastSeenRunId: observation.runId,
-    lastSeenAt: observation.observedAt, contradictionState: 'none', epistemicStatus: 'unknown',
+    lastSeenAt: observation.observedAt, validAt: observation.observedAt, contradictionState: 'none', epistemicStatus: 'unknown',
     observationIds: [observation.id], observationCount: 1, evidenceIds: [], supportingEvidenceCount: 0,
     opposingEvidenceCount: 0, confidenceHistory: [{ observationId: observation.id, runId: observation.runId, observedAt: observation.observedAt, confidence: observation.confidence }], revisionHistory: [],
   };
@@ -492,6 +492,18 @@ function putRelation(state: ProjectionState, relation: CuratedRelationSnapshot):
   state.claimRelations.set(value.id, value); addClaimRelationIndex(state, value);
 }
 
+// ── Handle CLAIM_EXPIRED ─────────────────────────────────────────────
+
+/** CLAIM_EXPIRED — mark a superseded claim as expired in the read model. */
+const handleClaimExpired: EventHandler = (event, state) => {
+  const p = event.payload as ClaimExpiredPayload;
+  const claim = state.claims.get(p.claimId);
+  if (claim) {
+    claim.expiredAt = p.expiredAt;
+    recomputeClaim(state, claim);
+  }
+};
+
 const handleClaimMerged: EventHandler = (event, state) => {
   const p = event.payload as ClaimMergedPayload;
   const source = state.claims.get(p.sourceClaimId); const survivor = state.claims.get(p.survivorClaimId);
@@ -619,4 +631,5 @@ export const graphEventHandlers = {
   CLAIM_RETRACTION_SET: handleClaimRetractionSet,
   CLAIM_RELATION_CURATED: handleClaimRelationCurated,
   EVIDENCE_STANCE_OVERRIDDEN: handleEvidenceStanceOverridden,
+  CLAIM_EXPIRED: handleClaimExpired,
 } as const;

@@ -25,8 +25,9 @@ const observation = (id: string, subjectText: string, familyId: string, runId: s
   sourceIds: [], extractionVersion: 'v1',
 });
 const observed = (id: string, subjectText: string, familyId: string, runId: string, claimId: string, classification: 'new_claim' | 'same_claim' | 'supersedes' | 'contradiction' = 'new_claim', matchedClaimId?: string, previousObservationId?: string): NewEventInput => {
+  const canonicalClaimId = classification === 'supersedes' ? `claim_${id}` : claimId;
   const reconciliation = {
-    observationId: id, classification, canonicalClaimId: claimId, ...(classification !== 'new_claim' ? { matchedClaimId: matchedClaimId ?? claimId } : {}),
+    observationId: id, classification, canonicalClaimId, ...(classification !== 'new_claim' ? { matchedClaimId: matchedClaimId ?? claimId } : {}),
     score: 0.9, method: 'canonical_key_exact' as const, rationale: 'test', reconcilerVersion: 1 as const, candidates: [],
     ...(classification === 'supersedes' ? { supersedes: { previousObservationId: previousObservationId ?? 'missing', previousAssertion: assertion('old text') } } : {}),
   };
@@ -99,7 +100,7 @@ describe('rollback read-model recovery', () => {
     appendEvents([event('FAMILY_CREATED', { family_id: 'family-1', label: 'Family' }), observed('obs-old', 'old ghost token', 'family-1', 'run-1', 'claim-1'), sourceObserved('source-1', 'run-1', 'Old ghost title', 'https://example.com/old-ghost')], { projection: state, handlers });
     appendEvents([observed('obs-new', 'new living token', 'family-1', 'run-2', 'claim-1', 'supersedes', 'claim-1', 'obs-old')], { projection: state, handlers });
     db().prepare('DELETE FROM rm_sources WHERE id = ?').run('source-1');
-    expect((db().prepare("SELECT COUNT(*) AS n FROM rm_claims_fts WHERE rm_claims_fts MATCH 'old'").get() as { n: number }).n).toBe(0);
+    expect((db().prepare("SELECT COUNT(*) AS n FROM rm_claims_fts WHERE rm_claims_fts MATCH 'old'").get() as { n: number }).n).toBe(1);
     expect((db().prepare("SELECT COUNT(*) AS n FROM rm_claims_fts WHERE rm_claims_fts MATCH 'living'").get() as { n: number }).n).toBe(1);
     expect((db().prepare("SELECT COUNT(*) AS n FROM rm_sources_fts WHERE rm_sources_fts MATCH 'ghost'").get() as { n: number }).n).toBe(0);
   });

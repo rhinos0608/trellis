@@ -147,8 +147,8 @@ const claimReconciliationPayload = z.strictObject({
 }).superRefine((r, ctx) => {
   if (r.classification === 'new_claim' && r.matchedClaimId !== undefined) ctx.addIssue({ code: 'custom', path: ['matchedClaimId'], message: 'new_claim forbids matchedClaimId' });
   if (r.classification !== 'new_claim' && r.matchedClaimId === undefined) ctx.addIssue({ code: 'custom', path: ['matchedClaimId'], message: 'classification requires matchedClaimId' });
-  if ((r.classification === 'same_claim' || r.classification === 'supersedes') && r.canonicalClaimId !== r.matchedClaimId) ctx.addIssue({ code: 'custom', path: ['canonicalClaimId'], message: 'canonicalClaimId must equal matchedClaimId' });
-  if (['near_duplicate', 'elaboration', 'qualification', 'contradiction'].includes(r.classification) && r.canonicalClaimId === r.matchedClaimId) ctx.addIssue({ code: 'custom', path: ['canonicalClaimId'], message: 'canonicalClaimId must differ from matchedClaimId' });
+  if (r.classification === 'same_claim' && r.canonicalClaimId !== r.matchedClaimId) ctx.addIssue({ code: 'custom', path: ['canonicalClaimId'], message: 'canonicalClaimId must equal matchedClaimId' });
+  if (['near_duplicate', 'elaboration', 'qualification', 'contradiction', 'supersedes'].includes(r.classification) && r.canonicalClaimId === r.matchedClaimId) ctx.addIssue({ code: 'custom', path: ['canonicalClaimId'], message: 'canonicalClaimId must differ from matchedClaimId' });
   if (r.classification === 'supersedes' && r.supersedes === undefined) ctx.addIssue({ code: 'custom', path: ['supersedes'], message: 'supersedes required' });
   if (r.classification !== 'supersedes' && r.supersedes !== undefined) ctx.addIssue({ code: 'custom', path: ['supersedes'], message: 'supersedes forbidden' });
 });
@@ -456,6 +456,14 @@ export const claimRelationCuratedPayload = z
     if (r.after !== null && r.after.id !== r.relationId) ctx.addIssue({ code: 'custom', path: ['after'], message: 'after.id must equal relationId' });
     if (r.before !== null && r.before.id !== r.relationId) ctx.addIssue({ code: 'custom', path: ['before'], message: 'before.id must equal relationId' });
   });
+
+export const claimExpiredPayload = z.strictObject({
+  claimId: z.string(),
+  expiredAt: z.string(),
+  reason: z.literal('superseded'),
+  replacementClaimId: z.string(),
+  replacementObservationId: z.string(),
+});
 
 export const evidenceStanceOverriddenPayload = z.strictObject({
   curation: curationContext,

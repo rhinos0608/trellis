@@ -248,7 +248,7 @@ export function planClaimObservation(
 ): PlannedClaimObservation {
   const claims = [...(state.claimsByFamilyId.get(observation.familyId) ?? [])]
     .map((id) => state.claims.get(id))
-    .filter((claim): claim is Claim => claim !== undefined);
+    .filter((claim): claim is Claim => claim !== undefined && !claim.expiredAt);
   const scored = claims.map((claim) => ({ claim, score: scorePair(observation, claim) }));
   scored.sort((a, b) => {
     const scoreOrder = b.score - a.score;
@@ -259,7 +259,7 @@ export function planClaimObservation(
   const topScore = best?.score;
   const secondScore = top[1]?.score;
   const classification = best ? classify(observation, best.claim, best.score, topScore, secondScore) : 'new_claim';
-  const createsClaim = classification === 'new_claim' || classification === 'near_duplicate' || classification === 'elaboration' || classification === 'qualification' || classification === 'contradiction';
+  const createsClaim = classification === 'new_claim' || classification === 'near_duplicate' || classification === 'elaboration' || classification === 'qualification' || classification === 'contradiction' || classification === 'supersedes';
   const canonicalClaimId = createsClaim ? `claim_${observation.id}` : best?.claim.id ?? `claim_${observation.id}`;
   const method = best !== undefined && sameKey(observation, best.claim) ? 'canonical_key_exact'
     : (best !== undefined && topScore !== undefined && topScore >= 0.92 && sameScope(observation, best.claim)) ? 'entity_aware_v3'

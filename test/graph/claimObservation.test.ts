@@ -24,7 +24,11 @@ describe('longitudinal claim observations', () => {
     expect(state.contradictions.size).toBe(1); expect(state.claimRelations.size).toBe(1);
     const s = createEmptyProjectionState(); graphEventHandlers.CLAIM_OBSERVED(event({ observation: a, reconciliation: reconcile(a, 'new_claim', 'c1') }), s);
     graphEventHandlers.CLAIM_OBSERVED(event({ observation: b, reconciliation: { ...reconcile(b, 'supersedes', 'c2', 'c1'), supersedes: { previousObservationId: 'a', previousAssertion: assertion } } }, 'e3'), s);
-    expect(s.claims.get('c1')?.revisionHistory).toHaveLength(1);
+    // Supersession creates a NEW claim identity (c2) — old claim (c1) remains
+    // in state but is expired via a separate CLAIM_EXPIRED event.
+    expect(s.claims.has('c1')).toBe(true);
+    expect(s.claims.has('c2')).toBe(true);
+    expect(s.claims.get('c2')?.observationIds).toEqual([b.id]);
   });
   it('rejects malformed reconciliation and observation payloads', () => {
     const o = observation('bad');

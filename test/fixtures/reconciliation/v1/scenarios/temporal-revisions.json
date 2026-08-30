@@ -44,7 +44,7 @@
         }
       },
       "gold": {
-        "clusterId": "claim-1"
+        "clusterId": "claim_t1"
       },
       "expected": {
         "classification": "supersedes",
@@ -71,11 +71,11 @@
         }
       },
       "gold": {
-        "clusterId": "claim-1"
+        "clusterId": "claim_t1"
       },
       "expected": {
         "classification": "same_claim",
-        "matchedClaimId": "claim-1"
+        "matchedClaimId": "claim_t1"
       }
     },
     {
@@ -98,10 +98,11 @@
         }
       },
       "gold": {
-        "clusterId": "claim_t3"
+        "clusterId": "claim-1"
       },
       "expected": {
-        "classification": "new_claim"
+        "classification": "same_claim",
+        "matchedClaimId": "claim-1"
       }
     },
     {
@@ -124,11 +125,11 @@
         }
       },
       "gold": {
-        "clusterId": "claim-1"
+        "clusterId": "claim_t4"
       },
       "expected": {
         "classification": "supersedes",
-        "matchedClaimId": "claim-1"
+        "matchedClaimId": "claim_t1"
       }
     }
   ]

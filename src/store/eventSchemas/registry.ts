@@ -51,6 +51,7 @@ import {
   claimRetractionSetPayload,
   claimRelationCuratedPayload,
   evidenceStanceOverriddenPayload,
+  claimExpiredPayload,
 } from './graph.js';
 
 // ── Schemas — workspace ───────────────────────────────────────────────
@@ -128,6 +129,7 @@ export const EVENT_CODECS = {
   CLAIM_RETRACTION_SET: v1(claimRetractionSetPayload),
   CLAIM_RELATION_CURATED: v1(claimRelationCuratedPayload),
   EVIDENCE_STANCE_OVERRIDDEN: v1(evidenceStanceOverriddenPayload),
+  CLAIM_EXPIRED: v1(claimExpiredPayload),
 
   // workspace domain
   FAMILY_CREATED: v1(familyCreatedPayload),

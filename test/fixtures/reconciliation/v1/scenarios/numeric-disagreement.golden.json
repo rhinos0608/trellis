@@ -1,8 +1,8 @@
 {
   "corpusVersion": 1,
-  "projectionVersion": 5,
+  "projectionVersion": 6,
   "reconcilerVersion": 4,
-  "checksum": "sha256:projection-v1:e94339d9c103c8d80d9829cde3628b72caae8233539d0f782c4102afafe8a1b4",
+  "checksum": "sha256:projection-v1:b023e04e11da5ae09af624fd6f63a387a4dae0c87fed9d4518acaa4c3a96e339",
   "state": {
     "lastAppliedSeq": 0,
     "entities": [],
@@ -112,7 +112,8 @@
           "revisionHistory": [],
           "subjectText": "Trellis",
           "supportLevel": "conflicting",
-          "supportingEvidenceCount": 0
+          "supportingEvidenceCount": 0,
+          "validAt": "2025-01-01T00:00:00.000Z"
         }
       ],
       [
@@ -154,7 +155,8 @@
           "revisionHistory": [],
           "subjectText": "SQLite",
           "supportLevel": "weak",
-          "supportingEvidenceCount": 0
+          "supportingEvidenceCount": 0,
+          "validAt": "2025-01-01T00:00:00.000Z"
         }
       ]
     ],

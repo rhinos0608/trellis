@@ -22,7 +22,7 @@ export function getClaimsByFamily(
   const claims: Claim[] = [];
   for (const id of ids) {
     const claim = state.claims.get(id);
-    if (claim) claims.push(claim);
+    if (claim && !claim.expiredAt) claims.push(claim);
   }
   return claims;
 }

@@ -16,7 +16,7 @@ const assertion = (subjectText: string) => ({ subjectText, predicate: 'improves'
 const event = (eventType: NewEventInput['eventType'], payload: unknown, eventVersion = 1): NewEventInput => ({ eventType, eventVersion, runId: 'run-incremental', batchId: null, actor: 'system', entityId: null, entityType: null, timestamp: new Date().toISOString(), payload });
 const family = () => event('FAMILY_CREATED', { family_id: 'family-1', label: 'Incremental tests' });
 const observation = (id: string, text: string) => ({ ...assertion(text), id, familyId: 'family-1', runId: 'run-incremental', observedAt: new Date().toISOString(), confidence: 0.9, sourceIds: [], extractionVersion: 'v1' });
-const observed = (id: string, text: string, claimId: string, classification: 'new_claim' | 'supersedes' = 'new_claim', previousObservationId?: string): NewEventInput => event('CLAIM_OBSERVED', { observation: observation(id, text), reconciliation: { observationId: id, classification, canonicalClaimId: claimId, ...(classification === 'new_claim' ? {} : { matchedClaimId: claimId, supersedes: { previousObservationId, previousAssertion: assertion('old') } }), score: 1, method: 'canonical_key_exact', rationale: 'test', reconcilerVersion: 1, candidates: [] } });
+const observed = (id: string, text: string, claimId: string, classification: 'new_claim' | 'supersedes' = 'new_claim', previousObservationId?: string): NewEventInput => event('CLAIM_OBSERVED', { observation: observation(id, text), reconciliation: { observationId: id, classification, canonicalClaimId: classification === 'supersedes' ? `claim_${id}` : claimId, ...(classification === 'new_claim' ? {} : { matchedClaimId: claimId, supersedes: { previousObservationId, previousAssertion: assertion('old') } }), score: 1, method: 'canonical_key_exact', rationale: 'test', reconcilerVersion: 1, candidates: [] } });
 const projection = () => createEmptyProjectionState();
 const count = (table: string) => (getDb()!.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
 
@@ -33,13 +33,15 @@ describe('incremental knowledge read-model updates', () => {
     expect(count('rm_claim_observations')).toBe(1);
   });
 
-  it('supersedes updates one claim row and payload', () => {
+  it('supersedes creates new claim and preserves old', () => {
     const state = projection();
     appendEvents([family(), observed('obs-1', 'old assertion', 'claim-1')], { projection: state, handlers });
     appendEvents([observed('obs-2', 'new assertion', 'claim-1', 'supersedes', 'obs-1')], { projection: state, handlers });
-    expect(count('rm_claims')).toBe(1);
-    const row = getDb()!.prepare("SELECT payload_json FROM rm_claims WHERE id='claim-1'").get() as { payload_json: string };
-    expect(JSON.parse(row.payload_json).subjectText).toBe('new assertion');
+    expect(count('rm_claims')).toBe(2);
+    const oldRow = getDb()!.prepare("SELECT payload_json FROM rm_claims WHERE id='claim-1'").get() as { payload_json: string };
+    expect(JSON.parse(oldRow.payload_json).subjectText).toBe('old assertion');
+    const newRow = getDb()!.prepare("SELECT payload_json FROM rm_claims WHERE id='claim_obs-2'").get() as { payload_json: string };
+    expect(JSON.parse(newRow.payload_json).subjectText).toBe('new assertion');
   });
 
   it('writes evidence and refreshed claim counts', () => {
@@ -72,7 +74,8 @@ describe('incremental knowledge read-model updates', () => {
     appendEvents([family(), observed('obs-1', 'old unique token', 'claim-1')], { projection: state, handlers });
     appendEvents([observed('obs-2', 'new unique token', 'claim-1', 'supersedes', 'obs-1')], { projection: state, handlers });
     const db = getDb()!;
-    expect((db.prepare("SELECT COUNT(*) AS n FROM rm_claims_fts WHERE rm_claims_fts MATCH 'old'").get() as { n: number }).n).toBe(0);
+    // Old claim persists (superseded but not deleted) — 'old' still in FTS
+    expect((db.prepare("SELECT COUNT(*) AS n FROM rm_claims_fts WHERE rm_claims_fts MATCH 'old'").get() as { n: number }).n).toBe(1);
     expect((db.prepare("SELECT COUNT(*) AS n FROM rm_claims_fts WHERE rm_claims_fts MATCH 'new'").get() as { n: number }).n).toBe(1);
   });
 
