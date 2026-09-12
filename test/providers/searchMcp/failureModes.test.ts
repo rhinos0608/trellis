@@ -345,6 +345,10 @@ describe('Failure mode: cancellation mid-read', () => {
     const config = makeConfig(dbPath);
 
     let searchCallCount = 0;
+    let resolveSearchStarted: (() => void) | null = null;
+    const searchStarted = new Promise<void>((resolve) => {
+      resolveSearchStarted = resolve;
+    });
     const slowProvider: ResearchProvider = {
       name: 'slow-mock',
       capabilities: {
@@ -354,6 +358,8 @@ describe('Failure mode: cancellation mid-read', () => {
       },
       search: async () => {
         searchCallCount++;
+        resolveSearchStarted?.();
+        resolveSearchStarted = null;
         // Simulate a slow provider call that takes real time
         await new Promise((r) => setTimeout(r, 1_000));
         return [{ url: 'https://example.com', title: 'Slow Result', snippet: 'slow' }];
@@ -376,11 +382,8 @@ describe('Failure mode: cancellation mid-read', () => {
       strategy: 'agent',
     });
 
-    // Let pipeline reach the first provider.search() call before cancelling.
-    // Margin widened from 50ms: real append-time decode/validation work
-    // (Phase 0 event-store hardening) adds synchronous CPU time per event,
-    // which can delay startRun's background task under load.
-    await new Promise((r) => setTimeout(r, 150));
+    // Ensure provider.search() has started before cancelling.
+    await searchStarted;
 
     // Cancel while the provider call is in-flight
     const cancelled = svc.cancelRun(runId);

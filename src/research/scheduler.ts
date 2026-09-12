@@ -97,7 +97,10 @@ export class JobScheduler {
         }
       }
       await Promise.all([...this.executions]);
-      if (firstError !== undefined) throw firstError;
+      if (firstError !== undefined) {
+        if (firstError instanceof Error) throw firstError;
+        throw new Error('Scheduler shutdown failed');
+      }
     })();
     this.shutdownPromise.catch(() => {
       this.shutdownPromise = undefined;
@@ -165,7 +168,7 @@ export class JobScheduler {
           occurredAt: new Date().toISOString(),
         };
         let claimed = false;
-        try { claimed = this.claimTerminal(run.runId, [ { ...envelope('RUN_FAILED', run.runId, { runId: run.runId, error }), eventVersion: 2 } ]); } catch {}
+        try { claimed = this.claimTerminal(run.runId, [ { ...envelope('RUN_FAILED', run.runId, { runId: run.runId, error }), eventVersion: 2 } ]); } catch (claimError) { void claimError; }
         if (claimed) this.runs.set(run.runId, { ...run, status: 'failed', error });
         continue;
       }
