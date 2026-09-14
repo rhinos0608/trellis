@@ -21,6 +21,16 @@ import { ResearchSynthesizer } from '../synthesizer.js';
 import { parseJsonFromText } from '../llm/client.js';
 import { randomUUID } from 'node:crypto';
 
+// ── Shared constants ─────────────────────────────────────────────────────────
+
+const GAP_CHECK_INTERVAL = 4;
+const MAX_IDLE_CHECKS = 2;
+const TOOL_CONTENT_LIMIT = 8000;
+const MODERATOR_TOKEN_FLOOR = 20000;
+const MODERATOR_TIME_FLOOR_MS = 30000;
+const MODERATOR_MAX_GAPS = 3;
+const MODERATOR_MAX_FOLLOW_UPS = 2;
+
 // ── Agent response parsing ────────────────────────────────────────────────
 
 interface ParsedResponse {
@@ -33,48 +43,59 @@ interface ParsedResponse {
   raw?: string;
 }
 
-function parseAgentResponse(text: string): ParsedResponse {
+function extractThought(text: string): string {
   const thoughtMatch =
     /THOUGHT:\s*([\s\S]*?)(?=\n?\s*(?:ACTION|ANSWER):|$)/i.exec(text);
+  return thoughtMatch?.[1]?.trim() ?? '';
+}
+
+function tryParseAnswer(text: string, thought: string): ParsedResponse | null {
+  const answerMatch = /ANSWER:\s*([\s\S]*)/i.exec(text);
+  if (!answerMatch) return null;
+  return {
+    type: 'answer',
+    content: (answerMatch[1] ?? '').trim(),
+    thought,
+    raw: text,
+  };
+}
+
+function parseArgsText(argsText: string): Record<string, unknown> {
+  try {
+    return JSON.parse(argsText) as Record<string, unknown>;
+  } catch {
+    return { _rawArgs: argsText };
+  }
+}
+
+function tryParseAction(text: string, thought: string): ParsedResponse | null {
   const actionMatch = /ACTION:\s*(\S+)/i.exec(text);
+  if (!actionMatch) return null;
   const argsMatch = /ARGUMENTS:\s*([\s\S]*?)(?=\n(?:THOUGHT|ACTION|ANSWER):|$)/i.exec(
     text,
   );
-  const answerMatch = /ANSWER:\s*([\s\S]*)/i.exec(text);
-
-  if (answerMatch) {
-    return {
-      type: 'answer',
-      content: (answerMatch[1] ?? '').trim(),
-      thought: thoughtMatch?.[1]?.trim() ?? '',
-      raw: text,
-    };
-  }
-
-  if (actionMatch) {
-    const argsText = argsMatch?.[1]?.trim() ?? '';
-    let args: Record<string, unknown>;
-    try {
-      args = JSON.parse(argsText) as Record<string, unknown>;
-    } catch {
-      args = { _rawArgs: argsText };
-    }
-    return {
-      type: 'action',
-      thought: thoughtMatch?.[1]?.trim() ?? '',
-      tool: (actionMatch[1] ?? '').trim(),
-      args,
-      raw: text,
-    };
-  }
-
+  const argsText = argsMatch?.[1]?.trim() ?? '';
   return {
-    type: 'error',
-    message: 'Could not parse response',
-    thought: thoughtMatch?.[1]?.trim() ?? '',
-    content: text,
+    type: 'action',
+    thought,
+    tool: (actionMatch[1] ?? '').trim(),
+    args: parseArgsText(argsText),
     raw: text,
   };
+}
+
+function parseAgentResponse(text: string): ParsedResponse {
+  const thought = extractThought(text);
+  return (
+    tryParseAnswer(text, thought) ??
+    tryParseAction(text, thought) ?? {
+      type: 'error',
+      message: 'Could not parse response',
+      thought,
+      content: text,
+      raw: text,
+    }
+  );
 }
 
 // ── Agent tools ───────────────────────────────────────────────────────────
@@ -85,43 +106,144 @@ interface AgentTool {
   execute: (args: Record<string, unknown>) => Promise<{ content: string; error?: string }>;
 }
 
-function buildAgentTools(ctx: StrategyContext): AgentTool[] {
-  const tools: AgentTool[] = [];
+interface ToolResult {
+  content: string;
+  error?: string;
+}
 
-  // Search tool
-  tools.push({
-    name: 'search_web',
-    description: 'Search the web for information. Args: { query: string }',
+function invalidArgsResult(message: string): ToolResult {
+  return { content: message, error: 'invalid_args' };
+}
+
+function getStringArg(args: Record<string, unknown>, key: string): string | null {
+  const value = args[key];
+  return typeof value === 'string' ? value : null;
+}
+
+function formatIndexedHits<T extends { title: string; url: string }>(
+  hits: T[],
+  formatHit: (hit: T, index: number) => string,
+): string {
+  return hits.map(formatHit).join('\n\n');
+}
+
+interface QueryToolOptions<T extends { title: string; url: string }> {
+  name: string;
+  description: string;
+  phase: string;
+  limit: number;
+  search: (query: string) => Promise<T[]>;
+  formatHit: (hit: T, index: number) => string;
+}
+
+function makeQueryTool<T extends { title: string; url: string }>(
+  ctx: StrategyContext,
+  options: QueryToolOptions<T>,
+): AgentTool {
+  return {
+    name: options.name,
+    description: options.description,
     execute: async (args) => {
-      const q = args.query;
-      if (typeof q !== 'string') return { content: 'query must be a string', error: 'invalid_args' };
-      const hits = await ctx.provider.search(providerCallContext(ctx, { phase: 'agent_search' }), q, { limit: 10 });
+      const query = getStringArg(args, 'query');
+      if (query === null) return invalidArgsResult('query must be a string');
+      const hits = await options.search(query);
       ctx.budget.recordToolCall();
-      return {
-        content: hits
-          .map((h, i) => `[${String(i + 1)}] ${h.title} — ${h.url}\n${h.snippet ?? ''}`)
-          .join('\n\n'),
-      };
+      return { content: formatIndexedHits(hits, options.formatHit) };
     },
-  });
+  };
+}
 
-  // Read tool
-  tools.push({
+function extractDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+function rejectUnsafeUrl(ctx: StrategyContext, url: string, err: unknown): ToolResult {
+  ctx.budget.recordToolCall();
+  logger.debug({ ...safeErrorLog(err), urlBytes: Buffer.byteLength(url, 'utf8') }, 'Agent rejected unsafe URL');
+  return { content: `URL rejected: ${err instanceof Error ? err.message : 'validation failed'}`, error: 'invalid_url' };
+}
+
+interface WebReadResult {
+  url: string;
+  title?: string;
+  content: string;
+  contentHash?: string;
+}
+
+function findOrCreateWebSource(
+  ctx: StrategyContext,
+  url: string,
+  result: WebReadResult,
+): string | undefined {
+  const existingSource = ctx.state.getSources().find((s) => s.url === url);
+  if (existingSource) return existingSource.id;
+  return ctx.state.addSource({
+    id: `src_${randomUUID().slice(0, 12)}`,
+    title: result.title ?? url,
+    url,
+    sourceType: 'web',
+    domain: extractDomain(url),
+    accessDate: new Date().toISOString(),
+    isPrimary: false,
+    relevantSubQuestions: [],
+    extractionStatus: 'pending',
+    subQuestionId: '',
+    ...(result.contentHash !== undefined ? { contentHash: result.contentHash } : {}),
+  });
+}
+
+async function runSourceExtraction(
+  ctx: StrategyContext,
+  sourceId: string,
+  url: string,
+  title: string | undefined,
+  result: WebReadResult,
+): Promise<number> {
+  const extractionResult = await extractClaimsFromSource(
+    {
+      source: {
+        id: sourceId,
+        title: title ?? url,
+        url,
+        sourceType: 'web',
+        isPrimary: false,
+        relevantSubQuestions: [],
+      },
+      query: ctx.state.getState().query,
+      subQuestions: ctx.state.getSubQuestions(),
+      content: result.content,
+      contentHash: result.contentHash ?? '',
+    },
+    { ...(ctx.llm !== undefined ? { llm: ctx.llm } : {}), budget: ctx.budget, ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}) },
+  );
+  for (const f of extractionResult.findings) ctx.state.addFinding(f);
+  const extracted = extractionResult.status === 'extracted' || extractionResult.status === 'unavailable';
+  if (extracted) {
+    ctx.state.markSourceExtracted(sourceId);
+  } else {
+    ctx.state.markSourceFailed(sourceId);
+  }
+  return extractionResult.findings.length;
+}
+
+function buildWebReadTool(ctx: StrategyContext): AgentTool {
+  return {
     name: 'web_read',
     description: 'Read a URL and extract its content. Args: { url: string }',
     execute: async (args) => {
-      const url = args.url;
-      if (typeof url !== 'string') return { content: 'url must be a string', error: 'invalid_args' };
-      // Validate URL before sending to provider — reject unsafe URLs
+      const url = getStringArg(args, 'url');
+      if (url === null) return invalidArgsResult('url must be a string');
       try {
         validateFetchableUrl(url);
       } catch (err) {
-        ctx.budget.recordToolCall();
-        logger.debug({ ...safeErrorLog(err), urlBytes: Buffer.byteLength(url, 'utf8') }, 'Agent rejected unsafe URL');
-        return { content: `URL rejected: ${err instanceof Error ? err.message : 'validation failed'}`, error: 'invalid_url' };
+        return rejectUnsafeUrl(ctx, url, err);
       }
 
-      let result: { url: string; title?: string; content: string; contentHash?: string };
+      let result: WebReadResult;
       try {
         result = await ctx.provider.read(providerCallContext(ctx, { phase: 'agent_read' }), url);
       } catch (err) {
@@ -130,110 +252,81 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
       }
       ctx.budget.recordToolCall();
 
-      // Find-or-create SourceEntry
-      const domain = (() => {
-        try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
-      })();
-      const existingSource = ctx.state.getSources().find((s) => s.url === url);
-      const sourceId = existingSource?.id ?? ctx.state.addSource({
-        id: `src_${randomUUID().slice(0, 12)}`,
-        title: result.title ?? url,
-        url,
-        sourceType: 'web',
-        domain,
-        accessDate: new Date().toISOString(),
-        isPrimary: false,
-        relevantSubQuestions: [],
-        extractionStatus: 'pending',
-        subQuestionId: '',
-        ...(result.contentHash !== undefined ? { contentHash: result.contentHash } : {}),
-      });
-      if (!sourceId) return { content: result.content.slice(0, 8000) };
+      const sourceId = findOrCreateWebSource(ctx, url, result);
+      if (!sourceId) return { content: result.content.slice(0, TOOL_CONTENT_LIMIT) };
 
-      // Run structured claim extraction on full content
-      const extractionResult = await extractClaimsFromSource(
-        {
-          source: {
-            id: sourceId,
-            title: result.title ?? url,
-            url,
-            sourceType: 'web',
-            isPrimary: false,
-            relevantSubQuestions: [],
-          },
-          query: ctx.state.getState().query,
-          subQuestions: ctx.state.getSubQuestions(),
-          content: result.content,
-          contentHash: result.contentHash ?? '',
-        },
-        { ...(ctx.llm !== undefined ? { llm: ctx.llm } : {}), budget: ctx.budget, ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}) },
-      );
-
-      for (const f of extractionResult.findings) ctx.state.addFinding(f);
-      if (extractionResult.status === 'extracted' || extractionResult.status === 'unavailable') {
-        ctx.state.markSourceExtracted(sourceId);
-      } else {
-        ctx.state.markSourceFailed(sourceId);
-      }
-
-      return { content: result.content.slice(0, 8000) + `\n[Extracted ${String(extractionResult.findings.length)} grounded claims]` };
+      const findingCount = await runSourceExtraction(ctx, sourceId, url, result.title, result);
+      return { content: result.content.slice(0, TOOL_CONTENT_LIMIT) + `\n[Extracted ${String(findingCount)} grounded claims]` };
     },
-  });
+  };
+}
 
-  // Academic search
-  if (ctx.provider.capabilities.academic) {
-    tools.push({
-      name: 'search_academic',
-      description: 'Search academic sources. Args: { query: string }',
-      execute: async (args) => {
-        const q = args.query;
-        if (typeof q !== 'string') return { content: 'query must be a string', error: 'invalid_args' };
-        const hits = await ctx.provider.academic(providerCallContext(ctx, { phase: 'agent_academic' }), q, { limit: 5 });
-        ctx.budget.recordToolCall();
-        return {
-          content: hits
-            .map((h, i) => `[${String(i + 1)}] ${h.title} — ${h.url}`)
-            .join('\n'),
-        };
-      },
-    });
+function hasAcademicSearch(ctx: StrategyContext): boolean {
+  return ctx.provider.capabilities.academic;
+}
+
+function hasRedditSearch(ctx: StrategyContext): boolean {
+  return ctx.provider.capabilities.community.reddit && ctx.provider.reddit !== undefined;
+}
+
+function hasHackernewsSearch(ctx: StrategyContext): boolean {
+  return ctx.provider.capabilities.community.hackernews && ctx.provider.hackernews !== undefined;
+}
+
+function buildAgentTools(ctx: StrategyContext): AgentTool[] {
+  const tools: AgentTool[] = [
+    makeQueryTool(ctx, {
+      name: 'search_web',
+      description: 'Search the web for information. Args: { query: string }',
+      phase: 'agent_search',
+      limit: 10,
+      search: (q) => ctx.provider.search(providerCallContext(ctx, { phase: 'agent_search' }), q, { limit: 10 }),
+      formatHit: (h, i) => `[${String(i + 1)}] ${h.title} — ${h.url}\n${h.snippet ?? ''}`,
+    }),
+    buildWebReadTool(ctx),
+  ];
+
+  if (hasAcademicSearch(ctx)) {
+    tools.push(
+      makeQueryTool(ctx, {
+        name: 'search_academic',
+        description: 'Search academic sources. Args: { query: string }',
+        phase: 'agent_academic',
+        limit: 5,
+        search: (q) => ctx.provider.academic(providerCallContext(ctx, { phase: 'agent_academic' }), q, { limit: 5 }),
+        formatHit: (h, i) => `[${String(i + 1)}] ${h.title} — ${h.url}`,
+      }),
+    );
   }
 
-  // Community search (Reddit/HN)
-  if (ctx.provider.capabilities.community.reddit && ctx.provider.reddit) {
+  if (hasRedditSearch(ctx)) {
+    if (ctx.provider.reddit === undefined) throw new Error('reddit search unavailable');
     const redditSearch = ctx.provider.reddit.bind(ctx.provider);
-    tools.push({
-      name: 'search_reddit',
-      description: 'Search Reddit. Args: { query: string }',
-      execute: async (args) => {
-        const q = args.query;
-        if (typeof q !== 'string') return { content: 'query must be a string', error: 'invalid_args' };
-        const hits = await redditSearch(providerCallContext(ctx, { phase: 'agent_reddit' }), q, { limit: 5 });
-        ctx.budget.recordToolCall();
-        return {
-          content: hits
-            .map((h, i) => `[${String(i + 1)}] ${h.title} — ${h.url} (score: ${String(h.score)})`)
-            .join('\n'),
-        };
-      },
-    });
+    tools.push(
+      makeQueryTool(ctx, {
+        name: 'search_reddit',
+        description: 'Search Reddit. Args: { query: string }',
+        phase: 'agent_reddit',
+        limit: 5,
+        search: (q) => redditSearch(providerCallContext(ctx, { phase: 'agent_reddit' }), q, { limit: 5 }),
+        formatHit: (h, i) => `[${String(i + 1)}] ${h.title} — ${h.url} (score: ${String(h.score)})`,
+      }),
+    );
   }
 
-  if (ctx.provider.capabilities.community.hackernews && ctx.provider.hackernews) {
+  if (hasHackernewsSearch(ctx)) {
+    if (ctx.provider.hackernews === undefined) throw new Error('hackernews search unavailable');
     const hackernewsSearch = ctx.provider.hackernews.bind(ctx.provider);
-    tools.push({
-      name: 'search_hackernews',
-      description: 'Search Hacker News. Args: { query: string }',
-      execute: async (args) => {
-        const q = args.query;
-        if (typeof q !== 'string') return { content: 'query must be a string', error: 'invalid_args' };
-        const hits = await hackernewsSearch(providerCallContext(ctx, { phase: 'agent_hackernews' }), q, { limit: 5 });
-        ctx.budget.recordToolCall();
-        return {
-          content: hits.map((h, i) => `[${String(i + 1)}] ${h.title} — ${h.url}`).join('\n'),
-        };
-      },
-    });
+    tools.push(
+      makeQueryTool(ctx, {
+        name: 'search_hackernews',
+        description: 'Search Hacker News. Args: { query: string }',
+        phase: 'agent_hackernews',
+        limit: 5,
+        search: (q) => hackernewsSearch(providerCallContext(ctx, { phase: 'agent_hackernews' }), q, { limit: 5 }),
+        formatHit: (h, i) => `[${String(i + 1)}] ${h.title} — ${h.url}`,
+      }),
+    );
   }
 
   return tools;
@@ -241,6 +334,490 @@ function buildAgentTools(ctx: StrategyContext): AgentTool[] {
 
 function describeTools(tools: AgentTool[]): string {
   return tools.map((t) => `  ${t.name}: ${t.description}`).join('\n');
+}
+
+// ── Plan helpers ──────────────────────────────────────────────────────────
+
+function buildPlanPrompt(query: string, priorKnowledge: string): string {
+  return `You are a research planner. Given the following research question, produce a structured research plan.
+
+Question: ${query}${priorKnowledge}
+
+Generate a JSON object (no markdown fences) with this exact structure:
+{
+  "scope": "<1-2 sentence scope statement>",
+  "assumptions": ["<assumption 1>", ...],
+  "perspectives": [
+    {"name": "<perspective name, e.g. historian/primary-source>", "question": "<specific sub-question from this angle>"}
+  ],
+  "falsificationQuestions": ["<what evidence would prove current understanding wrong?>", ...]
+}
+
+Choose 3-6 perspectives relevant to THIS specific query. Examples of perspective names: historian/primary-source, implementer/practitioner, skeptic/critic, current-state, comparison, technical-deep-dive, user-experience, economic-analysis, regulatory, future-outlook. Pick only what fits.
+
+Output ONLY the JSON object.`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasPlanScope(obj: Record<string, unknown>): obj is Record<string, unknown> & { scope: string } {
+  return typeof obj.scope === 'string';
+}
+
+function hasNonEmptyPerspectives(obj: Record<string, unknown>): boolean {
+  return Array.isArray(obj.perspectives) && obj.perspectives.length > 0;
+}
+
+function isValidPlanPayload(raw: unknown): raw is Record<string, unknown> {
+  return isRecord(raw) && hasPlanScope(raw) && hasNonEmptyPerspectives(raw);
+}
+
+function isPerspective(value: unknown): value is { name: string; question: string } {
+  if (!isRecord(value)) return false;
+  return typeof value.name === 'string' && typeof value.question === 'string';
+}
+
+function extractValidPerspectives(raw: unknown[]): { name: string; question: string }[] {
+  return raw.filter(isPerspective);
+}
+
+function sanitizeStringList(raw: unknown, itemLimit: number, maxItems: number): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.slice(0, itemLimit))
+    .slice(0, maxItems);
+}
+
+function toResearchPlan(obj: Record<string, unknown>): ResearchPlan | null {
+  const validPerspectives = extractValidPerspectives(obj.perspectives as unknown[]);
+  if (validPerspectives.length === 0) return null;
+  const scope = obj.scope as string;
+  return {
+    scope: scope.slice(0, 2000),
+    assumptions: sanitizeStringList(obj.assumptions, 500, 10),
+    perspectives: validPerspectives.slice(0, 8),
+    falsificationQuestions: sanitizeStringList(obj.falsificationQuestions, 1000, 5),
+  };
+}
+
+function logInvalidPlan(): null {
+  logger.warn('Agent plan LLM returned invalid structure, proceeding without plan');
+  return null;
+}
+
+// ── Prior knowledge helpers ───────────────────────────────────────────────
+
+interface PriorKnowledge {
+  knownClaims: string[];
+  knownGaps: string[];
+}
+
+function hasUsablePrior(prior: PriorKnowledge | undefined): prior is PriorKnowledge {
+  return prior !== undefined && (prior.knownClaims.length > 0 || prior.knownGaps.length > 0);
+}
+
+function formatPriorKnowledge(prior: PriorKnowledge): string {
+  return `
+PRIOR KNOWLEDGE (from previous research on this topic):
+Known claims: ${prior.knownClaims.slice(0, 10).join('; ')}
+Known open gaps: ${prior.knownGaps.slice(0, 5).join('; ')}`;
+}
+
+async function collectPriorKnowledge(ctx: StrategyContext): Promise<string> {
+  if (!ctx.getPriorKnowledge) return '';
+  try {
+    const prior = await ctx.getPriorKnowledge();
+    return hasUsablePrior(prior) ? formatPriorKnowledge(prior) : '';
+  } catch {
+    // non-fatal — proceed without prior knowledge
+    return '';
+  }
+}
+
+function appendRunStateSummary(priorKnowledge: string, ctx: StrategyContext): string {
+  const findingCount = ctx.state.getFindings().length;
+  const sourceCount = ctx.state.getSources().length;
+  const hasRunState = findingCount > 0 || sourceCount > 0;
+  if (!hasRunState) return priorKnowledge;
+  return priorKnowledge + `
+CURRENT RUN STATE: ${String(sourceCount)} sources, ${String(findingCount)} findings already collected.`;
+}
+
+async function persistPlanIfNeeded(plan: ResearchPlan | null, ctx: StrategyContext): Promise<void> {
+  if (plan === null || !ctx.persistPlan) return;
+  try {
+    await ctx.persistPlan(plan, 'created');
+  } catch {
+    // non-fatal
+  }
+}
+
+function setupPlanSubQuestions(plan: ResearchPlan | null, ctx: StrategyContext): void {
+  if (plan === null) return;
+  const subQuestions = plan.perspectives.map((p) => ({
+    id: randomUUID().slice(0, 12),
+    text: p.question,
+    classification: 'explainer' as const,
+    evidenceType: 'general' as const,
+    preferredSources: [] as never[],
+    freshnessRequirement: 'any',
+    failureModes: [],
+    budgetPriority: 1,
+    status: 'pending' as const,
+  }));
+  ctx.state.setSubQuestions(subQuestions);
+}
+
+// ── React loop helpers ────────────────────────────────────────────────────
+
+interface HistoryEntry {
+  role: 'assistant' | 'tool' | 'system';
+  thought?: string;
+  action?: string;
+  args?: Record<string, unknown>;
+  tool?: string;
+  content?: string;
+  error?: string;
+}
+
+interface LoopState {
+  iteration: number;
+  toolCallsSinceGapCheck: number;
+  consecutiveIdleChecks: number;
+}
+
+function initialLoopState(): LoopState {
+  return { iteration: 0, toolCallsSinceGapCheck: 0, consecutiveIdleChecks: 0 };
+}
+
+interface LlmMessage { role: 'system' | 'user' | 'assistant'; content: string }
+
+function assistantEntryToMessage(entry: HistoryEntry): LlmMessage | null {
+  if (entry.action) {
+    return {
+      role: 'assistant',
+      content: `THOUGHT: ${entry.thought ?? ''}\nACTION: ${entry.action}\nARGUMENTS: ${JSON.stringify(entry.args ?? {})}`,
+    };
+  }
+  if (entry.content) return { role: 'assistant', content: entry.content };
+  return null;
+}
+
+function historyEntryToMessage(entry: HistoryEntry): LlmMessage | null {
+  if (entry.role === 'assistant') return assistantEntryToMessage(entry);
+  if (entry.role === 'tool') {
+    return {
+      role: 'user',
+      content: `[Tool result from ${entry.tool ?? 'unknown'}]:\n${entry.content ?? ''}`,
+    };
+  }
+  if (entry.error) return { role: 'user', content: `[Error]: ${entry.error}` };
+  return null;
+}
+
+function buildLlmMessages(
+  systemPrompt: string,
+  query: string,
+  gapContext: string | undefined,
+  history: HistoryEntry[],
+): LlmMessage[] {
+  const messages: LlmMessage[] = [{ role: 'system', content: systemPrompt }];
+  for (const entry of history.slice(-8)) {
+    const message = historyEntryToMessage(entry);
+    if (message) messages.push(message);
+  }
+  const isFirstTurn = history.length === 0;
+  messages.push({
+    role: 'user',
+    content: isFirstTurn
+      ? `Research question: ${query}\n\nBegin searching for information.${gapContext ?? ''}`
+      : `Continue research. If you have enough information, provide your ANSWER.${gapContext ?? ''}`,
+  });
+  return messages;
+}
+
+function buildGapSummary(ctx: StrategyContext, gapAnalyzer: GapAnalyzer): { gapContext: string; foundGaps: boolean } {
+  const coverage = ctx.state.computeSubQuestionCoverage();
+  const gaps = gapAnalyzer.analyze(coverage);
+  const openGaps = gaps.filter((g) => g.status === 'open');
+  if (openGaps.length === 0) return { gapContext: '', foundGaps: false };
+  const gapSummary = openGaps
+    .slice(0, 5)
+    .map((g) => `- [P${String(g.priority)}] ${g.description}`)
+    .join('\n');
+  return {
+    gapContext: `\n\nCOVERAGE GAPS detected:\n${gapSummary}\nUse this signal to guide your next search, but you choose the action.`,
+    foundGaps: true,
+  };
+}
+
+function shouldRunGapCheck(state: LoopState): boolean {
+  return state.toolCallsSinceGapCheck >= GAP_CHECK_INTERVAL;
+}
+
+function shouldStopIdle(state: LoopState): boolean {
+  return state.consecutiveIdleChecks >= MAX_IDLE_CHECKS;
+}
+
+function refreshGapContext(state: LoopState, ctx: StrategyContext, gapAnalyzer: GapAnalyzer): string {
+  if (!shouldRunGapCheck(state)) return '';
+  state.toolCallsSinceGapCheck = 0;
+  const { gapContext, foundGaps } = buildGapSummary(ctx, gapAnalyzer);
+  state.consecutiveIdleChecks = foundGaps ? 0 : state.consecutiveIdleChecks + 1;
+  return gapContext;
+}
+
+async function reportAgentStep(
+  ctx: StrategyContext,
+  iteration: number,
+  maxIterations: number,
+  tool: string,
+): Promise<void> {
+  const progress = 5 + Math.round((iteration / maxIterations) * 85);
+  try {
+    await ctx.reportProgress({
+      phase: 'agent_step',
+      percent: progress,
+      message: `Agent step ${String(iteration)}/${String(maxIterations)}: ${tool}`,
+      counts: {
+        sourcesDiscovered: ctx.state.sourceCount(),
+        findings: ctx.state.findingCount(),
+        providerCalls: ctx.budget.snapshot().toolCallsUsed,
+        tokensUsed: ctx.budget.snapshot().tokensUsed,
+      },
+    });
+  } catch {
+    // non-fatal
+  }
+}
+
+async function reportAgentPhase(
+  ctx: StrategyContext,
+  phase: string,
+  percent: number,
+  message: string,
+): Promise<void> {
+  try {
+    await ctx.reportProgress({
+      phase,
+      percent,
+      message,
+      counts: {
+        sourcesDiscovered: ctx.state.sourceCount(),
+        findings: ctx.state.findingCount(),
+        providerCalls: ctx.budget.snapshot().toolCallsUsed,
+        tokensUsed: ctx.budget.snapshot().tokensUsed,
+      },
+    });
+  } catch {
+    // non-fatal
+  }
+}
+
+function recordAssistantAction(
+  history: HistoryEntry[],
+  parsed: { thought: string; tool: string; args?: Record<string, unknown> },
+): void {
+  const entry: HistoryEntry = { role: 'assistant' };
+  if (parsed.thought) entry.thought = parsed.thought;
+  entry.action = parsed.tool;
+  if (parsed.args) entry.args = parsed.args;
+  history.push(entry);
+}
+
+function recordToolResult(
+  history: HistoryEntry[],
+  tool: string,
+  result: ToolResult,
+): void {
+  history.push({ role: 'tool', tool, content: result.content.slice(0, TOOL_CONTENT_LIMIT) });
+}
+
+function recordParseError(history: HistoryEntry[], parsed: ParsedResponse, response: string): void {
+  const entry: HistoryEntry = { role: 'assistant' };
+  if (parsed.thought) entry.thought = parsed.thought;
+  entry.content = response;
+  if (parsed.message) entry.error = parsed.message;
+  history.push(entry);
+}
+
+function checkpointStarted(
+  ctx: StrategyContext,
+  stepIndex: number,
+  tool: string,
+  args: Record<string, unknown>,
+  thought: string,
+  history: HistoryEntry[],
+): void {
+  if (ctx.checkpointStep) {
+    ctx.checkpointStep(stepIndex, 'started', { tool, args, thought }, history);
+  }
+}
+
+function checkpointCompleted(
+  ctx: StrategyContext,
+  stepIndex: number,
+  tool: string,
+  args: Record<string, unknown>,
+  result: ToolResult,
+  history: HistoryEntry[],
+): void {
+  if (ctx.checkpointStep) {
+    ctx.checkpointStep(
+      stepIndex,
+      'completed',
+      { tool, args, content: result.content.slice(0, TOOL_CONTENT_LIMIT), error: result.error },
+      history,
+    );
+  }
+}
+
+// ── Moderator helpers ─────────────────────────────────────────────────────
+
+interface ModeratorGapInput {
+  plan: ResearchPlan | null;
+  query: string;
+  systemPrompt: string;
+  loopEndIteration: number;
+  ctx: StrategyContext;
+}
+
+interface ModeratorGap {
+  question: string;
+  reason: string;
+  involvedPerspectives: string[];
+}
+
+function isModeratorPlanEligible(plan: ResearchPlan | null, ctx: StrategyContext): plan is ResearchPlan {
+  if (plan === null || plan.perspectives.length < 2) return false;
+  return ctx.state.getFindings().length > 0;
+}
+
+function hasModeratorCallBudget(ctx: StrategyContext): boolean {
+  return ctx.budget.snapshot().toolCallsUsed >= 3;
+}
+
+function hasModeratorRemainingBudget(ctx: StrategyContext): boolean {
+  const rem = ctx.budget.remaining();
+  return rem.tokens >= MODERATOR_TOKEN_FLOOR && rem.timeMs >= MODERATOR_TIME_FLOOR_MS;
+}
+
+function isModeratorGap(value: unknown): value is ModeratorGap {
+  if (!isRecord(value)) return false;
+  if (typeof value.question !== 'string') return false;
+  return true;
+}
+
+function normalizeModeratorGap(gap: ModeratorGap): ModeratorGap {
+  return {
+    question: gap.question,
+    reason: typeof gap.reason === 'string' ? gap.reason : '',
+    involvedPerspectives: Array.isArray(gap.involvedPerspectives)
+      ? gap.involvedPerspectives.filter((p): p is string => typeof p === 'string')
+      : [],
+  };
+}
+
+function parseModeratorGaps(raw: unknown): ModeratorGap[] {
+  if (!isRecord(raw) || !Array.isArray(raw.gaps)) return [];
+  return (raw.gaps as unknown[])
+    .filter(isModeratorGap)
+    .map(normalizeModeratorGap)
+    .slice(0, MODERATOR_MAX_GAPS);
+}
+
+function groupFindingsBySubQuestion(
+  findings: { claim: string; subQuestionIds: string[] }[],
+): Map<string, { claim: string }[]> {
+  const bySq = new Map<string, { claim: string }[]>();
+  for (const f of findings) {
+    for (const sqId of f.subQuestionIds) {
+      const arr = bySq.get(sqId) ?? [];
+      arr.push({ claim: f.claim });
+      bySq.set(sqId, arr);
+    }
+  }
+  return bySq;
+}
+
+function buildCoverageLines(
+  coverage: { status: string; subQuestionText: string; sourceCount: number; findingCount: number }[],
+): string {
+  return coverage
+    .map((c) => `  - [${c.status}] ${c.subQuestionText} (${String(c.sourceCount)} sources, ${String(c.findingCount)} findings)`)
+    .join('\n');
+}
+
+function buildFindingsLines(
+  coverage: { subQuestionId: string; subQuestionText: string }[],
+  findingsBySq: Map<string, { claim: string }[]>,
+): string {
+  return coverage
+    .map((c) => {
+      const sqFindings = findingsBySq.get(c.subQuestionId) ?? [];
+      if (sqFindings.length === 0) return '';
+      const lines = sqFindings
+        .slice(0, 5)
+        .map((f) => `    - ${f.claim}`)
+        .join('\n');
+      return `  - ${c.subQuestionText}:\n${lines}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildContradictionSection(
+  contradictions: { claimA: string; claimB: string; contradictionType: string }[],
+): string {
+  if (contradictions.length === 0) return '';
+  const cLines = contradictions
+    .slice(0, 5)
+    .map((c) => `  - ${c.claimA} vs ${c.claimB} (${c.contradictionType})`)
+    .join('\n');
+  return `\nKNOWN CONTRADICTIONS:\n${cLines}`;
+}
+
+function buildModeratorPrompt(
+  plan: ResearchPlan,
+  coverageText: string,
+  findingsText: string,
+  contradictionSection: string,
+): string {
+  const perspectiveLines = plan.perspectives
+    .map((p) => `  - ${p.name}: ${p.question}`)
+    .join('\n');
+  return `You are a research moderator. Review the current research state and identify the most important coverage gaps.
+
+PERSPECTIVES:
+${perspectiveLines}
+
+SUB-QUESTION COVERAGE:
+${coverageText}
+
+FINDINGS BY SUB-QUESTION:
+${findingsText}${contradictionSection}
+
+Identify at most 3 critical gaps — areas where the research is weakest or most likely to be misleading. For each gap, specify a targeted search query.
+
+Respond with ONLY a JSON object (no markdown fences):
+{
+  "gaps": [
+    {
+      "question": "<targeted search query to fill this gap>",
+      "reason": "<why this gap matters>",
+      "involvedPerspectives": ["<perspective name>"]
+    }
+  ]
+}
+
+If no critical gaps exist, return {"gaps": []}.`;
+}
+
+function buildModeratorGapContext(gap: ModeratorGap): string {
+  return `\n\nMODERATOR GAP FOLLOW-UP: ${gap.question}\nReason: ${gap.reason}\nRelated perspectives: ${gap.involvedPerspectives.join(', ')}\nUse this to guide your next search.`;
 }
 
 // ── AgentStrategy ─────────────────────────────────────────────────────────
@@ -252,15 +829,7 @@ export class AgentStrategy implements ResearchStrategy {
 
   private maxIterations: number;
   private tools: AgentTool[] = [];
-  private history: {
-    role: 'assistant' | 'tool' | 'system';
-    thought?: string;
-    action?: string;
-    args?: Record<string, unknown>;
-    tool?: string;
-    content?: string;
-    error?: string;
-  }[] = [];
+  private history: HistoryEntry[] = [];
 
   constructor(ctx: StrategyContext) {
     // LLM availability is enforced upstream (startRun precondition + ctx.llm);
@@ -278,233 +847,114 @@ export class AgentStrategy implements ResearchStrategy {
     logger.info({ query }, 'Agent strategy starting');
     ctx.state.initialize(query, ctx.budget);
 
-    // ── Phase 0: Prior-knowledge awareness ──────────────────────────────
-    let priorKnowledge = '';
-    if (ctx.getPriorKnowledge) {
-      try {
-        const prior = await ctx.getPriorKnowledge();
-        if (prior && (prior.knownClaims.length > 0 || prior.knownGaps.length > 0)) {
-          priorKnowledge = `
-PRIOR KNOWLEDGE (from previous research on this topic):
-Known claims: ${prior.knownClaims.slice(0, 10).join('; ')}
-Known open gaps: ${prior.knownGaps.slice(0, 5).join('; ')}`;
-        }
-      } catch {
-        // non-fatal — proceed without prior knowledge
-      }
-    }
-
-    // Also include what the current run state already knows
-    const existingFindings = ctx.state.getFindings();
-    const existingSources = ctx.state.getSources();
-    if (existingFindings.length > 0 || existingSources.length > 0) {
-      priorKnowledge += `
-CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingFindings.length)} findings already collected.`;
-    }
-
-    // ── Phase 1: Generate research plan ─────────────────────────────────
+    const priorKnowledge = appendRunStateSummary(await collectPriorKnowledge(ctx), ctx);
     const plan = await this.generatePlan(query, priorKnowledge, ctx);
-    if (plan !== null && ctx.persistPlan) {
-      try {
-        await ctx.persistPlan(plan, 'created');
-      } catch {
-        // non-fatal
-      }
-    }
+    await persistPlanIfNeeded(plan, ctx);
+    setupPlanSubQuestions(plan, ctx);
 
-    // Set up sub-questions from the plan's perspectives
-    if (plan !== null) {
-      const subQuestions = plan.perspectives.map((p) => ({
-        id: randomUUID().slice(0, 12),
-        text: p.question,
-        classification: 'explainer' as const,
-        evidenceType: 'general' as const,
-        preferredSources: [] as never[],
-        freshnessRequirement: 'any',
-        failureModes: [],
-        budgetPriority: 1,
-        status: 'pending' as const,
-      }));
-      ctx.state.setSubQuestions(subQuestions);
-    }
-
-    // ── Phase 2: ReAct loop with gap-driven context ─────────────────────
     const systemPrompt = this.buildSystemPrompt(plan, priorKnowledge);
     const gapAnalyzer = new GapAnalyzer(ctx.state);
-    let iteration = 0;
-    let toolCallsSinceGapCheck = 0;
-    let consecutiveIdleChecks = 0;
-    const GAP_CHECK_INTERVAL = 4;
-    const MAX_IDLE_CHECKS = 2;
+    const loop = initialLoopState();
+    this.restoreFromCheckpoint(ctx, loop);
 
-    // ── Resume from checkpoint ──────────────────────────────────────────
-    if (ctx.resumeState !== undefined) {
-      const rs = ctx.resumeState;
-      this.history = rs.history as typeof this.history;
-      ctx.state.fromJSON(rs.strategyState);
-      ctx.budget.restore(rs.budgetState);
-      toolCallsSinceGapCheck = 0;
-      consecutiveIdleChecks = 0;
+    await this.runReactLoop(query, ctx, systemPrompt, gapAnalyzer, loop);
+    await this.runModeratorGapFinding({ plan, query, systemPrompt, loopEndIteration: loop.iteration, ctx });
 
-      if (rs.status === 'started' && rs.pendingTool !== undefined) {
-        // Re-execute the tool that was interrupted
-        const toolResult = await this.executeTool(rs.pendingTool.name, rs.pendingTool.args);
-        const assistantEntry: { role: 'assistant'; thought?: string; action?: string; args?: Record<string, unknown> } = { role: 'assistant' };
-        if (rs.pendingTool.thought) assistantEntry.thought = rs.pendingTool.thought;
-        assistantEntry.action = rs.pendingTool.name;
-        assistantEntry.args = rs.pendingTool.args;
-        // History already has the assistant entry from the checkpoint — don't re-add
-        this.history.push({
-          role: 'tool',
-          tool: rs.pendingTool.name,
-          content: toolResult.content.slice(0, 8000),
-        });
-        toolCallsSinceGapCheck++;
-        // Checkpoint the completed step
-        if (ctx.checkpointStep) {
-          ctx.checkpointStep(rs.stepIndex, 'completed', { tool: rs.pendingTool.name, args: rs.pendingTool.args, content: toolResult.content.slice(0, 8000), error: toolResult.error }, this.history);
-        }
-      }
-      // Skip to next iteration after last completed step
-      iteration = rs.stepIndex + 1;
-    }
-
-    while (iteration < this.maxIterations) {
-      if (ctx.abortSignal?.aborted) break;
-      if (ctx.budget.isExhausted()) break;
-      iteration++;
-
-      // Periodic gap analysis (every N tool calls)
-      let gapContext = '';
-      if (toolCallsSinceGapCheck >= GAP_CHECK_INTERVAL) {
-        toolCallsSinceGapCheck = 0;
-        const coverage = ctx.state.computeSubQuestionCoverage();
-        const gaps = gapAnalyzer.analyze(coverage);
-        const openGaps = gaps.filter((g) => g.status === 'open');
-        if (openGaps.length > 0) {
-          const gapSummary = openGaps
-            .slice(0, 5)
-            .map((g) => `- [P${String(g.priority)}] ${g.description}`)
-            .join('\n');
-          gapContext = `\n\nCOVERAGE GAPS detected:\n${gapSummary}\nUse this signal to guide your next search, but you choose the action.`;
-          consecutiveIdleChecks = 0;
-        } else {
-          consecutiveIdleChecks++;
-        }
-      }
-
-      // Stop when no actionable gaps and LLM idle for consecutive checks
-      if (consecutiveIdleChecks >= MAX_IDLE_CHECKS) {
-        logger.info({ iteration }, 'Agent stopping: no gaps, LLM idle');
-        break;
-      }
-
-      const response = await this.callLlm(systemPrompt, query, ctx, gapContext);
-      if (response === null) break;
-
-      const parsed = parseAgentResponse(response);
-
-      if (parsed.type === 'answer') {
-        break;
-      }
-
-      if (parsed.type === 'action' && parsed.tool) {
-        // Checkpoint: before tool call (started)
-        if (ctx.checkpointStep) {
-          ctx.checkpointStep(iteration, 'started', { tool: parsed.tool, args: parsed.args ?? {}, thought: parsed.thought }, this.history);
-        }
-        const toolResult = await this.executeTool(parsed.tool, parsed.args ?? {});
-        const assistantEntry: { role: 'assistant'; thought?: string; action?: string; args?: Record<string, unknown> } = { role: 'assistant' };
-        if (parsed.thought) assistantEntry.thought = parsed.thought;
-        assistantEntry.action = parsed.tool;
-        if (parsed.args) assistantEntry.args = parsed.args;
-        this.history.push(assistantEntry);
-        this.history.push({
-          role: 'tool',
-          tool: parsed.tool,
-          content: toolResult.content.slice(0, 8000),
-        });
-        // Checkpoint: after tool call (completed)
-        if (ctx.checkpointStep) {
-          ctx.checkpointStep(iteration, 'completed', { tool: parsed.tool, args: parsed.args ?? {}, content: toolResult.content.slice(0, 8000), error: toolResult.error }, this.history);
-        }
-
-        toolCallsSinceGapCheck++;
-        const progress = 5 + Math.round((iteration / this.maxIterations) * 85);
-        try {
-          await ctx.reportProgress({
-            phase: 'agent_step',
-            percent: progress,
-            message: `Agent step ${String(iteration)}/${String(this.maxIterations)}: ${parsed.tool}`,
-            counts: {
-              sourcesDiscovered: ctx.state.sourceCount(),
-              findings: ctx.state.findingCount(),
-              providerCalls: ctx.budget.snapshot().toolCallsUsed,
-              tokensUsed: ctx.budget.snapshot().tokensUsed,
-            },
-          });
-        } catch {
-          // non-fatal
-        }
-        continue;
-      }
-
-      if (parsed.type === 'error') {
-        const errorEntry: { role: 'assistant'; thought?: string; content?: string; error?: string } = { role: 'assistant' };
-        if (parsed.thought) errorEntry.thought = parsed.thought;
-        errorEntry.content = response;
-        if (parsed.message) errorEntry.error = parsed.message;
-        this.history.push(errorEntry);
-      }
-    }
-
-    // ── Phase 2b: Moderator gap-finding (STORM-style) ────────────────────
-    await this.runModeratorGapFinding(plan, query, systemPrompt, iteration, ctx);
-
-    // ── Phase 3: Output parity — post-process, audit, synthesize ────────
     if (ctx.abortSignal?.aborted) {
       logger.info('Agent research aborted, skipping post-processing');
-      return {
-        report: {
-          query,
-          classification: 'explainer',
-          depth: 'standard',
-          degradationMode: 'source_note_synthesis',
-          executiveSummary: '',
-          narrativeMarkdown: '',
-          themes: [],
-          contradictions: [],
-          uncertainties: [],
-          sourceNotes: [],
-          openQuestions: [],
-          limitations: [],
-          sourceCount: 0,
-          sourceTypeCount: 0,
-          sourceDiversity: [],
-          findingCount: 0,
-          evidenceSources: [],
-        },
-        timeline: [{ phase: 'aborted' }],
-        canonicalFindings: [],
-      };
+      return this.abortedResult(query);
     }
 
-    try {
-      await ctx.reportProgress({
-        phase: 'agent_complete',
-        percent: 90,
-        message: 'Agent research loop complete, finalizing',
-        counts: {
-          sourcesDiscovered: ctx.state.sourceCount(),
-          findings: ctx.state.findingCount(),
-          providerCalls: ctx.budget.snapshot().toolCallsUsed,
-          tokensUsed: ctx.budget.snapshot().tokensUsed,
-        },
-      });
-    } catch {
-      // non-fatal
-    }
+    await reportAgentPhase(ctx, 'agent_complete', 90, 'Agent research loop complete, finalizing');
+    return this.finalize(ctx);
+  }
 
+  async close(): Promise<void> {
+    this.history = [];
+  }
+
+  private restoreFromCheckpoint(ctx: StrategyContext, loop: LoopState): void {
+    if (ctx.resumeState === undefined) return;
+    const rs = ctx.resumeState;
+    this.history = rs.history as HistoryEntry[];
+    ctx.state.fromJSON(rs.strategyState);
+    ctx.budget.restore(rs.budgetState);
+    loop.toolCallsSinceGapCheck = 0;
+    loop.consecutiveIdleChecks = 0;
+    loop.iteration = rs.stepIndex + 1;
+  }
+
+  private async replayPendingTool(ctx: StrategyContext, loop: LoopState): Promise<void> {
+    const rs = ctx.resumeState;
+    if (rs === undefined) return;
+    if (rs.status !== 'started') return;
+    const pendingTool = rs.pendingTool;
+    if (!pendingTool) return;
+    const toolResult = await this.executeTool(pendingTool.name, pendingTool.args);
+    // History already has the assistant entry from the checkpoint — don't re-add
+    recordToolResult(this.history, pendingTool.name, toolResult);
+    loop.toolCallsSinceGapCheck++;
+    checkpointCompleted(ctx, rs.stepIndex, pendingTool.name, pendingTool.args, toolResult, this.history);
+  }
+
+  private async runReactLoop(
+    query: string,
+    ctx: StrategyContext,
+    systemPrompt: string,
+    gapAnalyzer: GapAnalyzer,
+    loop: LoopState,
+  ): Promise<void> {
+    await this.replayPendingTool(ctx, loop);
+    while (loop.iteration < this.maxIterations) {
+      if (ctx.abortSignal?.aborted) break;
+      if (ctx.budget.isExhausted()) break;
+      loop.iteration++;
+      const gapContext = refreshGapContext(loop, ctx, gapAnalyzer);
+      if (shouldStopIdle(loop)) {
+        logger.info({ iteration: loop.iteration }, 'Agent stopping: no gaps, LLM idle');
+        break;
+      }
+      const shouldBreak = await this.runSingleStep(query, ctx, systemPrompt, gapContext, loop);
+      if (shouldBreak) break;
+    }
+  }
+
+  private async runSingleStep(
+    query: string,
+    ctx: StrategyContext,
+    systemPrompt: string,
+    gapContext: string,
+    loop: LoopState,
+  ): Promise<boolean> {
+    const response = await this.callLlm(systemPrompt, query, ctx, gapContext);
+    if (response === null) return true;
+    const parsed = parseAgentResponse(response);
+    if (parsed.type === 'answer') return true;
+    if (parsed.type === 'action' && parsed.tool) {
+      await this.handleActionStep(ctx, parsed.thought, parsed.tool, parsed.args ?? {}, loop.iteration);
+      loop.toolCallsSinceGapCheck++;
+      return false;
+    }
+    if (parsed.type === 'error') recordParseError(this.history, parsed, response);
+    return false;
+  }
+
+  private async handleActionStep(
+    ctx: StrategyContext,
+    thought: string,
+    tool: string,
+    args: Record<string, unknown>,
+    iteration: number,
+  ): Promise<void> {
+    checkpointStarted(ctx, iteration, tool, args, thought, this.history);
+    const toolResult = await this.executeTool(tool, args);
+    recordAssistantAction(this.history, { thought, tool, args });
+    recordToolResult(this.history, tool, toolResult);
+    checkpointCompleted(ctx, iteration, tool, args, toolResult, this.history);
+    await reportAgentStep(ctx, iteration, this.maxIterations, tool);
+  }
+
+  private finalize(ctx: StrategyContext): ResearchResult {
     // Post-processing: dedup + contradiction detection (mirrors pipeline)
     const postResult = ctx.state.postProcessFindings();
     logger.info(
@@ -518,23 +968,7 @@ CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingF
     // Synthesis
     const state = ctx.state.getState();
     const report = new ResearchSynthesizer(state).synthesize();
-
-    try {
-      await ctx.reportProgress({
-        phase: 'agent_complete',
-        percent: 95,
-        message: 'Agent research complete',
-        counts: {
-          sourcesDiscovered: ctx.state.sourceCount(),
-          findings: ctx.state.findingCount(),
-          providerCalls: ctx.budget.snapshot().toolCallsUsed,
-          tokensUsed: ctx.budget.snapshot().tokensUsed,
-        },
-      });
-    } catch {
-      // non-fatal
-    }
-
+    void reportAgentPhase(ctx, 'agent_complete', 95, 'Agent research complete');
     return {
       report,
       timeline: [{ phase: 'complete' }],
@@ -542,8 +976,30 @@ CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingF
     };
   }
 
-  async close(): Promise<void> {
-    this.history = [];
+  private abortedResult(query: string): ResearchResult {
+    return {
+      report: {
+        query,
+        classification: 'explainer',
+        depth: 'standard',
+        degradationMode: 'source_note_synthesis',
+        executiveSummary: '',
+        narrativeMarkdown: '',
+        themes: [],
+        contradictions: [],
+        uncertainties: [],
+        sourceNotes: [],
+        openQuestions: [],
+        limitations: [],
+        sourceCount: 0,
+        sourceTypeCount: 0,
+        sourceDiversity: [],
+        findingCount: 0,
+        evidenceSources: [],
+      },
+      timeline: [{ phase: 'aborted' }],
+      canonicalFindings: [],
+    };
   }
 
   // ── Plan generation ───────────────────────────────────────────────────
@@ -554,25 +1010,7 @@ CURRENT RUN STATE: ${String(existingSources.length)} sources, ${String(existingF
     ctx: StrategyContext,
   ): Promise<ResearchPlan | null> {
     if (!ctx.llm) return null;
-
-    const prompt = `You are a research planner. Given the following research question, produce a structured research plan.
-
-Question: ${query}${priorKnowledge}
-
-Generate a JSON object (no markdown fences) with this exact structure:
-{
-  "scope": "<1-2 sentence scope statement>",
-  "assumptions": ["<assumption 1>", ...],
-  "perspectives": [
-    {"name": "<perspective name, e.g. historian/primary-source>", "question": "<specific sub-question from this angle>"}
-  ],
-  "falsificationQuestions": ["<what evidence would prove current understanding wrong?>", ...]
-}
-
-Choose 3-6 perspectives relevant to THIS specific query. Examples of perspective names: historian/primary-source, implementer/practitioner, skeptic/critic, current-state, comparison, technical-deep-dive, user-experience, economic-analysis, regulatory, future-outlook. Pick only what fits.
-
-Output ONLY the JSON object.`;
-
+    const prompt = buildPlanPrompt(query, priorKnowledge);
     const resp = await ctx.llm.callOrchestrator({
       messages: [{ role: 'system', content: prompt }],
       temperature: 0.3,
@@ -585,49 +1023,9 @@ Output ONLY the JSON object.`;
     ctx.budget.recordToolCall();
 
     if (!resp.success) return null;
-
     const raw = parseJsonFromText<unknown>(resp.content);
-    if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
-      logger.warn('Agent plan LLM returned invalid structure, proceeding without plan');
-      return null;
-    }
-    const obj = raw as Record<string, unknown>;
-
-    if (
-      typeof obj.scope !== 'string' ||
-      !Array.isArray(obj.perspectives) ||
-      obj.perspectives.length === 0
-    ) {
-      logger.warn('Agent plan LLM returned invalid structure, proceeding without plan');
-      return null;
-    }
-
-    // Validate perspective shape — filter out invalid entries rather than coercing
-    const validPerspectives = (obj.perspectives as unknown[]).filter(
-      (p): p is { name: string; question: string } =>
-        typeof p === 'object' &&
-        p !== null &&
-        typeof (p as Record<string, unknown>).name === 'string' &&
-        typeof (p as Record<string, unknown>).question === 'string',
-    );
-    if (validPerspectives.length === 0) return null;
-
-    return {
-      scope: obj.scope.slice(0, 2000),
-      assumptions: Array.isArray(obj.assumptions)
-        ? (obj.assumptions as unknown[])
-            .filter((a): a is string => typeof a === 'string')
-            .map((a) => a.slice(0, 500))
-            .slice(0, 10)
-        : [],
-      perspectives: validPerspectives.slice(0, 8),
-      falsificationQuestions: Array.isArray(obj.falsificationQuestions)
-        ? (obj.falsificationQuestions as unknown[])
-            .filter((f): f is string => typeof f === 'string')
-            .map((f) => f.slice(0, 1000))
-            .slice(0, 5)
-        : [],
-    };
+    if (!isValidPlanPayload(raw)) return logInvalidPlan();
+    return toResearchPlan(raw);
   }
 
   // ── Empty result (no LLM) ─────────────────────────────────────────────
@@ -662,22 +1060,7 @@ Output ONLY the JSON object.`;
   private buildSystemPrompt(plan: ResearchPlan | null, priorKnowledge: string): string {
     const today = new Date().toISOString().slice(0, 10);
     const toolDesc = describeTools(this.tools);
-
-    let planSection = '';
-    if (plan !== null) {
-      const perspectiveLines = plan.perspectives
-        .map((p) => `  - ${p.name}: ${p.question}`)
-        .join('\n');
-      planSection = `
-RESEARCH PLAN:
-Scope: ${plan.scope}
-Assumptions: ${plan.assumptions.join('; ')}
-Perspectives to investigate:
-${perspectiveLines}
-Falsification questions:
-${plan.falsificationQuestions.map((q) => `  - ${q}`).join('\n')}`;
-    }
-
+    const planSection = plan === null ? '' : this.buildPlanSection(plan);
     return `You are an exhaustive research agent. Today's date: ${today}.${priorKnowledge}${planSection}
 
 RULES:
@@ -700,6 +1083,20 @@ Available tools:
 ${toolDesc}`;
   }
 
+  private buildPlanSection(plan: ResearchPlan): string {
+    const perspectiveLines = plan.perspectives
+      .map((p) => `  - ${p.name}: ${p.question}`)
+      .join('\n');
+    return `
+RESEARCH PLAN:
+Scope: ${plan.scope}
+Assumptions: ${plan.assumptions.join('; ')}
+Perspectives to investigate:
+${perspectiveLines}
+Falsification questions:
+${plan.falsificationQuestions.map((q) => `  - ${q}`).join('\n')}`;
+  }
+
   // ── LLM call ──────────────────────────────────────────────────────────
 
   private async callLlm(
@@ -709,44 +1106,7 @@ ${toolDesc}`;
     gapContext?: string,
   ): Promise<string | null> {
     if (!ctx.llm) return null;
-
-    const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
-      { role: 'system', content: systemPrompt },
-    ];
-
-    const recentHistory = this.history.slice(-8);
-    for (const entry of recentHistory) {
-      if (entry.role === 'assistant') {
-        if (entry.action) {
-          messages.push({
-            role: 'assistant',
-            content: `THOUGHT: ${entry.thought ?? ''}\nACTION: ${entry.action}\nARGUMENTS: ${JSON.stringify(entry.args ?? {})}`,
-          });
-        } else if (entry.content) {
-          messages.push({ role: 'assistant', content: entry.content });
-        }
-      } else if (entry.role === 'tool') {
-        messages.push({
-          role: 'user',
-          content: `[Tool result from ${entry.tool ?? 'unknown'}]:\n${entry.content ?? ''}`,
-        });
-      } else if (entry.error) {
-        messages.push({ role: 'user', content: `[Error]: ${entry.error}` });
-      }
-    }
-
-    if (this.history.length === 0) {
-      messages.push({
-        role: 'user',
-        content: `Research question: ${query}\n\nBegin searching for information.${gapContext ?? ''}`,
-      });
-    } else {
-      messages.push({
-        role: 'user',
-        content: `Continue research. If you have enough information, provide your ANSWER.${gapContext ?? ''}`,
-      });
-    }
-
+    const messages = buildLlmMessages(systemPrompt, query, gapContext, this.history);
     const resp = await ctx.llm.callOrchestrator({
       messages,
       temperature: 0.7,
@@ -785,96 +1145,34 @@ ${toolDesc}`;
 
   // ── Moderator gap-finding (STORM-style, runs once after main loop) ───
 
-  private async runModeratorGapFinding(
-    plan: ResearchPlan | null,
-    query: string,
-    systemPrompt: string,
-    loopEndIteration: number,
-    ctx: StrategyContext,
-  ): Promise<void> {
-    // Gate: need 2+ perspectives AND findings present
-    if (plan === null || plan.perspectives.length < 2) return;
-    const allFindings = ctx.state.getFindings();
-    if (allFindings.length === 0) return;
+  private async runModeratorGapFinding(input: ModeratorGapInput): Promise<void> {
+    const { plan, query, systemPrompt, loopEndIteration, ctx } = input;
+    if (!isModeratorPlanEligible(plan, ctx)) return;
+    if (!hasModeratorCallBudget(ctx)) return;
+    if (!hasModeratorRemainingBudget(ctx)) return;
 
-    // Budget gate: 3+ tool calls, 20k tokens, 30s remaining
-    const snap = ctx.budget.snapshot();
-    if (snap.toolCallsUsed < 3) return;
-    const rem = ctx.budget.remaining();
-    if (rem.tokens < 20000 || rem.timeMs < 30000) return;
+    const gaps = await this.fetchModeratorGaps(plan, ctx);
+    if (gaps.length === 0) return;
+    await reportAgentPhase(
+      ctx,
+      'moderator_gap_followup',
+      88,
+      `Moderator identified ${String(gaps.length)} gap(s), running follow-up iterations`,
+    );
+    await this.runModeratorFollowUps({ gaps, query, systemPrompt, loopEndIteration, ctx });
+  }
 
+  private async fetchModeratorGaps(plan: ResearchPlan, ctx: StrategyContext): Promise<ModeratorGap[]> {
     const coverage = ctx.state.computeSubQuestionCoverage();
     const state = ctx.state.getState();
-
-    // Group findings by subQuestionId
-    const findingsBySq = new Map<string, { claim: string }[]>();
-    for (const f of allFindings) {
-      for (const sqId of f.subQuestionIds) {
-        const arr = findingsBySq.get(sqId) ?? [];
-        arr.push({ claim: f.claim });
-        findingsBySq.set(sqId, arr);
-      }
-    }
-
-    const perspectiveLines = plan.perspectives
-      .map((p) => `  - ${p.name}: ${p.question}`)
-      .join('\n');
-
-    const coverageLines = coverage
-      .map((c) => `  - [${c.status}] ${c.subQuestionText} (${String(c.sourceCount)} sources, ${String(c.findingCount)} findings)`)
-      .join('\n');
-
-    const findingsLines = coverage
-      .map((c) => {
-        const sqFindings = findingsBySq.get(c.subQuestionId) ?? [];
-        if (sqFindings.length === 0) return '';
-        const lines = sqFindings
-          .slice(0, 5)
-          .map((f) => `    - ${f.claim}`)
-          .join('\n');
-        return `  - ${c.subQuestionText}:\n${lines}`;
-      })
-      .filter(Boolean)
-      .join('\n');
-
-    // Contradictions if locally available
-    const contradictions = state.contradictions;
-    let contradictionSection = '';
-    if (contradictions.length > 0) {
-      const cLines = contradictions
-        .slice(0, 5)
-        .map((c) => `  - ${c.claimA} vs ${c.claimB} (${c.contradictionType})`)
-        .join('\n');
-      contradictionSection = `\nKNOWN CONTRADICTIONS:\n${cLines}`;
-    }
-
-    const prompt = `You are a research moderator. Review the current research state and identify the most important coverage gaps.
-
-PERSPECTIVES:
-${perspectiveLines}
-
-SUB-QUESTION COVERAGE:
-${coverageLines}
-
-FINDINGS BY SUB-QUESTION:
-${findingsLines}${contradictionSection}
-
-Identify at most 3 critical gaps — areas where the research is weakest or most likely to be misleading. For each gap, specify a targeted search query.
-
-Respond with ONLY a JSON object (no markdown fences):
-{
-  "gaps": [
-    {
-      "question": "<targeted search query to fill this gap>",
-      "reason": "<why this gap matters>",
-      "involvedPerspectives": ["<perspective name>"]
-    }
-  ]
-}
-
-If no critical gaps exist, return {"gaps": []}.`;
-
-    if (!ctx.llm) return;
+    const findingsBySq = groupFindingsBySubQuestion(ctx.state.getFindings());
+    const prompt = buildModeratorPrompt(
+      plan,
+      buildCoverageLines(coverage),
+      buildFindingsLines(coverage, findingsBySq),
+      buildContradictionSection(state.contradictions),
+    );
+    if (!ctx.llm) return [];
     const resp = await ctx.llm.callOrchestrator({
       messages: [{ role: 'system', content: prompt }],
       temperature: 0.3,
@@ -885,83 +1183,43 @@ If no critical gaps exist, return {"gaps": []}.`;
         : { runId: ctx.runContext.researchRunId }),
     });
     ctx.budget.recordToolCall();
+    if (!resp.success) return [];
+    return parseModeratorGaps(parseJsonFromText<unknown>(resp.content));
+  }
 
-    if (!resp.success) return;
-
-    // Parse and validate moderator JSON response (same pattern as generatePlan)
-    const raw = parseJsonFromText<unknown>(resp.content);
-    if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return;
-    const obj = raw as Record<string, unknown>;
-    if (!Array.isArray(obj.gaps)) return;
-
-    interface ModeratorGap {
-      question: string;
-      reason: string;
-      involvedPerspectives: string[];
-    }
-    const gaps = (obj.gaps as unknown[])
-      .filter(
-        (g): g is ModeratorGap =>
-          typeof g === 'object' &&
-          g !== null &&
-          typeof (g as Record<string, unknown>).question === 'string',
-      )
-      .slice(0, 3);
-
-    if (gaps.length === 0) return;
-
-    try {
-      await ctx.reportProgress({
-        phase: 'moderator_gap_followup',
-        percent: 88,
-        message: `Moderator identified ${String(gaps.length)} gap(s), running follow-up iterations`,
-        counts: {
-          sourcesDiscovered: ctx.state.sourceCount(),
-          findings: ctx.state.findingCount(),
-          providerCalls: ctx.budget.snapshot().toolCallsUsed,
-          tokensUsed: ctx.budget.snapshot().tokensUsed,
-        },
-      });
-    } catch {
-      // non-fatal
-    }
-
+  private async runModeratorFollowUps(input: {
+    gaps: ModeratorGap[];
+    query: string;
+    systemPrompt: string;
+    loopEndIteration: number;
+    ctx: StrategyContext;
+  }): Promise<void> {
+    const { gaps, query, systemPrompt, loopEndIteration, ctx } = input;
     // At most 2 follow-up iterations using existing ReAct machinery
-    const maxFollowUps = Math.min(2, gaps.length);
+    const maxFollowUps = Math.min(MODERATOR_MAX_FOLLOW_UPS, gaps.length);
     for (let i = 0; i < maxFollowUps; i++) {
-      // Re-check budget before each follow-up
-      const r = ctx.budget.remaining();
-      if (r.tokens < 20000 || r.timeMs < 30000) break;
+      if (!hasModeratorRemainingBudget(ctx)) break;
       if (ctx.abortSignal?.aborted) break;
-
       const gap = gaps[i];
       if (!gap) break;
-      const gapContext = `\n\nMODERATOR GAP FOLLOW-UP: ${gap.question}\nReason: ${gap.reason}\nRelated perspectives: ${gap.involvedPerspectives.join(', ')}\nUse this to guide your next search.`;
-
-      const response = await this.callLlm(systemPrompt, query, ctx, gapContext);
-      if (response === null) break;
-
-      const parsed = parseAgentResponse(response);
-      if (parsed.type !== 'action' || !parsed.tool) break;
-
-      const stepIdx = loopEndIteration + i + 1;
-      if (ctx.checkpointStep) {
-        ctx.checkpointStep(stepIdx, 'started', { tool: parsed.tool, args: parsed.args ?? {}, thought: parsed.thought }, this.history);
-      }
-      const toolResult = await this.executeTool(parsed.tool, parsed.args ?? {});
-      const assistantEntry: { role: 'assistant'; thought?: string; action?: string; args?: Record<string, unknown> } = { role: 'assistant' };
-      if (parsed.thought) assistantEntry.thought = parsed.thought;
-      assistantEntry.action = parsed.tool;
-      if (parsed.args) assistantEntry.args = parsed.args;
-      this.history.push(assistantEntry);
-      this.history.push({
-        role: 'tool',
-        tool: parsed.tool,
-        content: toolResult.content.slice(0, 8000),
-      });
-      if (ctx.checkpointStep) {
-        ctx.checkpointStep(stepIdx, 'completed', { tool: parsed.tool, args: parsed.args ?? {}, content: toolResult.content.slice(0, 8000), error: toolResult.error }, this.history);
-      }
+      const shouldStop = await this.runModeratorFollowUpStep(query, systemPrompt, loopEndIteration + i + 1, gap, ctx);
+      if (shouldStop) break;
     }
+  }
+
+  private async runModeratorFollowUpStep(
+    query: string,
+    systemPrompt: string,
+    stepIdx: number,
+    gap: ModeratorGap,
+    ctx: StrategyContext,
+  ): Promise<boolean> {
+    const gapContext = buildModeratorGapContext(gap);
+    const response = await this.callLlm(systemPrompt, query, ctx, gapContext);
+    if (response === null) return true;
+    const parsed = parseAgentResponse(response);
+    if (parsed.type !== 'action' || !parsed.tool) return true;
+    await this.handleActionStep(ctx, parsed.thought, parsed.tool, parsed.args ?? {}, stepIdx);
+    return false;
   }
 }
