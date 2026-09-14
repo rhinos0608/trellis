@@ -43,6 +43,13 @@ const PERMANENT_JSONRPC_CODES = new Set([-32700, -32600, -32602]);
 
 export function classifyError(err: unknown): ErrorClass {
   if (!(err instanceof Error)) return 'PERMANENT';
+  // Carrier-field honor: callers attach `classification: 'PERMANENT'` to
+  // deterministic failures (e.g. pi-northstar spawn ENOENT/EACCES, usage
+  // envelopes). Must precede all other checks so these never retry or feed
+  // the breaker window.
+  if ((err as unknown as Record<string, unknown>).classification === 'PERMANENT') {
+    return 'PERMANENT';
+  }
   if (err.name === 'AbortError') return 'PERMANENT';
 
   const errRecord = err as unknown as Record<string, unknown>;

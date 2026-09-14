@@ -11,7 +11,7 @@ import type { NewEventInput } from '../../src/store/events.js';
 import type { TrellisConfig } from '../../src/config/index.js';
 import type { ResearchProvider } from '../../src/providers/types.js';
 
-const config: TrellisConfig = { storage: { dbPath: ':memory:' }, llm: { baseUrl: 'http://mock-llm', model: 'test-model' }, searchProvider: { command: 'echo', args: [] }, logLevel: 'silent' };
+const config: TrellisConfig = { storage: { dbPath: ':memory:' }, llm: { baseUrl: 'http://mock-llm', model: 'test-model' }, searchProvider: { command: 'echo', args: [] }, piNorthstar: { autoDetect: false }, logLevel: 'silent' };
 
 // Mock LlmClient so agent strategy doesn't need real LLM config
 vi.mock('../../src/research/llm/client.js', () => {

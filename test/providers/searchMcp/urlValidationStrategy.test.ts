@@ -14,7 +14,7 @@ function strategyContext(provider: ResearchProvider, llm?: unknown): StrategyCon
   const budget = new BudgetTracker({ depth: 'quick', maxSources: 10, maxExtractions: 10, maxGapLoops: 1, minGapLoops: 0, maxToolCalls: 20, maxTokens: 10000, maxTimeMs: 60000, maxStateEntries: 100 });
   return {
     state: new ResearchStateEngine(budget), budget, provider, llm: llm as StrategyContext['llm'],
-    config: { storage: { dbPath: ':memory:' }, llm: {}, searchProvider: { command: 'echo', args: [] }, logLevel: 'silent' },
+    config: { storage: { dbPath: ':memory:' }, llm: {}, searchProvider: { command: 'echo', args: [] }, piNorthstar: { autoDetect: false }, logLevel: 'silent' },
     runContext: { familyId: 'family', researchRunId: 'run' }, reportProgress: async () => {}, depth: 'quick',
   };
 }

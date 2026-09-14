@@ -37,6 +37,7 @@ function makeConfig(llm?: Partial<TrellisConfig['llm']>): TrellisConfig {
       ...(llm ?? {}),
     },
     searchProvider: { command: 'echo', args: [] },
+    piNorthstar: { autoDetect: false },
     logLevel: 'silent',
   };
 }

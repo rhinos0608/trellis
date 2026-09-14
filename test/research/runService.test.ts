@@ -64,6 +64,7 @@ const mockConfig: TrellisConfig = {
   storage: { dbPath: ':memory:' },
   llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
   searchProvider: { command: 'echo', args: [] },
+  piNorthstar: { autoDetect: false },
   logLevel: 'silent',
 };
 

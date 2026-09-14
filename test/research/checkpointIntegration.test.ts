@@ -77,6 +77,7 @@ const MINIMAL_CONFIG: TrellisConfig = {
   storage: { dbPath: ':memory:' },
   llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
   searchProvider: { command: 'echo', args: [] },
+  piNorthstar: { autoDetect: false },
   logLevel: 'silent',
 };
 

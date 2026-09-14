@@ -302,6 +302,22 @@ interface ResearchProvider {
 
 All return types are plain JSON-serializable objects — no class instances or streams — so `provider.search(q)` → `mcp.callTool("search", {q})` is a transparent later swap.
 
+**Phase 1 second provider: `pi-northstar`** (`src/providers/piNorthstar/`, default off).
+Same `ResearchProvider` interface, different transport: one short-lived
+`pi-northstar call TOOL JSON_ARGS` subprocess per call (no persistent child),
+with `pi-northstar.result` v1 envelope unwrapping in `mapping.ts`, capability
+discovery via `status`, and automatic binary detection via the single
+`TRELLIS_PI_NORTHSTAR_AUTODETECT` on-switch (no command/args override;
+resolution is PATH → sibling `../Pi-Atlas/bin/pi-northstar.mjs` → local
+`./bin/pi-northstar.mjs`; child env is `PI_SEARCH_*` only, no `PATH` —
+see `docs/CONFIGURATION.md`). P1 scope is
+`web_search`/`fetch`/`research` (academic)/`github` only — no social, media, KG,
+graph, or browser. `fetch` accepts `maxPages` (supported natively:
+`Pi-Atlas/src/index.ts:180`, bounded in `src/web-contract.ts:366`). Shared instances will live in `src/providers/ownerRegistry.ts`
+(generation-guarded name→owner map, currently with zero production callers —
+wiring lands in a later phase; `searchMcp/owner.ts` untouched). Research
+core still never imports provider internals — it sees only `ResearchProvider`.
+
 **Residual risk carried forward**: `discovery.ts` (13 backends) and `extraction.ts` (5 backends) currently bypass the existing `ResearchTools` DI interface and import backends directly — porting them means routing through `ResearchProvider` for the first time, not just renaming an existing seam. Budget real effort here, not a mechanical rename (Worker 6).
 
 ## 6. Package layout (adapting the user's suggested tree to recon findings)

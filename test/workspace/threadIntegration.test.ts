@@ -24,7 +24,7 @@ const provider: ResearchProvider = {
 };
 
 function config(dbPath: string): TrellisConfig {
-  return { storage: { dbPath }, llm: { baseUrl: 'http://mock-llm', model: 'test-model', apiKey: undefined }, searchProvider: { command: 'echo', args: [] }, logLevel: 'silent' };
+  return { storage: { dbPath }, llm: { baseUrl: 'http://mock-llm', model: 'test-model', apiKey: undefined }, searchProvider: { command: 'echo', args: [] }, piNorthstar: { autoDetect: false }, logLevel: 'silent' };
 }
 
 // Mock LlmClient so agent strategy doesn't need real LLM config

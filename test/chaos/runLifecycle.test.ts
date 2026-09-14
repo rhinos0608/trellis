@@ -77,6 +77,7 @@ function makeConfig(dbPath: string): TrellisConfig {
     storage: { dbPath },
     llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
     searchProvider: { command: 'echo', args: [] },
+    piNorthstar: { autoDetect: false },
     logLevel: 'silent',
   };
 }

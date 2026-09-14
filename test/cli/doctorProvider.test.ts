@@ -45,6 +45,7 @@ function makeConfig(overrides?: Partial<TrellisConfig['searchProvider']>): Trell
     storage: { dbPath },
     llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
     searchProvider: { command: 'node', args: ['/fake/search-mcp.js'], ...overrides },
+    piNorthstar: { autoDetect: false },
     logLevel: 'error',
   };
 }

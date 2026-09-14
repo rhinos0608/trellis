@@ -14,6 +14,7 @@ export interface TrellisConfig {
   storage: { dbPath: string };
   llm: { apiKey: string | undefined; baseUrl: string | undefined; model: string | undefined };
   searchProvider: { command: string; args: string[] };
+  piNorthstar: { autoDetect: boolean };
   logLevel: string;
 }
 
@@ -51,9 +52,15 @@ export function loadConfig(): TrellisConfig {
       : process.env.TRELLIS_SEARCH_MCP_ARGS?.split(' ').filter(Boolean) ?? [],
   };
 
+  // pi-northstar provider: automatic detection, default OFF (zero behavior change).
+  const autoDetectRaw = process.env.TRELLIS_PI_NORTHSTAR_AUTODETECT ?? '';
+  const piNorthstar: TrellisConfig['piNorthstar'] = {
+    autoDetect: autoDetectRaw === '1' || autoDetectRaw.toLowerCase() === 'true',
+  };
+
   const logLevel: string = process.env.LOG_LEVEL ?? 'info';
 
-  const config: TrellisConfig = { storage, llm, searchProvider, logLevel };
+  const config: TrellisConfig = { storage, llm, searchProvider, piNorthstar, logLevel };
 
   logger.debug({ storage: storage.dbPath, logLevel }, 'Config loaded');
   return config;

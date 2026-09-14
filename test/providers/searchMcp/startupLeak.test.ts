@@ -27,6 +27,7 @@ function makeConfig(): TrellisConfig {
     storage: { dbPath: ':memory:' },
     llm: { apiKey: undefined, baseUrl: undefined, model: undefined },
     searchProvider: { command: 'echo', args: ['x'] },
+    piNorthstar: { autoDetect: false },
     logLevel: 'silent',
   };
 }

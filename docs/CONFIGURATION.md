@@ -13,12 +13,26 @@ All variables are read from the process environment. If a `.env` file exists at 
 | `TRELLIS_SEARCH_MCP_PATH` | Path to search-mcp's MCP server entrypoint | *(empty — provider disabled)* | No |
 | `TRELLIS_SEARCH_MCP_COMMAND` | Command to spawn the search-mcp child process | `node` | No |
 | `TRELLIS_SEARCH_MCP_ARGS` | Space-separated args (used when `TRELLIS_SEARCH_MCP_PATH` is unset) | *(empty)* | No |
+| `TRELLIS_PI_NORTHSTAR_AUTODETECT` | Single on-switch for the pi-northstar provider (`1`/`true` = on) | *(off — provider disabled)* | No |
 | `TRELLIS_HTTP_PORT` | Port for `trellis serve` (Phase 8 loopback HTTP server) | `0` (random) | No |
 | `LOG_LEVEL` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` | `info` | No |
 
 ### Precedence
 
 Process environment → `.env` file → defaults.  A shell-exported variable always wins over `.env`.
+
+### pi-northstar provider (Phase 1, default off)
+
+When `TRELLIS_PI_NORTHSTAR_AUTODETECT=1`, Trellis spawns `pi-northstar call TOOL JSON_ARGS`
+per provider call (P1 tools only: `web_search`, `fetch`, `research` academic, `github`).
+The binary is resolved in order: `pi-northstar` on `PATH` (parent-process PATH
+is used for discovery only and never forwarded), sibling `../Pi-Atlas/bin/pi-northstar.mjs`,
+local `./bin/pi-northstar.mjs`. No command/args override exists — one on-switch only.
+When enabled but unresolvable, provider creation fails closed with an actionable error.
+The child receives only `PI_SEARCH_*` variables (no `PATH`) — Trellis secrets
+(e.g. `TRELLIS_LLM_API_KEY`) are never forwarded. Provider results are untrusted
+evidence served under provider name `pi-northstar`; Pi provenance markers pass
+through mapping verbatim.
 
 ### Sensitive Variables
 

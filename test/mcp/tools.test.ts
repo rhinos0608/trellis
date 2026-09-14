@@ -33,6 +33,7 @@ function makeConfig(): TrellisConfig {
     storage: { dbPath: TEST_DB },
     llm: { apiKey: undefined, baseUrl: 'http://mock-llm', model: 'test-model' },
     searchProvider: { command: 'node', args: [] },
+    piNorthstar: { autoDetect: false },
     logLevel: 'silent',
   };
 }

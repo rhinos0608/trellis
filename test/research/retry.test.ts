@@ -117,6 +117,25 @@ describe('classifyError', () => {
     expect(attempts).toBe(1);
   });
 
+  it('honors classification carrier: PERMANENT short-circuits before status checks', () => {
+    const err = new Error('rate limited') as Error & { response: { status: number } };
+    err.response = { status: 429 };
+    (err as unknown as Record<string, unknown>).classification = 'PERMANENT';
+    expect(classifyError(err)).toBe('PERMANENT');
+  });
+
+  it('permanent envelope error does not feed the breaker window', async () => {
+    const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5, minimumSamples: 1 });
+    await expect(cb.execute(async () => {
+      const err = new Error('pi-northstar call web_search failed: unknown_tool: nope');
+      (err as unknown as Record<string, unknown>).classification = 'PERMANENT';
+      (err as unknown as Record<string, unknown>).operation = 'callTool';
+      throw err;
+    })).rejects.toThrow(/unknown_tool/);
+    expect((cb as unknown as { window: unknown[] }).window).toHaveLength(0);
+    expect(cb.isOpen()).toBe(false);
+  });
+
   it('circuit breaker ignores JSON-RPC validation errors', async () => {
     const cb = new CircuitBreaker({ windowSize: 3, failureThreshold: 0.5, minimumSamples: 1 });
     await expect(cb.execute(async () => {
