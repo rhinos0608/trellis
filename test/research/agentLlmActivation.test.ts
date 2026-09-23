@@ -78,6 +78,7 @@ afterEach(() => {
   closeDb();
   fs.rmSync(tmpDir, { recursive: true, force: true });
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -106,6 +107,36 @@ describe('LlmClient activation in runService (Phase 11C)', () => {
     expect(fetchMock).toHaveBeenCalled();
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { model?: string };
     expect(body.model).toBe('test-model');
+  }, 15_000);
+
+  it('uses Pi auth-store model transport with model ID only', async () => {
+    const home = path.join(tmpDir, 'home');
+    const agentDir = path.join(home, '.pi', 'agent');
+    const binDir = path.join(tmpDir, 'bin');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'auth.json'), '{}');
+
+    const piPath = path.join(binDir, 'pi');
+    fs.writeFileSync(
+      piPath,
+      `#!${process.execPath}\nconsole.log("THOUGHT: done\\nANSWER: Final agent answer.");\n`,
+    );
+    fs.chmodSync(piPath, 0o755);
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('PI_CODING_AGENT_DIR', agentDir);
+    vi.stubEnv('PATH', binDir);
+    vi.stubEnv('OPENAI_API_KEY', 'must-not-be-required');
+
+    const svc = createRunService();
+    const { runId } = await svc.startRun({
+      query: 'What is TypeScript?',
+      provider: mockProvider,
+      config: makeConfig({ model: 'openai-codex/gpt-5.6-sol' }),
+      strategy: 'agent',
+    });
+
+    expect(await waitForSettledStatus(svc, runId)).toBe('completed');
   }, 15_000);
 
   it('rejects startRun() with a PERMANENT precondition error when LLM config is missing', async () => {

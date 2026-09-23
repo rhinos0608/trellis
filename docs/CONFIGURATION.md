@@ -7,9 +7,9 @@ All variables are read from the process environment. If a `.env` file exists at 
 | Variable | Description | Default | Sensitive |
 |---|---|---|---|
 | `TRELLIS_DB_PATH` | Path to the SQLite event-store database file | `~/.cache/trellis/trellis.db` | No |
-| `TRELLIS_LLM_API_KEY` | API key for the research orchestrator's LLM | Falls back to `OPENAI_API_KEY` | **Yes** — redacted in logs |
-| `TRELLIS_LLM_BASE_URL` | Base URL for the LLM endpoint | Falls back to `OPENAI_BASE_URL` | No |
-| `TRELLIS_LLM_MODEL` | Model name for the LLM | Falls back to `OPENAI_MODEL` | No |
+| `TRELLIS_LLM_API_KEY` | API key for an HTTP LLM endpoint; not needed for Pi-backed model IDs | Falls back to `OPENAI_API_KEY` | **Yes** — redacted in logs |
+| `TRELLIS_LLM_BASE_URL` | Base URL for an HTTP LLM endpoint; omit for Pi-backed model IDs | Falls back to `OPENAI_BASE_URL` | No |
+| `TRELLIS_LLM_MODEL` | Model name, or exact Pi `provider/model` ID when using Pi auth | Falls back to `OPENAI_MODEL` | No |
 | `TRELLIS_SEARCH_MCP_PATH` | Path to search-mcp's MCP server entrypoint | *(empty — provider disabled)* | No |
 | `TRELLIS_SEARCH_MCP_COMMAND` | Command to spawn the search-mcp child process | `node` | No |
 | `TRELLIS_SEARCH_MCP_ARGS` | Space-separated args (used when `TRELLIS_SEARCH_MCP_PATH` is unset) | *(empty)* | No |
@@ -21,13 +21,29 @@ All variables are read from the process environment. If a `.env` file exists at 
 
 Process environment → `.env` file → defaults.  A shell-exported variable always wins over `.env`.
 
+### Pi-backed LLM model IDs
+
+When `TRELLIS_LLM_BASE_URL` is set, Trellis keeps using its OpenAI-compatible HTTP
+transport. When no base URL is set, an exact `provider/model` value in
+`TRELLIS_LLM_MODEL` can use the installed `pi` CLI instead. Trellis requires the
+Pi auth store (`${PI_CODING_AGENT_DIR:-~/.pi/agent}/auth.json`) to exist, passes
+only the model ID, and lets Pi resolve/refresh credentials from that store. No
+`TRELLIS_LLM_API_KEY`, provider API key, or base URL is required or forwarded for
+this path.
+
+The Pi child runs non-interactively with sessions, tools, extensions, skills,
+prompt templates, themes, context files, and project approval disabled. Its
+environment is allowlisted to process/runtime paths and locale/certificate settings;
+provider API-key environment variables and Trellis LLM secrets are excluded.
+
 ### pi-northstar provider (Phase 1, default off)
 
-When `TRELLIS_PI_NORTHSTAR_AUTODETECT=1`, Trellis spawns `pi-northstar call TOOL JSON_ARGS`
-per provider call (P1 tools only: `web_search`, `fetch`, `research` academic, `github`).
+When `TRELLIS_PI_NORTHSTAR_AUTODETECT=1`, Trellis uses Northstar's public CLI
+commands per provider call (P1 surfaces: web search, fetch, academic research, GitHub).
 The binary is resolved in order: `pi-northstar` on `PATH` (parent-process PATH
-is used for discovery only and never forwarded), sibling `../Pi-Atlas/bin/pi-northstar.mjs`,
-local `./bin/pi-northstar.mjs`. No command/args override exists — one on-switch only.
+is used for discovery only and never forwarded), a sibling Northstar checkout under
+`../Pi-Atlas`, `../Pi-Northstar`, or `../Northstar`, then local `./bin/pi-northstar.mjs`.
+No command/args override exists — one on-switch only.
 When enabled but unresolvable, provider creation fails closed with an actionable error.
 The child receives only `PI_SEARCH_*` variables (no `PATH`) — Trellis secrets
 (e.g. `TRELLIS_LLM_API_KEY`) are never forwarded. Provider results are untrusted

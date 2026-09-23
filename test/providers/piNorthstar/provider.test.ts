@@ -4,7 +4,7 @@
  * nothing here spawns a real process.
  */
 
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
@@ -56,8 +56,15 @@ function fakeExecutor(): PiNorthstarExecutor {
         exitCode: 0,
       });
     }
-    const callIdx = args.lastIndexOf('call');
-    const tool = callIdx >= 0 ? args[callIdx + 1] : undefined;
+    const tool = args.includes('github')
+      ? 'github'
+      : args.includes('research')
+        ? 'research'
+        : args.includes('fetch')
+          ? 'fetch'
+          : args.includes('search')
+            ? 'web_search'
+            : undefined;
     let details: unknown = {};
     if (tool === 'web_search' || tool === 'research') {
       details = { results: [{ title: 'T', url: 'https://example.com/', snippet: 's' }] };
@@ -102,6 +109,22 @@ describe('resolvePiNorthstarCommand', () => {
     });
     expect(r.source).toBe('path');
     expect(r.command).toBe(bin);
+  });
+
+  it('finds a sibling checkout under the renamed Pi-Northstar directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pns-sibling-'));
+    const cwd = join(root, 'trellis');
+    const binDir = join(root, 'Pi-Northstar', 'bin');
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    const script = join(binDir, 'pi-northstar.mjs');
+    writeFileSync(script, 'console.log("ok");\n');
+    const r = resolvePiNorthstarCommand(baseConfig({ autoDetect: true }), {
+      cwd,
+      pathEnv: '',
+    });
+    expect(r.source).toBe('sibling');
+    expect(r.args).toEqual([script]);
   });
 
   it('fails closed with actionable error when nothing found', () => {
@@ -151,6 +174,7 @@ describe('createPiNorthstarProvider', () => {
     const executor = fakeExecutor();
     const provider = await createPiNorthstarProvider(baseConfig({ autoDetect: true }), {
       executor,
+      resolved: { command: 'pi-northstar', args: [], source: 'path' },
     });
     expect(provider.name).toBe(PI_NORTHSTAR_PROVIDER_NAME);
 

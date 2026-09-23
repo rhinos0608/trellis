@@ -1,8 +1,8 @@
 /**
  * Out-of-process pi-northstar CLI client.
  *
- * Spawns `pi-northstar call TOOL JSON_ARGS` as a child process per call
- * (Option A: CLI subprocess). No persistent child process — each call is
+ * Spawns Northstar's supported public CLI commands as a child process per call
+ * (search/fetch/research/github). No persistent child process — each call is
  * one short-lived spawn, so `close()` is a no-op retained for interface
  * symmetry with the search-mcp adapter.
  *
@@ -195,12 +195,64 @@ export function spawnPiNorthstar(
 /** Envelope codes that are client-side/usage failures — never retried. */
 const PERMANENT_ENVELOPE_CODES = new Set([
   'unknown_command',
+  'unsupported_command',
   'unknown_tool',
   'invalid_request',
   'invalid_args',
+  'invalid_usage',
+  'unknown_flag',
   'validation_error',
   'unsupported_option',
 ]);
+
+function requiredString(args: Record<string, unknown>, key: string): string {
+  const value = args[key];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw permanentError(`pi-northstar ${key} must be a non-empty string`, 'invalid_args');
+  }
+  return value;
+}
+
+function pushOptionalValue(
+  out: string[],
+  args: Record<string, unknown>,
+  key: string,
+  flag: string,
+): void {
+  const value = args[key];
+  if (value === undefined) return;
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw permanentError(`pi-northstar ${key} has an invalid type`, 'invalid_args');
+  }
+  out.push(flag, String(value));
+}
+
+/** Translate Trellis's P1 abstract tool calls to Northstar's public CLI. */
+export function buildPublicCliArgs(
+  tool: string,
+  args: Record<string, unknown>,
+): string[] {
+  let out: string[];
+  if (tool === 'web_search') {
+    out = ['search', requiredString(args, 'query')];
+    pushOptionalValue(out, args, 'limit', '--limit');
+    pushOptionalValue(out, args, 'recency', '--recency');
+  } else if (tool === 'fetch') {
+    out = ['fetch', requiredString(args, 'url'), '--mode', 'readable'];
+  } else if (tool === 'research') {
+    out = ['research', 'search', requiredString(args, 'query')];
+    pushOptionalValue(out, args, 'source', '--source');
+    pushOptionalValue(out, args, 'limit', '--limit');
+    pushOptionalValue(out, args, 'yearFrom', '--year-from');
+  } else if (tool === 'github') {
+    out = ['github', 'search', requiredString(args, 'query')];
+    pushOptionalValue(out, args, 'limit', '--limit');
+  } else {
+    throw permanentError(`Unsupported pi-northstar tool: ${tool}`, 'unknown_tool');
+  }
+  out.push('--json');
+  return out;
+}
 
 function permanentError(message: string, code?: string, rawDetail?: string): Error {
   const err = new Error(message);
@@ -215,8 +267,9 @@ function permanentError(message: string, code?: string, rawDetail?: string): Err
 }
 
 /**
- * Parse one `pi-northstar call` stdout payload into an unwrapped result.
- * Throws a classified Error on process failure or `ok:false` envelopes.
+ * Parse Northstar CLI stdout into the adapter's normalized result shape.
+ * Supports the current `northstar.command-result.v1` envelope plus the legacy
+ * status envelope used by capability discovery.
  */
 export function parseCallOutput(
   tool: string,
@@ -241,6 +294,32 @@ export function parseCallOutput(
     throw permanentError(`pi-northstar call ${tool} returned unexpected output shape`);
   }
   const envelope = parsed as Record<string, unknown>;
+
+  if (envelope.schema === 'northstar.command-result.v1') {
+    const outcome = typeof envelope.outcome === 'string' ? envelope.outcome : 'failed';
+    const terminalFailure = new Set(['failed', 'cancelled', 'outcome_unknown', 'stale']);
+    if (terminalFailure.has(outcome)) {
+      const nested = envelope.error as Record<string, unknown> | undefined;
+      const code = typeof nested?.code === 'string' ? nested.code : undefined;
+      const message = typeof nested?.message === 'string' ? nested.message : 'unknown error';
+      const retryability = envelope.retryability;
+      if (
+        retryability === 'not_retryable' ||
+        (code !== undefined && PERMANENT_ENVELOPE_CODES.has(code))
+      ) {
+        throw permanentError(`pi-northstar ${tool} failed: ${code ?? 'error'}: ${message}`, code);
+      }
+      const err = new Error(`pi-northstar ${tool} failed: ${code ?? 'error'}: ${message}`);
+      const rec = err as unknown as Record<string, unknown>;
+      rec.operation = 'callTool';
+      if (code !== undefined) rec.code = code;
+      throw err;
+    }
+    const data = envelope.data;
+    const normalized = { content: [] as unknown[], details: data };
+    return { data: normalized, content: [] };
+  }
+
   if (envelope.ok === false) {
     const nested = envelope.error as Record<string, unknown> | undefined;
     const code = typeof nested?.code === 'string' ? nested.code : undefined;
@@ -264,8 +343,8 @@ export function parseCallOutput(
 }
 
 /**
- * Create a pi-northstar CLI client. Each `callTool` spawns
- * `<command> <baseArgs...> call <tool> <jsonArgs>`.
+ * Create a pi-northstar CLI client. Each abstract P1 tool call is translated
+ * to the corresponding supported public Northstar CLI command.
  */
 export function createPiNorthstarClient(
   resolved: ResolvedPiNorthstar,
@@ -283,7 +362,7 @@ export function createPiNorthstarClient(
       const timeoutMs = Math.max(1, ctx.deadlineAt - Date.now());
       const exec = await executor(
         resolved.command,
-        [...resolved.args, 'call', name, JSON.stringify(args)],
+        [...resolved.args, ...buildPublicCliArgs(name, args)],
         { signal: ctx.signal, timeoutMs },
       );
       return parseCallOutput(name, exec);

@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildPiNorthstarEnv,
+  buildPublicCliArgs,
   createPiNorthstarClient,
   parseCallOutput,
   type PiNorthstarExecResult,
@@ -43,6 +44,25 @@ describe('parseCallOutput', () => {
     const out = parseCallOutput('web_search', okExec({ content: [], details: { a: 1 } }));
     expect(out.data).toEqual({ content: [], details: { a: 1 } });
     expect(out.content).toEqual([]);
+  });
+
+  it('normalizes current northstar.command-result.v1 envelopes', () => {
+    const exec: PiNorthstarExecResult = {
+      stdout: JSON.stringify({
+        schema: 'northstar.command-result.v1',
+        version: 1,
+        commandId: 'search.web',
+        outcome: 'success',
+        retryability: 'not_retryable',
+        data: { query: 'q', results: [{ title: 'T', url: 'https://example.com/' }] },
+      }),
+      stderr: '',
+      exitCode: 0,
+    };
+    expect(parseCallOutput('web_search', exec).data).toEqual({
+      content: [],
+      details: { query: 'q', results: [{ title: 'T', url: 'https://example.com/' }] },
+    });
   });
 
   it('classifies usage errors PERMANENT (fail fast, no retry)', () => {
@@ -89,8 +109,21 @@ describe('buildPiNorthstarEnv', () => {
   });
 });
 
+describe('buildPublicCliArgs', () => {
+  it('maps P1 tool calls onto public Northstar CLI commands', () => {
+    expect(buildPublicCliArgs('web_search', { query: 'q', limit: 2, recency: 'week' }))
+      .toEqual(['search', 'q', '--limit', '2', '--recency', 'week', '--json']);
+    expect(buildPublicCliArgs('fetch', { url: 'https://example.com/' }))
+      .toEqual(['fetch', 'https://example.com/', '--mode', 'readable', '--json']);
+    expect(buildPublicCliArgs('research', { query: 'q', source: 'arxiv', yearFrom: 2020 }))
+      .toEqual(['research', 'search', 'q', '--source', 'arxiv', '--year-from', '2020', '--json']);
+    expect(buildPublicCliArgs('github', { query: 'q', limit: 3 }))
+      .toEqual(['github', 'search', 'q', '--limit', '3', '--json']);
+  });
+});
+
 describe('createPiNorthstarClient', () => {
-  it('spawns `call TOOL JSON_ARGS` and unwraps', async () => {
+  it('spawns the Northstar public CLI surface and unwraps', async () => {
     const seen: string[][] = [];
     const executor: PiNorthstarExecutor = (command, args) => {
       seen.push([command, ...args]);
@@ -103,8 +136,7 @@ describe('createPiNorthstarClient', () => {
     const out = await client.callTool('web_search', { query: 'q' }, ctx());
     expect(out.data).toEqual({ content: [], details: { results: [] } });
     expect(seen).toHaveLength(1);
-    expect(seen[0]?.slice(0, 3)).toEqual(['pi-northstar', 'call', 'web_search']);
-    expect(JSON.parse(seen[0]?.[3] ?? '{}')).toEqual({ query: 'q' });
+    expect(seen[0]).toEqual(['pi-northstar', 'search', 'q', '--json']);
     await client.close();
   });
 
@@ -118,7 +150,7 @@ describe('createPiNorthstarClient', () => {
       executor,
       retry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 2 },
     });
-    await expect(client.callTool('nope', {}, ctx())).rejects.toThrow(/unknown_tool/);
+    await expect(client.callTool('web_search', { query: 'q' }, ctx())).rejects.toThrow(/unknown_tool/);
     expect(calls).toBe(1);
   });
 
@@ -147,7 +179,7 @@ describe('createPiNorthstarClient', () => {
       executor,
       retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 2 },
     });
-    await client.callTool('web_search', {}, ctx({ deadlineAt: Date.now() + 5000 }));
+    await client.callTool('web_search', { query: 'q' }, ctx({ deadlineAt: Date.now() + 5000 }));
     expect(timeoutMs).toBeGreaterThan(0);
     expect(timeoutMs).toBeLessThanOrEqual(5000);
   });
@@ -165,7 +197,7 @@ describe('createPiNorthstarClient', () => {
       retry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 2 },
     });
     await expect(
-      client.callTool('web_search', {}, ctx({ signal: controller.signal })),
+      client.callTool('web_search', { query: 'q' }, ctx({ signal: controller.signal })),
     ).rejects.toThrow();
     expect(calls).toBe(1);
   });

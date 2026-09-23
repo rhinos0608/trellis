@@ -4,9 +4,9 @@
  * P1 tools: `web_search`, `fetch`, `research` (academic action), `github`.
  * No social/media/kg/graph/browser mapping — out of scope for Phase 1.
  *
- * Envelope: `pi-northstar call TOOL JSON_ARGS` prints
- * `{ ok: true, data: { content, details } }` (schema `pi-northstar.result`
- * v1). Mapping unwraps `data.details` and converts to ResearchProvider DTOs.
+ * The CLI client normalizes Northstar's public `northstar.command-result.v1`
+ * envelopes to `{ data: { content, details } }`. Mapping unwraps `details`
+ * and converts it to ResearchProvider DTOs.
  *
  * Provenance: Pi markers are untrusted evidence and must survive mapping —
  * snippets/titles pass through verbatim (bounds + control-char stripping
@@ -245,23 +245,39 @@ export function toCrawlResults(details: unknown, fallbackUrl?: string): CrawlRes
     .filter((r): r is CrawlResult => r !== null);
 }
 
+function repoFromGitHubUrl(rawUrl: string): string | undefined {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.hostname.toLowerCase() !== 'github.com') return undefined;
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const owner = parts[0];
+    const repo = parts[1];
+    if (!owner || !repo) return undefined;
+    return `${owner}/${repo}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export function toGitHubHits(details: unknown): GitHubHit[] {
   return capArray(extractDetailsArray(details))
     .map((item) => {
       if (item === null || typeof item !== 'object') return null;
       const r = item as Record<string, unknown>;
+      const rawUrl = typeof r.url === 'string'
+        ? r.url
+        : typeof r.html_url === 'string'
+          ? r.html_url
+          : undefined;
       const repo = typeof r.repository === 'string'
         ? r.repository
         : typeof r.repo === 'string'
           ? r.repo
           : typeof r.full_name === 'string'
             ? r.full_name
-            : undefined;
-      const rawUrl = typeof r.url === 'string'
-        ? r.url
-        : typeof r.html_url === 'string'
-          ? r.html_url
-          : undefined;
+            : rawUrl !== undefined
+              ? repoFromGitHubUrl(rawUrl)
+              : undefined;
       if (!repo || !rawUrl) return null;
       const url = dropUnsafe(rawUrl);
       if (url === null) return null;

@@ -238,6 +238,18 @@ describe('toGitHubHits', () => {
     expect(out[0]).toMatchObject({ repo: 'o/r', path: 'README.md' });
   });
 
+  it('infers repository from current Northstar GitHub entity URLs', () => {
+    const out = toGitHubHits({
+      entities: [{
+        title: 'README.md',
+        url: 'https://github.com/o/r/blob/abc/README.md',
+        source: 'github',
+      }],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.repo).toBe('o/r');
+  });
+
   it('returns [] for empty/degraded details', () => {
     expect(toGitHubHits(undefined)).toEqual([]);
   });

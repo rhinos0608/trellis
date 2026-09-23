@@ -27,6 +27,7 @@ import { resolveBudgetProfile } from './budget.js';
 import { ResearchStateEngine } from './state.js';
 import { BudgetTracker } from './budget.js';
 import { LlmClient } from './llm/client.js';
+import { isPiModelId, resolvePiCliAuth } from './llm/piCli.js';
 import { resolveFamily } from '../workspace/familyResolver.js';
 import { resolveThread } from '../workspace/threadResolver.js';
 import { appendEvents, queryEvents, type NewEventInput, type AppendContext } from '../store/events.js';
@@ -61,14 +62,15 @@ interface RunAbort {
 // ── Public API ────────────────────────────────────────────────────────
 
 /**
- * Thrown by startRun() when strategy:'agent' is requested but LLM config
- * (baseUrl + model) is missing. Permanent precondition — not retryable.
+ * Thrown by startRun() when strategy:'agent' has no usable model transport.
+ * HTTP uses baseUrl + model. When Pi is installed with its auth store,
+ * an exact provider/model ID is sufficient. Permanent precondition.
  */
 export class MissingLlmConfigError extends Error {
   readonly classification = 'permanent' as const;
   constructor() {
     super(
-      'Agent strategy requires LLM configuration: set TRELLIS_LLM_BASE_URL (or OPENAI_BASE_URL) and TRELLIS_LLM_MODEL (or OPENAI_MODEL)',
+      'Agent strategy requires LLM configuration: set TRELLIS_LLM_MODEL (or OPENAI_MODEL) plus either an HTTP base URL or an installed Pi CLI with ~/.pi/agent/auth.json for an exact provider/model ID',
     );
     this.name = 'MissingLlmConfigError';
   }
@@ -847,7 +849,10 @@ function contentHashChanged(oldContentHash: string | undefined, newContentHash: 
   }
   function assertLlmConfigured(input: StartRunInput): void {
     const llmCfgForCheck = input.config.llm;
-    if (!llmCfgForCheck.baseUrl || !llmCfgForCheck.model) throw new MissingLlmConfigError();
+    if (!llmCfgForCheck.model) throw new MissingLlmConfigError();
+    if (llmCfgForCheck.baseUrl) return;
+    if (isPiModelId(llmCfgForCheck.model) && resolvePiCliAuth() !== undefined) return;
+    throw new MissingLlmConfigError();
   }
 
   function resolveEffectiveThreadForStart(
@@ -1039,12 +1044,25 @@ function contentHashChanged(oldContentHash: string | undefined, newContentHash: 
 
   function buildResearchLlm(input: StartRunInput, budget: BudgetTracker): LlmClient | undefined {
     const llmCfg = input.config.llm;
-    if (!llmCfg.baseUrl || !llmCfg.model) return undefined;
+    if (!llmCfg.model) return undefined;
+    if (llmCfg.baseUrl) {
+      return new LlmClient(
+        {
+          baseUrl: llmCfg.baseUrl,
+          model: llmCfg.model,
+          ...(llmCfg.apiKey ? { apiToken: llmCfg.apiKey } : {}),
+        },
+        budget,
+      );
+    }
+
+    if (!isPiModelId(llmCfg.model)) return undefined;
+    const pi = resolvePiCliAuth();
+    if (!pi) return undefined;
     return new LlmClient(
       {
-        baseUrl: llmCfg.baseUrl,
         model: llmCfg.model,
-        ...(llmCfg.apiKey ? { apiToken: llmCfg.apiKey } : {}),
+        piCommand: pi.command,
       },
       budget,
     );

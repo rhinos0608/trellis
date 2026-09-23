@@ -7,15 +7,23 @@
  */
 
 import { logger } from '../../logger.js';
+import {
+  buildPiCliArgs,
+  buildPiCliEnv,
+  spawnPiCli,
+  type PiCliExecutor,
+} from './piCli.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface LlmClientConfig {
-  baseUrl: string;
+  baseUrl?: string;
   workerBaseUrl?: string;
   model: string;
   workerModel?: string;
   apiToken?: string;
+  piCommand?: string;
+  piExecutor?: PiCliExecutor;
 }
 
 export interface LlmCallOptions {
@@ -150,24 +158,33 @@ export function parseJsonFromText<T>(text: string): T | undefined {
 // ── Client ─────────────────────────────────────────────────────────────────
 
 export class LlmClient {
-  private readonly baseUrl: string;
-  private readonly workerBaseUrl: string;
+  private readonly baseUrl: string | undefined;
+  private readonly workerBaseUrl: string | undefined;
   private readonly model: string;
   private readonly workerModel: string;
   private readonly apiToken: string | undefined;
+  private readonly piCommand: string | undefined;
+  private readonly piExecutor: PiCliExecutor;
   private readonly budget: TokenBudget | undefined;
 
   constructor(config: LlmClientConfig, budget?: TokenBudget) {
-    this.baseUrl = normalizeBaseUrl(config.baseUrl);
-    this.workerBaseUrl = normalizeBaseUrl(
+    this.baseUrl =
+      config.baseUrl && config.baseUrl.trim().length > 0
+        ? normalizeBaseUrl(config.baseUrl)
+        : undefined;
+    this.workerBaseUrl =
       config.workerBaseUrl && config.workerBaseUrl.trim().length > 0
-        ? config.workerBaseUrl
-        : config.baseUrl,
-    );
+        ? normalizeBaseUrl(config.workerBaseUrl)
+        : this.baseUrl;
     this.model = config.model;
     this.workerModel = config.workerModel ?? config.model;
     this.apiToken = config.apiToken;
+    this.piCommand = config.piCommand;
+    this.piExecutor = config.piExecutor ?? spawnPiCli;
     this.budget = budget;
+    if (!this.baseUrl && !this.piCommand) {
+      throw new TypeError('LlmClient requires either baseUrl or piCommand.');
+    }
   }
 
   async callOrchestrator(options: LlmCallOptions): Promise<LlmResponse> {
@@ -239,16 +256,74 @@ export class LlmClient {
     return response;
   }
 
+  private async callPiModel(
+    model: string,
+    options: LlmCallOptions,
+  ): Promise<LlmResponse> {
+    const startTime = Date.now();
+    const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    const promptTokensEstimate = options.messages.reduce(
+      (sum, msg) => sum + estimateTokens(msg.content),
+      0,
+    );
+    const fail = (error: string): LlmResponse => ({
+      content: '',
+      model,
+      tokensUsed: 0,
+      tokensSource: 'estimated',
+      promptTokens: promptTokensEstimate,
+      attempts: 1,
+      durationMs: Date.now() - startTime,
+      success: false,
+      error,
+    });
+    if (!this.piCommand) return fail('Pi CLI transport is unavailable');
+
+    try {
+      const signal = options.signal ?? new AbortController().signal;
+      const exec = await this.piExecutor(
+        this.piCommand,
+        buildPiCliArgs(model, options.messages, options.responseFormat),
+        { signal, timeoutMs, env: buildPiCliEnv() },
+      );
+      if (exec.exitCode !== 0) {
+        return fail(`Pi model call failed (exit ${String(exec.exitCode)})`);
+      }
+      const content = exec.stdout.trim();
+      if (content.length === 0) return fail('Pi model call returned empty output');
+
+      const completionTokens = estimateTokens(content);
+      const totalTokens = promptTokensEstimate + completionTokens;
+      this.budget?.recordTokens(totalTokens);
+      return {
+        content,
+        model,
+        tokensUsed: totalTokens,
+        tokensSource: 'estimated',
+        promptTokens: promptTokensEstimate,
+        completionTokens,
+        attempts: 1,
+        durationMs: Date.now() - startTime,
+        success: true,
+      };
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   private async callModelWithRetries(
     model: string,
     options: LlmCallOptions,
     temperature: number,
     baseUrl?: string,
   ): Promise<LlmResponse> {
+    const endpointBase = baseUrl ?? this.baseUrl;
+    if (!endpointBase) return this.callPiModel(model, options);
+
     const startTime = Date.now();
     const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
     const deadline = startTime + timeoutMs;
-    const endpoint = `${baseUrl ?? this.baseUrl}/v1/chat/completions`;
+    const endpoint = `${endpointBase}/v1/chat/completions`;
     const promptTokensEstimate = options.messages.reduce(
       (sum, msg) => sum + estimateTokens(msg.content),
       0,

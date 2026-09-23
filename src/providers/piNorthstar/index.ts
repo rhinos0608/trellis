@@ -6,7 +6,8 @@
  * default off = zero behavior change). Resolution order:
  *   1. `pi-northstar` on PATH (parent process PATH used for discovery only,
  *      never forwarded to the child)
- *   2. sibling `../Pi-Atlas/bin/pi-northstar.mjs` (relative to cwd)
+ *   2. sibling Northstar checkout (`../Pi-Atlas`, `../Pi-Northstar`, or
+ *      `../Northstar`, relative to cwd)
  *   3. local `./bin/pi-northstar.mjs` (relative to cwd)
  * Fails closed with an actionable error when enabled but unresolvable.
  */
@@ -107,6 +108,8 @@ export function resolvePiNorthstarCommand(
   // 2. Sibling checkout + 3. local bin (`.mjs` runs under node itself).
   const siblings: { path: string; source: ResolvedPiNorthstar['source'] }[] = [
     { path: resolve(cwd, '../Pi-Atlas/bin/pi-northstar.mjs'), source: 'sibling' },
+    { path: resolve(cwd, '../Pi-Northstar/bin/pi-northstar.mjs'), source: 'sibling' },
+    { path: resolve(cwd, '../Northstar/bin/pi-northstar.mjs'), source: 'sibling' },
     { path: resolve(cwd, 'bin/pi-northstar.mjs'), source: 'local' },
   ];
   for (const { path, source } of siblings) {
@@ -119,7 +122,7 @@ export function resolvePiNorthstarCommand(
   throw new Error(
     'pi-northstar provider is enabled but no binary was found. ' +
       `Tried: ${tried.join('; ')}. ` +
-      'Install pi-northstar on PATH or check out Pi-Atlas next to trellis.'
+      'Install pi-northstar on PATH or check out Pi-Atlas/Pi-Northstar next to trellis.'
   );
 }
 
@@ -150,7 +153,7 @@ async function discoverStatus(
  */
 export async function createPiNorthstarProvider(
   cfg: TrellisConfig,
-  deps?: { executor?: PiNorthstarExecutor },
+  deps?: { executor?: PiNorthstarExecutor; resolved?: ResolvedPiNorthstar },
 ): Promise<ResearchProvider> {
   if (!isPiNorthstarEnabled(cfg)) {
     throw new Error(
@@ -158,7 +161,7 @@ export async function createPiNorthstarProvider(
         'Set TRELLIS_PI_NORTHSTAR_AUTODETECT=1 to enable automatic detection.',
     );
   }
-  const resolved = resolvePiNorthstarCommand(cfg);
+  const resolved = deps?.resolved ?? resolvePiNorthstarCommand(cfg);
   const executor = deps?.executor ?? spawnPiNorthstar;
   // Capability discovery via status: proves the binary runs before we
   // advertise P1 capabilities. Config stays advisory (logged, not gated).
